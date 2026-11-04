@@ -20,15 +20,24 @@ struct transformer_decision_readout {
     uint64_t       head_ns;
 };
 
-bool transformer_decision_supported(const void *state) {
-    const struct transformer_arch_state *st = state;
+/* struct geist_arch_readout is this readout (#347); the only casts. */
+static inline struct transformer_decision_readout *dr_of(struct geist_arch_readout *h) {
+    return (struct transformer_decision_readout *) h;
+}
+
+static inline struct geist_arch_readout *dr_handle(struct transformer_decision_readout *r) {
+    return (struct geist_arch_readout *) r;
+}
+
+bool transformer_decision_supported(const struct geist_arch_state *state) {
+    const struct transformer_arch_state *st = tf_cstate(state);
     return st != nullptr && !geist_pooling_is_embedding(st->config.pooling) &&
            st->embed_table_w.linear_rows != nullptr && st->embed_table_w.linear_rows_tile > 0 &&
            st->embed_table_w.linear_rows_tile <= 32;
 }
 
-void transformer_decision_destroy(void *readout) {
-    struct transformer_decision_readout *r = readout;
+void transformer_decision_destroy(struct geist_arch_readout *readout) {
+    struct transformer_decision_readout *r = dr_of(readout);
     if (r == nullptr)
         return;
     if (r->results != nullptr) {
@@ -42,14 +51,16 @@ void transformer_decision_destroy(void *readout) {
     safe_free((void **) &r);
 }
 
-enum geist_status transformer_decision_create(void *session, size_t cap, void **out) {
+enum geist_status transformer_decision_create(struct geist_arch_session  *session,
+                                              size_t                      cap,
+                                              struct geist_arch_readout **out) {
     if (out == nullptr)
         return GEIST_E_INVALID_ARG;
     *out                                  = nullptr;
-    struct transformer_arch_session *sess = session;
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr || cap == 0)
         return GEIST_E_INVALID_ARG;
-    if (!transformer_decision_supported(sess->model))
+    if (!transformer_decision_supported(tf_cstate_handle(sess->model)))
         return GEIST_E_UNSUPPORTED;
     const struct geist_weight *w = &sess->model->embed_table_w;
     if (w->linear_rows_prepare != nullptr) {
@@ -84,17 +95,17 @@ enum geist_status transformer_decision_create(void *session, size_t cap, void **
     r->tiles       = heap_alloc_array_aligned(geist_token_t, cap);
     r->slots       = heap_alloc_array_aligned(size_t, cap);
     if (r->keys == nullptr || r->values == nullptr || r->tiles == nullptr || r->slots == nullptr) {
-        transformer_decision_destroy(r);
+        transformer_decision_destroy(dr_handle(r));
         return GEIST_E_OOM;
     }
     struct geist_backend   *be = sess->model->backend;
     const enum geist_status s  = be->desc->vtbl->buffer_create(
             be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_HOST_VISIBLE, &r->results);
     if (s != GEIST_OK) {
-        transformer_decision_destroy(r);
+        transformer_decision_destroy(dr_handle(r));
         return s;
     }
-    *out = r;
+    *out = dr_handle(r);
     return GEIST_OK;
 }
 
@@ -144,21 +155,21 @@ enum geist_status transformer_decision_finish(struct transformer_decision_readou
     return GEIST_OK;
 }
 
-enum geist_status transformer_decision_prefill(size_t              *rows,
-                                               size_t              *readback_bytes,
-                                               uint64_t            *head_ns,
-                                               void                *readout,
-                                               size_t               n_prompt,
-                                               size_t               n_candidates,
-                                               const geist_token_t *prompt,
-                                               const geist_token_t *candidates,
-                                               float               *out) {
+enum geist_status transformer_decision_prefill(size_t                    *rows,
+                                               size_t                    *readback_bytes,
+                                               uint64_t                  *head_ns,
+                                               struct geist_arch_readout *readout,
+                                               size_t                     n_prompt,
+                                               size_t                     n_candidates,
+                                               const geist_token_t       *prompt,
+                                               const geist_token_t       *candidates,
+                                               float                     *out) {
     if (rows == nullptr || readback_bytes == nullptr || head_ns == nullptr)
         return GEIST_E_INVALID_ARG;
     *rows                                  = 0;
     *readback_bytes                        = 0;
     *head_ns                               = 0;
-    struct transformer_decision_readout *r = readout;
+    struct transformer_decision_readout *r = dr_of(readout);
     if (r == nullptr || n_prompt == 0 || n_candidates == 0 || n_candidates > r->cap ||
         prompt == nullptr || candidates == nullptr || out == nullptr)
         return GEIST_E_INVALID_ARG;

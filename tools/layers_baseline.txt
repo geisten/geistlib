@@ -1,7 +1,5 @@
 # tools/check_layers.py: known violations of tools/layers.json; this list
 # only shrinks. `if <file> <n>` is a ceiling. Regenerate with --update.
-header src/backends/common/selected_rows.h
-header src/backends/metal/metal_objc.h
 if src/archs/audio_conformer/audio_kernels.c 7
 if src/archs/audio_conformer/audio_linear.c 9
 if src/archs/audio_conformer/encoder_internal.h 2

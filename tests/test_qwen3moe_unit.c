@@ -110,7 +110,7 @@ static double rel_l2(const float a[static VOCAB], const float b[static VOCAB]) {
 
 /* Remove (or restore) the kernels of layer 0's expert down projections. */
 static void break_layer0_down(struct geist_session *s, struct geist_weight *saved, bool restore) {
-    struct transformer_arch_session  *a = geist_session_internal_arch_session(s);
+    struct transformer_arch_session  *a = tf_sess(geist_session_internal_arch_session(s));
     struct transformer_layer_weights *L = &a->model->layers[0];
     for (size_t e = 0; e < L->moe_n_experts; e++) {
         if (restore) {
@@ -167,7 +167,7 @@ static int check_backend(const char *name, float ref[static VOCAB]) {
     /* KV cache: the family asks for F16 under AUTO; a session that asks
      * for FP32 gets FP32, and the two agree to F16 rounding. */
     {
-        struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(s));
         fails += geist_expect(a->kv_f16_enabled && !a->kv_int8_enabled,
                               "qwen3moe gets an F16 KV cache under AUTO");
         struct geist_session     *s32 = nullptr;
@@ -176,9 +176,10 @@ static int check_backend(const char *name, float ref[static VOCAB]) {
         float f32[VOCAB];
         if (geist_session_create(m, be, &o32, &s32) == GEIST_OK &&
             logits_after(s32, N_PROMPT, ids, N_PROMPT, f32)) {
-            struct transformer_arch_session *a32 = geist_session_internal_arch_session(s32);
-            const double                     d   = rel_l2(chunked, f32);
-            const double                     c   = cosine(chunked, f32);
+            struct transformer_arch_session *a32 =
+                    tf_sess(geist_session_internal_arch_session(s32));
+            const double d = rel_l2(chunked, f32);
+            const double c = cosine(chunked, f32);
             printf("%s: F16 vs FP32 KV logits, relative L2 %.3g, cosine %.6f\n", name, d, c);
             fails += geist_expect(!a32->kv_f16_enabled, "kv_mode FP32 is honoured");
             /* The kernels are exact on F16 input (test_attention_f32_unit);
@@ -258,7 +259,7 @@ static int check_hot(const char *gpu, size_t hot, const float ref[static VOCAB])
         fprintf(stderr, "%s / %s\n", geist_backend_errmsg(cpu), geist_backend_errmsg(gbe));
         fails += geist_expect(false, "the fixture runs with hot experts");
     } else {
-        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
         const struct transformer_moe_gpu    *mg = st->moe_gpu;
         const double                         d  = rel_l2(out, ref);
         printf("%s, %zu hot experts: %zu placed, %llu rows on the GPU, %llu on the CPU, relative "
@@ -313,7 +314,7 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
         fprintf(stderr, "%s\n", geist_backend_errmsg(gbe));
         fails += geist_expect(false, "the fixture runs on the GPU backend");
     } else {
-        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
         const struct transformer_moe_gpu    *mg = st->moe_gpu;
         const double                         c1 = cosine(chunked, ref), c2 = cosine(single, ref);
         printf("%s main, %zu hot: experts on %s, %zu placed, %llu rows on the GPU, cosine %.6f "
@@ -339,7 +340,7 @@ static int check_on_gpu(const char *gpu, size_t hot, const float ref[static VOCA
 
         /* #164: only the experts without a GPU copy are resolved on the
          * CPU; a session that cannot get its GPU buffers is refused. */
-        struct transformer_arch_session *a       = geist_session_internal_arch_session(s);
+        struct transformer_arch_session *a       = tf_sess(geist_session_internal_arch_session(s));
         bool                             cold_ok = true, hot_bare = true;
         for (size_t l = 0; l < GEOM.layers; l++) {
             for (size_t e = 0; e < GEOM.experts; e++) {

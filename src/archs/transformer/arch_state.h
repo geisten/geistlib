@@ -1042,24 +1042,6 @@ transformer_multi_layer(struct transformer_arch_session       *carrier,
                         struct geist_buffer                   *h_in_buf,
                         struct geist_buffer                   *h_out_buf);
 
-/* Append one audio soft-token (HIDDEN floats, already produced by the
- * audio encoder) to the KV cache.
- *
- * Differences vs the text path:
- *   - h_in_host is the soft-token bytes verbatim — no embedding lookup
- *     and no sqrt(HIDDEN) scale (soft-tokens enter post-lookup unscaled).
- *   - PLE token-identity is the pad_token_id (0), not the audio token's
- *     "identity" — matches HF's masked-scatter where audio positions are
- *     remapped to pad before PLE lookup.
- *
- * After return, kv_len is advanced by 1 and next_token_pending is the
- * greedy prediction for the position following this soft-token.
- * advance_audio_token is intended to be called n times in a row for an
- * n-soft-token audio clip; the engine's session_attach_audio takes care
- * of the encoder pipeline upstream. */
-[[nodiscard]] enum geist_status
-transformer_advance_audio_token(struct transformer_arch_session *sess, const float *h_in_host);
-
 /* Batched text prefill: append `n` tokens to the KV cache via the
  * seq>1 path. Processes the input in chunks of at most sess->m_max
  * tokens. After the last chunk, the next-token-pending field holds the
@@ -1299,5 +1281,39 @@ void transformer_session_free(struct transformer_arch_state   *state,
 /* The model-owned session state_create installs; vtable wrappers resolve
  * session == nullptr to this. */
 struct transformer_arch_session *transformer_default_session(struct transformer_arch_state *state);
+
+/* The arch vtable's opaque handles (<geist_arch.h>, #347) are these two
+ * structs; these are the only casts between them. */
+struct geist_arch_state;
+struct geist_arch_session;
+
+static inline struct transformer_arch_state *tf_state(struct geist_arch_state *h) {
+    return (struct transformer_arch_state *) h;
+}
+
+static inline const struct transformer_arch_state *tf_cstate(const struct geist_arch_state *h) {
+    return (const struct transformer_arch_state *) h;
+}
+
+static inline struct geist_arch_state *tf_state_handle(struct transformer_arch_state *st) {
+    return (struct geist_arch_state *) st;
+}
+
+static inline const struct geist_arch_state *
+tf_cstate_handle(const struct transformer_arch_state *st) {
+    return (const struct geist_arch_state *) st;
+}
+
+static inline struct transformer_arch_session *tf_sess(struct geist_arch_session *h) {
+    return (struct transformer_arch_session *) h;
+}
+
+static inline const struct transformer_arch_session *tf_csess(const struct geist_arch_session *h) {
+    return (const struct transformer_arch_session *) h;
+}
+
+static inline struct geist_arch_session *tf_sess_handle(struct transformer_arch_session *sess) {
+    return (struct geist_arch_session *) sess;
+}
 
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_STATE_V2_H */

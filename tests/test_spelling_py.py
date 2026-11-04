@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """One spelling per concept (#348): the C23 form, once the tree has moved to it.
 
-Fails on `_Static_assert` and on an `__attribute__` that has an equivalent
-`[[...]]` or `alignas`, in code; a comment may name them. KEEP lists what has
-not moved yet, each with its reason.
+Fails on `_Static_assert` and on any `__attribute__` in code; a comment may
+name them. Every GNU attribute the tree uses has a `[[gnu::...]]` or `alignas`
+form, so none is kept.
 """
 import re
 import subprocess
@@ -12,11 +12,6 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-KEEP = {
-    "always_inline": "next batch of #348",
-    "constructor": "next batch of #348",
-    "target": "next batch of #348: built through macros in the x86 kernels",
-}
 ATTR = re.compile(r"__attribute__\s*\(\(\s*(\w+)")
 STATIC = re.compile(r"\b_Static_assert\b")
 COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
@@ -29,9 +24,8 @@ def problems(text):
     for m in STATIC.finditer(code):
         found.append((code.count("\n", 0, m.start()) + 1, "_Static_assert: use static_assert"))
     for m in ATTR.finditer(code):
-        if m.group(1) not in KEEP:
-            line = code.count("\n", 0, m.start()) + 1
-            found.append((line, f"__attribute__(({m.group(1)})): use the [[...]] or alignas form"))
+        line = code.count("\n", 0, m.start()) + 1
+        found.append((line, f"__attribute__(({m.group(1)})): use the [[gnu::...]] or alignas form"))
     return found
 
 
@@ -55,7 +49,8 @@ class Spelling(unittest.TestCase):
         self.assertEqual(len(problems("_Static_assert(1, \"x\");\n")), 1)
         self.assertEqual(len(problems("int a __attribute__((aligned(8)));\n")), 1)
         self.assertEqual(problems("/* _Static_assert __attribute__((packed)) */\n"), [])
-        self.assertEqual(problems("__attribute__((target(\"avx2\"))) void f(void);\n"), [])
+        self.assertEqual(len(problems("__attribute__((target(\"avx2\"))) void f(void);\n")), 1)
+        self.assertEqual(problems("[[gnu::target(\"avx2\")]] void f(void);\n"), [])
 
 
 if __name__ == "__main__":

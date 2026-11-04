@@ -79,7 +79,7 @@ constexpr size_t Q8K_SEG = 64;
 
 /* ---- AVX2 GEMV: one m-row × 8-cell tile ---- */
 
-__attribute__((target("avx2,avx,f16c,fma"))) static __m256
+[[gnu::target("avx2,avx,f16c,fma")]] static __m256
 q4kx8_gemv_one_row_tile(size_t                     n_super,
                         const struct block_q4_Kx8 *W,
                         const struct q8k_row      *X,

@@ -139,12 +139,32 @@ struct metal_buf_reg_entry {
 /* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 512. */
 enum { METAL_FLASH_SLOTS = 16 };
 
+/* Typed handles to the Objective-C objects the backend holds (#347). The
+ * structs are declared and never defined: each pointer is the object's `id`
+ * under a type of its own, so handing a pipeline where a buffer belongs is a
+ * compile error. They cost nothing at run time -- every object pointer has
+ * the same representation, and the objc_msgSend wrappers of metal_objc.h
+ * take any of them as the generic receiver (void *, Objective-C's `id`).
+ * tests/static/metal_wrong_handle.c proves a mismatch does not compile. */
+struct metal_device_h;        /* id<MTLDevice> */
+struct metal_queue_h;         /* id<MTLCommandQueue> */
+struct metal_library_h;       /* id<MTLLibrary> */
+struct metal_function_h;      /* id<MTLFunction> */
+struct metal_pipeline_h;      /* id<MTLComputePipelineState> */
+struct metal_buffer_h;        /* id<MTLBuffer> */
+struct metal_cmdbuf_h;        /* id<MTLCommandBuffer> */
+struct metal_encoder_h;       /* id<MTLComputeCommandEncoder> */
+struct metal_blit_h;          /* id<MTLBlitCommandEncoder> */
+struct metal_residency_set_h; /* id<MTLResidencySet> */
+struct metal_capture_h;       /* MTLCaptureManager */
+struct metal_pool_h;          /* objc_autoreleasePoolPush token */
+
 struct metal_state {
     struct geist_backend       *backend;
     void                       *metal_handle;
     void                       *objc_handle;
-    void                       *device;
-    void                       *command_queue;
+    struct metal_device_h      *device;
+    struct metal_queue_h       *command_queue;
     struct metal_buf_reg_entry *buf_reg;
     size_t                      buf_reg_count;
     size_t                      buf_reg_cap;
@@ -154,107 +174,107 @@ struct metal_state {
      * its base_off, so the offset tells views of one MTLBuffer apart
      * (#528). */
     struct metal_seq_ref {
-        const void *buf;
-        size_t      off;
+        const struct metal_buffer_h *buf;
+        size_t                       off;
     } seq_ref[4096];
     uint16_t seq_ref_used[4096];
     /* seq_ref_used[0 .. seq_ref_count) are the occupied slots, in insertion
      * order. Open-addressed set; overflow degrades to always-flush. */
-    size_t seq_ref_count;
-    bool   seq_ref_overflow;
-    void  *q4k_library;
-    void  *q40_q80_library;
-    void  *q5k_library;
-    void  *q41_library;
-    void  *quant_sg_library;
-    void  *q4k_n4_library;
-    void  *q6k_library;
-    void  *q6k_n4_library;
-    void  *elem_library;
-    void  *silu_library;
-    void  *deltanet_library;
-    void  *qgate_library;
-    void  *elem_simd_library;
-    void  *attn_library;
-    void  *attn_f16_library;
-    void  *q_norm_rope_library;
-    void  *k_norm_rope_append_library;
-    void  *v_norm_append_library;
-    void  *kv_norm_append_library;
-    void  *kv_norm_append_f16_library;
-    void  *rope_append_library; /* Llama/Qwen3 q/k prep + KV append (#17) */
-    void  *q40_function;
-    void  *q40_pipeline;
-    void  *q40_m8_function;
-    void  *q40_m8_pipeline;
-    void  *q80_function;
-    void  *q80_pipeline;
-    void  *q80_m8_function;
-    void  *q80_m8_pipeline;
-    void  *q5k_function;
-    void  *q41_function;
-    void  *q41_pipeline;
-    void  *q41_m8_function;
-    void  *q41_m8_pipeline;
-    void  *q5k_pipeline;
-    void  *q5k_m8_function;
-    void  *q5k_m8_pipeline;
-    void  *q40_n4_function;
-    void  *q40_n4_pipeline;
-    void  *q40_mm_function;
-    void  *q40_mm_pipeline;
-    void  *q80_n4_function;
-    void  *q80_n4_pipeline;
-    void  *q80_mm_function;
-    void  *q80_mm_pipeline;
-    void  *q41_n4_function;
-    void  *q41_n4_pipeline;
-    void  *q41_mm_function;
-    void  *q41_mm_pipeline;
-    void  *q5k_n4_function;
-    void  *q5k_n4_pipeline;
-    void  *q5k_mm_function;
-    void  *q5k_mm_pipeline;
-    void  *q40_mm_fast_function;
-    void  *q40_mm_fast_pipeline;
-    void  *q80_mm_fast_function;
-    void  *q80_mm_fast_pipeline;
-    void  *q41_mm_fast_function;
-    void  *q41_mm_fast_pipeline;
-    void  *q5k_mm_fast_function;
-    void  *q5k_mm_fast_pipeline;
-    void  *pq2_n4_function;
-    void  *pq2_n4_pipeline;
-    void  *pq2_mm_function;
-    void  *pq2_mm_pipeline;
-    void  *pq2_mm_fast_function;
-    void  *pq2_mm_fast_pipeline;
-    void  *pq2_m8_function;
-    void  *pq2_m8_pipeline;
+    size_t                   seq_ref_count;
+    bool                     seq_ref_overflow;
+    struct metal_library_h  *q4k_library;
+    struct metal_library_h  *q40_q80_library;
+    struct metal_library_h  *q5k_library;
+    struct metal_library_h  *q41_library;
+    struct metal_library_h  *quant_sg_library;
+    struct metal_library_h  *q4k_n4_library;
+    struct metal_library_h  *q6k_library;
+    struct metal_library_h  *q6k_n4_library;
+    struct metal_library_h  *elem_library;
+    struct metal_library_h  *silu_library;
+    struct metal_library_h  *deltanet_library;
+    struct metal_library_h  *qgate_library;
+    struct metal_library_h  *elem_simd_library;
+    struct metal_library_h  *attn_library;
+    struct metal_library_h  *attn_f16_library;
+    struct metal_library_h  *q_norm_rope_library;
+    struct metal_library_h  *k_norm_rope_append_library;
+    struct metal_library_h  *v_norm_append_library;
+    struct metal_library_h  *kv_norm_append_library;
+    struct metal_library_h  *kv_norm_append_f16_library;
+    struct metal_library_h  *rope_append_library; /* Llama/Qwen3 q/k prep + KV append (#17) */
+    struct metal_function_h *q40_function;
+    struct metal_pipeline_h *q40_pipeline;
+    struct metal_function_h *q40_m8_function;
+    struct metal_pipeline_h *q40_m8_pipeline;
+    struct metal_function_h *q80_function;
+    struct metal_pipeline_h *q80_pipeline;
+    struct metal_function_h *q80_m8_function;
+    struct metal_pipeline_h *q80_m8_pipeline;
+    struct metal_function_h *q5k_function;
+    struct metal_function_h *q41_function;
+    struct metal_pipeline_h *q41_pipeline;
+    struct metal_function_h *q41_m8_function;
+    struct metal_pipeline_h *q41_m8_pipeline;
+    struct metal_pipeline_h *q5k_pipeline;
+    struct metal_function_h *q5k_m8_function;
+    struct metal_pipeline_h *q5k_m8_pipeline;
+    struct metal_function_h *q40_n4_function;
+    struct metal_pipeline_h *q40_n4_pipeline;
+    struct metal_function_h *q40_mm_function;
+    struct metal_pipeline_h *q40_mm_pipeline;
+    struct metal_function_h *q80_n4_function;
+    struct metal_pipeline_h *q80_n4_pipeline;
+    struct metal_function_h *q80_mm_function;
+    struct metal_pipeline_h *q80_mm_pipeline;
+    struct metal_function_h *q41_n4_function;
+    struct metal_pipeline_h *q41_n4_pipeline;
+    struct metal_function_h *q41_mm_function;
+    struct metal_pipeline_h *q41_mm_pipeline;
+    struct metal_function_h *q5k_n4_function;
+    struct metal_pipeline_h *q5k_n4_pipeline;
+    struct metal_function_h *q5k_mm_function;
+    struct metal_pipeline_h *q5k_mm_pipeline;
+    struct metal_function_h *q40_mm_fast_function;
+    struct metal_pipeline_h *q40_mm_fast_pipeline;
+    struct metal_function_h *q80_mm_fast_function;
+    struct metal_pipeline_h *q80_mm_fast_pipeline;
+    struct metal_function_h *q41_mm_fast_function;
+    struct metal_pipeline_h *q41_mm_fast_pipeline;
+    struct metal_function_h *q5k_mm_fast_function;
+    struct metal_pipeline_h *q5k_mm_fast_pipeline;
+    struct metal_function_h *pq2_n4_function;
+    struct metal_pipeline_h *pq2_n4_pipeline;
+    struct metal_function_h *pq2_mm_function;
+    struct metal_pipeline_h *pq2_mm_pipeline;
+    struct metal_function_h *pq2_mm_fast_function;
+    struct metal_pipeline_h *pq2_mm_fast_pipeline;
+    struct metal_function_h *pq2_m8_function;
+    struct metal_pipeline_h *pq2_m8_pipeline;
     /* #401: 2- and 3-row matvecs (matvec_*_r2 / _r3) */
-    void *q40_r2_function;
-    void *q40_r2_pipeline;
-    void *q40_r3_function;
-    void *q40_r3_pipeline;
-    void *q41_r2_function;
-    void *q41_r2_pipeline;
-    void *q41_r3_function;
-    void *q41_r3_pipeline;
-    void *q80_r2_function;
-    void *q80_r2_pipeline;
-    void *q80_r3_function;
-    void *q80_r3_pipeline;
-    void *q5k_r2_function;
-    void *q5k_r2_pipeline;
-    void *q5k_r3_function;
-    void *q5k_r3_pipeline;
+    struct metal_function_h *q40_r2_function;
+    struct metal_pipeline_h *q40_r2_pipeline;
+    struct metal_function_h *q40_r3_function;
+    struct metal_pipeline_h *q40_r3_pipeline;
+    struct metal_function_h *q41_r2_function;
+    struct metal_pipeline_h *q41_r2_pipeline;
+    struct metal_function_h *q41_r3_function;
+    struct metal_pipeline_h *q41_r3_pipeline;
+    struct metal_function_h *q80_r2_function;
+    struct metal_pipeline_h *q80_r2_pipeline;
+    struct metal_function_h *q80_r3_function;
+    struct metal_pipeline_h *q80_r3_pipeline;
+    struct metal_function_h *q5k_r2_function;
+    struct metal_pipeline_h *q5k_r2_pipeline;
+    struct metal_function_h *q5k_r3_function;
+    struct metal_pipeline_h *q5k_r3_pipeline;
     /* x -> f16 for pq2_mm_fast (cvt_f32_f16_rows), into pq2_xh_buffer:
      * grow-only, rows x n_in halves of the widest call so far. */
-    void                *cvt_f16_function;
-    void                *cvt_f16_pipeline;
-    void                *cvt_kmaj_function;
-    void                *cvt_kmaj_pipeline;
-    struct geist_buffer *pq2_xh_buffer;
+    struct metal_function_h *cvt_f16_function;
+    struct metal_pipeline_h *cvt_f16_pipeline;
+    struct metal_function_h *cvt_kmaj_function;
+    struct metal_pipeline_h *cvt_kmaj_pipeline;
+    struct geist_buffer     *pq2_xh_buffer;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -263,298 +283,299 @@ struct metal_state {
          * metal_tuning_resolve. */
         bool resolved;
     } tuning;
-    void *pq2_n8_function;
-    void *pq2_n8_pipeline;
-    void *iq4nl_n4_function;
-    void *iq4nl_n4_pipeline;
-    void *iq4nl_mm_function;
-    void *iq4nl_mm_pipeline;
-    void *mx4_n4_function;
-    void *mx4_n4_pipeline;
-    void *mx4_mm_function;
-    void *mx4_mm_pipeline;
-    void *iq4xs_n4_function;
-    void *iq4xs_n4_pipeline;
-    void *iq4xs_mm_function;
-    void *iq4xs_mm_pipeline;
-    void *q3k_n4_function;
-    void *q3k_n4_pipeline;
-    void *q3k_mm_function;
-    void *q3k_mm_pipeline;
-    void *tq2_n4_function;
-    void *tq2_n4_pipeline;
-    void *tq2_mm_function;
-    void *tq2_mm_pipeline;
-    void *i2s_n4_function;
-    void *i2s_n4_pipeline;
-    void *i2s_mm_function;
-    void *i2s_mm_pipeline;
-    void *iq3s_n4_function;
-    void *iq3s_n4_pipeline;
-    void *iq3s_mm_function;
-    void *iq3s_mm_pipeline;
-    void *iq4xs_mm_fast_function;
-    void *iq4xs_mm_fast_pipeline;
-    void *q4k_n4_function;
-    void *q4k_n4_pipeline;
-    void *q4k_h_function;
-    void *q4k_m8_function;
-    void *q4k_h_pipeline;
-    void *q4k_m8_pipeline; /* #316: matvec_q4k_n4 over 2..8 rows */
-    void *q4k_matmul_m8_function;
-    void *q4k_matmul_m8_pipeline;
-    void *q4k_m16_library;
-    void *q4k_matmul_m16_function;
-    void *q4k_matmul_m16_pipeline;
-    void *q4k_mm_sg_library;
-    void *q4k_mm_sg_function;
-    void *q4k_mm_sg_pipeline;
-    void *q4k_mm_sg_fast_library;
-    void *q4k_mm_sg_fast_function;
-    void *q4k_mm_sg_fast_pipeline;
-    void *q6k_mm32_library; /* matmul_q6k_mm_sg_fast (#17) */
-    void *q6k_mm32_function;
-    void *q6k_mm32_pipeline;
+    struct metal_function_h *pq2_n8_function;
+    struct metal_pipeline_h *pq2_n8_pipeline;
+    struct metal_function_h *iq4nl_n4_function;
+    struct metal_pipeline_h *iq4nl_n4_pipeline;
+    struct metal_function_h *iq4nl_mm_function;
+    struct metal_pipeline_h *iq4nl_mm_pipeline;
+    struct metal_function_h *mx4_n4_function;
+    struct metal_pipeline_h *mx4_n4_pipeline;
+    struct metal_function_h *mx4_mm_function;
+    struct metal_pipeline_h *mx4_mm_pipeline;
+    struct metal_function_h *iq4xs_n4_function;
+    struct metal_pipeline_h *iq4xs_n4_pipeline;
+    struct metal_function_h *iq4xs_mm_function;
+    struct metal_pipeline_h *iq4xs_mm_pipeline;
+    struct metal_function_h *q3k_n4_function;
+    struct metal_pipeline_h *q3k_n4_pipeline;
+    struct metal_function_h *q3k_mm_function;
+    struct metal_pipeline_h *q3k_mm_pipeline;
+    struct metal_function_h *tq2_n4_function;
+    struct metal_pipeline_h *tq2_n4_pipeline;
+    struct metal_function_h *tq2_mm_function;
+    struct metal_pipeline_h *tq2_mm_pipeline;
+    struct metal_function_h *i2s_n4_function;
+    struct metal_pipeline_h *i2s_n4_pipeline;
+    struct metal_function_h *i2s_mm_function;
+    struct metal_pipeline_h *i2s_mm_pipeline;
+    struct metal_function_h *iq3s_n4_function;
+    struct metal_pipeline_h *iq3s_n4_pipeline;
+    struct metal_function_h *iq3s_mm_function;
+    struct metal_pipeline_h *iq3s_mm_pipeline;
+    struct metal_function_h *iq4xs_mm_fast_function;
+    struct metal_pipeline_h *iq4xs_mm_fast_pipeline;
+    struct metal_function_h *q4k_n4_function;
+    struct metal_pipeline_h *q4k_n4_pipeline;
+    struct metal_function_h *q4k_h_function;
+    struct metal_function_h *q4k_m8_function;
+    struct metal_pipeline_h *q4k_h_pipeline;
+    struct metal_pipeline_h *q4k_m8_pipeline; /* #316: matvec_q4k_n4 over 2..8 rows */
+    struct metal_function_h *q4k_matmul_m8_function;
+    struct metal_pipeline_h *q4k_matmul_m8_pipeline;
+    struct metal_library_h  *q4k_m16_library;
+    struct metal_function_h *q4k_matmul_m16_function;
+    struct metal_pipeline_h *q4k_matmul_m16_pipeline;
+    struct metal_library_h  *q4k_mm_sg_library;
+    struct metal_function_h *q4k_mm_sg_function;
+    struct metal_pipeline_h *q4k_mm_sg_pipeline;
+    struct metal_library_h  *q4k_mm_sg_fast_library;
+    struct metal_function_h *q4k_mm_sg_fast_function;
+    struct metal_pipeline_h *q4k_mm_sg_fast_pipeline;
+    struct metal_library_h  *q6k_mm32_library; /* matmul_q6k_mm_sg_fast (#17) */
+    struct metal_function_h *q6k_mm32_function;
+    struct metal_pipeline_h *q6k_mm32_pipeline;
     /* Tensor-API GEMMs (#314, metal_mm_tc_*): built only when tensor_mm. */
-    void *mm_tc_library;
-    void *q4k_mm_tc_function;
-    void *q4k_mm_tc_pipeline;
-    void *q6k_mm_tc_function;
-    void *q6k_mm_tc_pipeline;
-    void *q40_mm_tc_function;
-    void *q40_mm_tc_pipeline;
-    void *q80_mm_tc_function;
-    void *q80_mm_tc_pipeline;
-    void *q41_mm_tc_function;
-    void *q41_mm_tc_pipeline;
-    void *q5k_mm_tc_function;
-    void *q5k_mm_tc_pipeline;
-    void *iq4nl_mm_tc_function;
-    void *iq4nl_mm_tc_pipeline;
-    void *iq4xs_mm_tc_function;
-    void *iq4xs_mm_tc_pipeline;
-    void *q3k_mm_tc_function;
-    void *q3k_mm_tc_pipeline;
-    void *iq3s_mm_tc_function;
-    void *iq3s_mm_tc_pipeline;
-    void *pq2_mm_tc_function;
-    void *pq2_mm_tc_pipeline;
+    struct metal_library_h  *mm_tc_library;
+    struct metal_function_h *q4k_mm_tc_function;
+    struct metal_pipeline_h *q4k_mm_tc_pipeline;
+    struct metal_function_h *q6k_mm_tc_function;
+    struct metal_pipeline_h *q6k_mm_tc_pipeline;
+    struct metal_function_h *q40_mm_tc_function;
+    struct metal_pipeline_h *q40_mm_tc_pipeline;
+    struct metal_function_h *q80_mm_tc_function;
+    struct metal_pipeline_h *q80_mm_tc_pipeline;
+    struct metal_function_h *q41_mm_tc_function;
+    struct metal_pipeline_h *q41_mm_tc_pipeline;
+    struct metal_function_h *q5k_mm_tc_function;
+    struct metal_pipeline_h *q5k_mm_tc_pipeline;
+    struct metal_function_h *iq4nl_mm_tc_function;
+    struct metal_pipeline_h *iq4nl_mm_tc_pipeline;
+    struct metal_function_h *iq4xs_mm_tc_function;
+    struct metal_pipeline_h *iq4xs_mm_tc_pipeline;
+    struct metal_function_h *q3k_mm_tc_function;
+    struct metal_pipeline_h *q3k_mm_tc_pipeline;
+    struct metal_function_h *iq3s_mm_tc_function;
+    struct metal_pipeline_h *iq3s_mm_tc_pipeline;
+    struct metal_function_h *pq2_mm_tc_function;
+    struct metal_pipeline_h *pq2_mm_tc_pipeline;
     /* Tensor-API prefill flash (#314), head_dim HD in slot HD/64 - 1
      * (64, 128, 256, 512 built); built only when tensor_mm. */
-    void *attn_tc_library;
-    void *attention_flash_tc_function[8];
-    void *attention_flash_tc_pipeline[8];
-    void *q4k_gate_up_n4_library;
-    void *q4k_pair_n4_library;
-    void *q4k_pair_n4_function;
-    void *q4k_pair_n4_pipeline;
+    struct metal_library_h  *attn_tc_library;
+    struct metal_function_h *attention_flash_tc_function[8];
+    struct metal_pipeline_h *attention_flash_tc_pipeline[8];
+    struct metal_library_h  *q4k_gate_up_n4_library;
+    struct metal_library_h  *q4k_pair_n4_library;
+    struct metal_function_h *q4k_pair_n4_function;
+    struct metal_pipeline_h *q4k_pair_n4_pipeline;
     /* gate_up_silu_q4k_n4 and the Q8_0 gate/up kernels live in
      * q4k_gate_up_n4_library (#17). */
-    void *q4k_gate_up_silu_n4_function;
-    void *q4k_gate_up_silu_n4_pipeline;
-    void *q80_gate_up_n4_function;
-    void *q80_gate_up_n4_pipeline;
-    void *q80_gate_up_silu_n4_function;
-    void *q80_gate_up_silu_n4_pipeline;
+    struct metal_function_h *q4k_gate_up_silu_n4_function;
+    struct metal_pipeline_h *q4k_gate_up_silu_n4_pipeline;
+    struct metal_function_h *q80_gate_up_n4_function;
+    struct metal_pipeline_h *q80_gate_up_n4_pipeline;
+    struct metal_function_h *q80_gate_up_silu_n4_function;
+    struct metal_pipeline_h *q80_gate_up_silu_n4_pipeline;
     /* q/k/v decode matvecs in one dispatch, one kernel per dtype triple (#17) */
-    void *mv3_library;
-    void *mv3_q4k_q4k_q4k_function;
-    void *mv3_q4k_q4k_q4k_pipeline;
-    void *mv3_q4k_q4k_q6k_function;
-    void *mv3_q4k_q4k_q6k_pipeline;
-    void *mv3_q80_q80_q80_function;
-    void *mv3_q80_q80_q80_pipeline;
-    void *mv3_q4k_h_q4k_q4k_function;
-    void *mv3_q4k_h_q4k_q4k_pipeline;
-    void *mv3_q4k_h_q4k_q6k_function;
-    void *mv3_q4k_h_q4k_q6k_pipeline;
-    void *embed_library;
-    void *argmax_library;
-    void *moe_library; /* #201: routing and id-indexed expert matvecs */
-    void *hadamard_library;
-    void *hadamard_function;
-    void *hadamard_pipeline;
-    void *hadamard4_function; /* hadamard_rows4: blocks of 128..4096 */
-    void *hadamard4_pipeline;
-    void *q4k_gate_up_n4_function;
-    void *q4k_gate_up_n4_pipeline;
-    void *q4k_gate_up_h_function;
-    void *q4k_gate_up_h_pipeline;
-    void *q4k_gate_up_silu_h_function;
-    void *q4k_gate_up_silu_h_pipeline;
-    void *q6k_function;
-    void *q6k_pipeline;
-    void *q6k_n4_function;
-    void *q6k_m8_function;
-    void *q6k_n4_pipeline;
-    void *q6k_m8_pipeline; /* #316: matvec_q6k_n4 over 2..8 rows */
-    void *q6k_mm_sg_library;
-    void *q6k_matmul_sg_function;
-    void *q6k_matmul_sg_pipeline;
-    void *q6k_mm_sg_fast_library;
-    void *q6k_matmul_sg_fast_function;
-    void *q6k_matmul_sg_fast_pipeline;
-    void *rmsnorm_rows_simd_function;
-    void *rmsnorm_rows_simd_pipeline;
-    void *gelu_rows_function;
-    void *gelu_rows_pipeline;
-    void *silu_rows_function;
-    void *silu_rows_pipeline;
-    void *relu2_rows_function;
-    void *relu2_rows_pipeline;
-    void *silu_mul_rows_function;
-    void *silu_mul_rows_pipeline;
-    void *deltanet_mix_function;
-    void *deltanet_mix_pipeline;
-    void *dn_dec_qk_function;
-    void *dn_dec_qk_pipeline;
-    void *dn_dec_v_function;
-    void *dn_dec_v_pipeline;
-    void *dn_dec_v_rows_function;
-    void *dn_dec_v_rows_pipeline;
-    void *dn_dec_qk_b_function; /* #26: several sessions' decode rows */
-    void *dn_dec_qk_b_pipeline;
-    void *dn_dec_v_b_function;
-    void *dn_dec_v_b_pipeline;
-    void *dnf_cst_copy_function;
-    void *dnf_cst_copy_pipeline;
-    void *dnf_conv_function;
-    void *dnf_conv_pipeline;
-    void *dnf_norm_function;
-    void *dnf_norm_pipeline;
-    void *dnf_roll_function;
-    void *dnf_roll_pipeline;
-    void *dnf_chunk_function;
-    void *dnf_chunk_pipeline;
-    void *dnf_state_function;
-    void *dnf_state_pipeline;
-    void *dnf_out_function;
-    void *dnf_out_pipeline;
+    struct metal_library_h  *mv3_library;
+    struct metal_function_h *mv3_q4k_q4k_q4k_function;
+    struct metal_pipeline_h *mv3_q4k_q4k_q4k_pipeline;
+    struct metal_function_h *mv3_q4k_q4k_q6k_function;
+    struct metal_pipeline_h *mv3_q4k_q4k_q6k_pipeline;
+    struct metal_function_h *mv3_q80_q80_q80_function;
+    struct metal_pipeline_h *mv3_q80_q80_q80_pipeline;
+    struct metal_function_h *mv3_q4k_h_q4k_q4k_function;
+    struct metal_pipeline_h *mv3_q4k_h_q4k_q4k_pipeline;
+    struct metal_function_h *mv3_q4k_h_q4k_q6k_function;
+    struct metal_pipeline_h *mv3_q4k_h_q4k_q6k_pipeline;
+    struct metal_library_h  *embed_library;
+    struct metal_library_h  *argmax_library;
+    struct metal_library_h  *moe_library; /* #201: routing and id-indexed expert matvecs */
+    struct metal_library_h  *hadamard_library;
+    struct metal_function_h *hadamard_function;
+    struct metal_pipeline_h *hadamard_pipeline;
+    struct metal_function_h *hadamard4_function; /* hadamard_rows4: blocks of 128..4096 */
+    struct metal_pipeline_h *hadamard4_pipeline;
+    struct metal_function_h *q4k_gate_up_n4_function;
+    struct metal_pipeline_h *q4k_gate_up_n4_pipeline;
+    struct metal_function_h *q4k_gate_up_h_function;
+    struct metal_pipeline_h *q4k_gate_up_h_pipeline;
+    struct metal_function_h *q4k_gate_up_silu_h_function;
+    struct metal_pipeline_h *q4k_gate_up_silu_h_pipeline;
+    struct metal_function_h *q6k_function;
+    struct metal_pipeline_h *q6k_pipeline;
+    struct metal_function_h *q6k_n4_function;
+    struct metal_function_h *q6k_m8_function;
+    struct metal_pipeline_h *q6k_n4_pipeline;
+    struct metal_pipeline_h *q6k_m8_pipeline; /* #316: matvec_q6k_n4 over 2..8 rows */
+    struct metal_library_h  *q6k_mm_sg_library;
+    struct metal_function_h *q6k_matmul_sg_function;
+    struct metal_pipeline_h *q6k_matmul_sg_pipeline;
+    struct metal_library_h  *q6k_mm_sg_fast_library;
+    struct metal_function_h *q6k_matmul_sg_fast_function;
+    struct metal_pipeline_h *q6k_matmul_sg_fast_pipeline;
+    struct metal_function_h *rmsnorm_rows_simd_function;
+    struct metal_pipeline_h *rmsnorm_rows_simd_pipeline;
+    struct metal_function_h *gelu_rows_function;
+    struct metal_pipeline_h *gelu_rows_pipeline;
+    struct metal_function_h *silu_rows_function;
+    struct metal_pipeline_h *silu_rows_pipeline;
+    struct metal_function_h *relu2_rows_function;
+    struct metal_pipeline_h *relu2_rows_pipeline;
+    struct metal_function_h *silu_mul_rows_function;
+    struct metal_pipeline_h *silu_mul_rows_pipeline;
+    struct metal_function_h *deltanet_mix_function;
+    struct metal_pipeline_h *deltanet_mix_pipeline;
+    struct metal_function_h *dn_dec_qk_function;
+    struct metal_pipeline_h *dn_dec_qk_pipeline;
+    struct metal_function_h *dn_dec_v_function;
+    struct metal_pipeline_h *dn_dec_v_pipeline;
+    struct metal_function_h *dn_dec_v_rows_function;
+    struct metal_pipeline_h *dn_dec_v_rows_pipeline;
+    struct metal_function_h *dn_dec_qk_b_function; /* #26: several sessions' decode rows */
+    struct metal_pipeline_h *dn_dec_qk_b_pipeline;
+    struct metal_function_h *dn_dec_v_b_function;
+    struct metal_pipeline_h *dn_dec_v_b_pipeline;
+    struct metal_function_h *dnf_cst_copy_function;
+    struct metal_pipeline_h *dnf_cst_copy_pipeline;
+    struct metal_function_h *dnf_conv_function;
+    struct metal_pipeline_h *dnf_conv_pipeline;
+    struct metal_function_h *dnf_norm_function;
+    struct metal_pipeline_h *dnf_norm_pipeline;
+    struct metal_function_h *dnf_roll_function;
+    struct metal_pipeline_h *dnf_roll_pipeline;
+    struct metal_function_h *dnf_chunk_function;
+    struct metal_pipeline_h *dnf_chunk_pipeline;
+    struct metal_function_h *dnf_state_function;
+    struct metal_pipeline_h *dnf_state_pipeline;
+    struct metal_function_h *dnf_out_function;
+    struct metal_pipeline_h *dnf_out_pipeline;
     /* Grow-only private MTLBuffer scratch for the chunked DeltaNet
      * prefill (raw handle, argmax_result_buffer pattern). */
-    void    *dn_scratch;
-    size_t   dn_scratch_bytes;
-    void    *qgate_split_function;
-    void    *qgate_split_pipeline;
-    void    *sigmoid_mul_function;
-    void    *sigmoid_mul_pipeline;
-    void    *mul_rows_function;
-    void    *mul_rows_pipeline;
-    void    *gelu_mul_rows_function;
-    void    *gelu_mul_rows_pipeline;
-    void    *add_rows_function;
-    void    *add_rows_pipeline;
-    void    *scale_rows_function;
-    void    *scale_rows_pipeline;
-    void    *rmsnorm_add_rows_simd_function;
-    void    *rmsnorm_add_rows_simd_pipeline;
-    void    *rmsnorm_add_norm_rows_simd_function;
-    void    *rmsnorm_add_norm_rows_simd_pipeline;
-    void    *embed_lookup_scaled_function;
-    void    *embed_lookup_scaled_pipeline;
-    void    *embed_lookup_scaled_rows_function;
-    void    *embed_lookup_scaled_rows_pipeline;
-    void    *f32_library;
-    void    *f16w_matmul_function;
-    void    *f16w_matmul_pipeline;
-    void    *f16w_matmul_sg_function;
-    void    *f16w_matmul_sg_pipeline;
-    void    *bf16w_matmul_function;
-    void    *bf16w_matmul_pipeline;
-    void    *bf16w_matmul_sg_function;
-    void    *bf16w_matmul_sg_pipeline;
-    void    *f32_matmul_function;
-    void    *f32_matmul_pipeline;
-    void    *f32_matmul_sg_function;
-    void    *f32_matmul_sg_pipeline;
-    void    *f32_matmul_mm_function;
-    void    *f32_matmul_mm_pipeline;
-    void    *f32_ple_gate_function;
-    void    *f32_ple_gate_pipeline;
-    void    *f32_ple_gate_sg_function; /* decode, a simdgroup per row (#196) */
-    void    *f32_ple_gate_sg_pipeline;
-    void    *f32_matvec_rows_function;
-    void    *f32_matvec_rows_pipeline;
-    void    *f32_ple_proj_norm_function;
-    void    *f32_ple_proj_norm_pipeline;
-    void    *argmax_batch_function;
-    void    *argmax_batch_pipeline;
-    void    *argmax_part_function;
-    void    *argmax_part_pipeline;
-    void    *argmax_merge_function;
-    void    *argmax_merge_pipeline;
-    void    *moe_topk_function;
-    void    *moe_topk_pipeline;
-    void    *moe_mv_q4k_function;
-    void    *moe_mv_q4k_pipeline;
-    void    *moe_mv_q6k_function;
-    void    *moe_mv_q6k_pipeline;
-    void    *moe_mv_q80_function;
-    void    *moe_mv_q80_pipeline;
-    void    *moe_mv_f32_function;
-    void    *moe_mv_f32_pipeline;
-    void    *moe_wsum_function;
-    void    *moe_wsum_pipeline;
-    void    *argmax_result_buffer;
-    void    *argmax_result_mapped;
-    uint32_t argmax_result_capacity;
-    void    *argmax_part_buffer; /* METAL_ARGMAX_PARTS (value, index) pairs, GPU only */
-    void    *rope_rows_function;
-    void    *rope_rows_pipeline;
-    void    *kv_append_rows_function;
-    void    *kv_append_rows_pipeline;
-    void    *copy_u32_function;
-    void    *copy_u32_pipeline;
-    void    *kv_append_rows_f16_function;
-    void    *kv_append_rows_f16_pipeline;
-    void    *q_norm_rope_rows_function;
-    void    *q_norm_rope_rows_pipeline;
-    void    *k_norm_rope_append_rows_function;
-    void    *k_norm_rope_append_rows_pipeline;
-    void    *k_norm_rope_append_rows_f16_function;
-    void    *k_norm_rope_append_rows_f16_pipeline;
-    void    *v_norm_append_rows_function;
-    void    *v_norm_append_rows_pipeline;
-    void    *v_norm_append_rows_f16_function;
-    void    *v_norm_append_rows_f16_pipeline;
-    void    *kv_norm_append_rows_function;
-    void    *kv_norm_append_rows_pipeline;
-    void    *kv_norm_append_rows_f16_function;
-    void    *kv_norm_append_rows_f16_pipeline;
-    void    *rope_append_rows_function;
-    void    *rope_append_rows_pipeline;
-    void    *rope_append_rows_f16_function;
-    void    *rope_append_rows_f16_pipeline;
-    void    *attention_rows_function;
-    void    *attention_rows_pipeline;
-    void    *attention_rows_f16_function;
-    void    *attention_rows_f16_pipeline;
+    struct metal_buffer_h   *dn_scratch;
+    size_t                   dn_scratch_bytes;
+    struct metal_function_h *qgate_split_function;
+    struct metal_pipeline_h *qgate_split_pipeline;
+    struct metal_function_h *sigmoid_mul_function;
+    struct metal_pipeline_h *sigmoid_mul_pipeline;
+    struct metal_function_h *mul_rows_function;
+    struct metal_pipeline_h *mul_rows_pipeline;
+    struct metal_function_h *gelu_mul_rows_function;
+    struct metal_pipeline_h *gelu_mul_rows_pipeline;
+    struct metal_function_h *add_rows_function;
+    struct metal_pipeline_h *add_rows_pipeline;
+    struct metal_function_h *scale_rows_function;
+    struct metal_pipeline_h *scale_rows_pipeline;
+    struct metal_function_h *rmsnorm_add_rows_simd_function;
+    struct metal_pipeline_h *rmsnorm_add_rows_simd_pipeline;
+    struct metal_function_h *rmsnorm_add_norm_rows_simd_function;
+    struct metal_pipeline_h *rmsnorm_add_norm_rows_simd_pipeline;
+    struct metal_function_h *embed_lookup_scaled_function;
+    struct metal_pipeline_h *embed_lookup_scaled_pipeline;
+    struct metal_function_h *embed_lookup_scaled_rows_function;
+    struct metal_pipeline_h *embed_lookup_scaled_rows_pipeline;
+    struct metal_library_h  *f32_library;
+    struct metal_function_h *f16w_matmul_function;
+    struct metal_pipeline_h *f16w_matmul_pipeline;
+    struct metal_function_h *f16w_matmul_sg_function;
+    struct metal_pipeline_h *f16w_matmul_sg_pipeline;
+    struct metal_function_h *bf16w_matmul_function;
+    struct metal_pipeline_h *bf16w_matmul_pipeline;
+    struct metal_function_h *bf16w_matmul_sg_function;
+    struct metal_pipeline_h *bf16w_matmul_sg_pipeline;
+    struct metal_function_h *f32_matmul_function;
+    struct metal_pipeline_h *f32_matmul_pipeline;
+    struct metal_function_h *f32_matmul_sg_function;
+    struct metal_pipeline_h *f32_matmul_sg_pipeline;
+    struct metal_function_h *f32_matmul_mm_function;
+    struct metal_pipeline_h *f32_matmul_mm_pipeline;
+    struct metal_function_h *f32_ple_gate_function;
+    struct metal_pipeline_h *f32_ple_gate_pipeline;
+    struct metal_function_h *f32_ple_gate_sg_function; /* decode, a simdgroup per row (#196) */
+    struct metal_pipeline_h *f32_ple_gate_sg_pipeline;
+    struct metal_function_h *f32_matvec_rows_function;
+    struct metal_pipeline_h *f32_matvec_rows_pipeline;
+    struct metal_function_h *f32_ple_proj_norm_function;
+    struct metal_pipeline_h *f32_ple_proj_norm_pipeline;
+    struct metal_function_h *argmax_batch_function;
+    struct metal_pipeline_h *argmax_batch_pipeline;
+    struct metal_function_h *argmax_part_function;
+    struct metal_pipeline_h *argmax_part_pipeline;
+    struct metal_function_h *argmax_merge_function;
+    struct metal_pipeline_h *argmax_merge_pipeline;
+    struct metal_function_h *moe_topk_function;
+    struct metal_pipeline_h *moe_topk_pipeline;
+    struct metal_function_h *moe_mv_q4k_function;
+    struct metal_pipeline_h *moe_mv_q4k_pipeline;
+    struct metal_function_h *moe_mv_q6k_function;
+    struct metal_pipeline_h *moe_mv_q6k_pipeline;
+    struct metal_function_h *moe_mv_q80_function;
+    struct metal_pipeline_h *moe_mv_q80_pipeline;
+    struct metal_function_h *moe_mv_f32_function;
+    struct metal_pipeline_h *moe_mv_f32_pipeline;
+    struct metal_function_h *moe_wsum_function;
+    struct metal_pipeline_h *moe_wsum_pipeline;
+    struct metal_buffer_h   *argmax_result_buffer;
+    void                    *argmax_result_mapped;
+    uint32_t                 argmax_result_capacity;
+    struct metal_buffer_h
+            *argmax_part_buffer; /* METAL_ARGMAX_PARTS (value, index) pairs, GPU only */
+    struct metal_function_h *rope_rows_function;
+    struct metal_pipeline_h *rope_rows_pipeline;
+    struct metal_function_h *kv_append_rows_function;
+    struct metal_pipeline_h *kv_append_rows_pipeline;
+    struct metal_function_h *copy_u32_function;
+    struct metal_pipeline_h *copy_u32_pipeline;
+    struct metal_function_h *kv_append_rows_f16_function;
+    struct metal_pipeline_h *kv_append_rows_f16_pipeline;
+    struct metal_function_h *q_norm_rope_rows_function;
+    struct metal_pipeline_h *q_norm_rope_rows_pipeline;
+    struct metal_function_h *k_norm_rope_append_rows_function;
+    struct metal_pipeline_h *k_norm_rope_append_rows_pipeline;
+    struct metal_function_h *k_norm_rope_append_rows_f16_function;
+    struct metal_pipeline_h *k_norm_rope_append_rows_f16_pipeline;
+    struct metal_function_h *v_norm_append_rows_function;
+    struct metal_pipeline_h *v_norm_append_rows_pipeline;
+    struct metal_function_h *v_norm_append_rows_f16_function;
+    struct metal_pipeline_h *v_norm_append_rows_f16_pipeline;
+    struct metal_function_h *kv_norm_append_rows_function;
+    struct metal_pipeline_h *kv_norm_append_rows_pipeline;
+    struct metal_function_h *kv_norm_append_rows_f16_function;
+    struct metal_pipeline_h *kv_norm_append_rows_f16_pipeline;
+    struct metal_function_h *rope_append_rows_function;
+    struct metal_pipeline_h *rope_append_rows_pipeline;
+    struct metal_function_h *rope_append_rows_f16_function;
+    struct metal_pipeline_h *rope_append_rows_f16_pipeline;
+    struct metal_function_h *attention_rows_function;
+    struct metal_pipeline_h *attention_rows_pipeline;
+    struct metal_function_h *attention_rows_f16_function;
+    struct metal_pipeline_h *attention_rows_f16_pipeline;
     /* Attention with sink logits (#243): F32 and F16 caches. */
-    void *attn_sinks_library;
-    void *attention_sinks_f32_function;
-    void *attention_sinks_f32_pipeline;
-    void *attention_sinks_f16_function;
-    void *attention_sinks_f16_pipeline;
-    void *attn_qnorm_dec_f16_library;
-    void *attention_qnorm_dec_f16_function;
-    void *attention_qnorm_dec_f16_pipeline;
-    void *attention_dec_f16_function;
-    void *attention_dec_f16_pipeline;
-    void *attention_dec512_f16_function;
-    void *attention_dec512_f16_pipeline;
-    void *attn_dec512_f16_library;
+    struct metal_library_h  *attn_sinks_library;
+    struct metal_function_h *attention_sinks_f32_function;
+    struct metal_pipeline_h *attention_sinks_f32_pipeline;
+    struct metal_function_h *attention_sinks_f16_function;
+    struct metal_pipeline_h *attention_sinks_f16_pipeline;
+    struct metal_library_h  *attn_qnorm_dec_f16_library;
+    struct metal_function_h *attention_qnorm_dec_f16_function;
+    struct metal_pipeline_h *attention_qnorm_dec_f16_pipeline;
+    struct metal_function_h *attention_dec_f16_function;
+    struct metal_pipeline_h *attention_dec_f16_pipeline;
+    struct metal_function_h *attention_dec512_f16_function;
+    struct metal_pipeline_h *attention_dec512_f16_pipeline;
+    struct metal_library_h  *attn_dec512_f16_library;
     /* The prefill flash kernels (#91), one per head_dim: slot hd/32 - 1
      * holds head_dim hd (multiples of 32 up to 256, of 64 up to 512; the
      * other slots stay nullptr). See metal_flash_pipeline. */
-    void *attn_flash_library;
-    void *attention_flash_function[METAL_FLASH_SLOTS];
-    void *attention_flash_pipeline[METAL_FLASH_SLOTS];
+    struct metal_library_h  *attn_flash_library;
+    struct metal_function_h *attention_flash_function[METAL_FLASH_SLOTS];
+    struct metal_pipeline_h *attention_flash_pipeline[METAL_FLASH_SLOTS];
     /* The split-KV decode kernels on an F32 KV cache (#64). */
-    void *attn_dec_f32kv_library;
-    void *attention_dec_f32kv_function;
-    void *attention_dec_f32kv_pipeline;
-    void *attention_dec512_f32kv_function;
-    void *attention_dec512_f32kv_pipeline;
+    struct metal_library_h  *attn_dec_f32kv_library;
+    struct metal_function_h *attention_dec_f32kv_function;
+    struct metal_pipeline_h *attention_dec_f32kv_pipeline;
+    struct metal_function_h *attention_dec512_f32kv_function;
+    struct metal_pipeline_h *attention_dec512_f32kv_pipeline;
     /* persistent f32->f16 K/V staging for the plain flash (prefill)
      * path on an F32 KV cache; decode reads the F32 cache directly. */
     struct geist_buffer *attn_kf16_buffer;
@@ -562,26 +583,26 @@ struct metal_state {
     /* The 32-key-block split-KV decode kernels (#17), F16 and F32 KV, in
      * the prefill flash kernels' head_dim slots (64, 128, 256 and 512
      * built; see metal_decv_pipeline). */
-    void *attn_decv_library;
-    void *attention_decv_f16_function[METAL_FLASH_SLOTS];
-    void *attention_decv_f16_pipeline[METAL_FLASH_SLOTS];
-    void *attention_decv_f32kv_function[METAL_FLASH_SLOTS];
-    void *attention_decv_f32kv_pipeline[METAL_FLASH_SLOTS];
+    struct metal_library_h  *attn_decv_library;
+    struct metal_function_h *attention_decv_f16_function[METAL_FLASH_SLOTS];
+    struct metal_pipeline_h *attention_decv_f16_pipeline[METAL_FLASH_SLOTS];
+    struct metal_function_h *attention_decv_f32kv_function[METAL_FLASH_SLOTS];
+    struct metal_pipeline_h *attention_decv_f32kv_pipeline[METAL_FLASH_SLOTS];
     /* attention_decq (#196): 128-thread blocks, head_dim 128/256/512. */
-    void                *attention_decq_f16_function[METAL_FLASH_SLOTS];
-    void                *attention_decq_f16_pipeline[METAL_FLASH_SLOTS];
-    void                *attention_decq_f32kv_function[METAL_FLASH_SLOTS];
-    void                *attention_decq_f32kv_pipeline[METAL_FLASH_SLOTS];
-    void                *attn_dec_combine_library;
-    void                *attention_dec_combine_function;
-    void                *attention_dec_combine_pipeline;
-    struct geist_buffer *attn_dec_partials_buffer;
-    void                *sequence_command_buffer;
-    void                *sequence_compute_encoder;
-    void                *sequence_pool; /* autorelease pool, sequence begin..end */
-    void                *capture_manager;
-    bool                 capture_done;
-    int                  capture_skipped;
+    struct metal_function_h *attention_decq_f16_function[METAL_FLASH_SLOTS];
+    struct metal_pipeline_h *attention_decq_f16_pipeline[METAL_FLASH_SLOTS];
+    struct metal_function_h *attention_decq_f32kv_function[METAL_FLASH_SLOTS];
+    struct metal_pipeline_h *attention_decq_f32kv_pipeline[METAL_FLASH_SLOTS];
+    struct metal_library_h  *attn_dec_combine_library;
+    struct metal_function_h *attention_dec_combine_function;
+    struct metal_pipeline_h *attention_dec_combine_pipeline;
+    struct geist_buffer     *attn_dec_partials_buffer;
+    struct metal_cmdbuf_h   *sequence_command_buffer;
+    struct metal_encoder_h  *sequence_compute_encoder;
+    struct metal_pool_h     *sequence_pool; /* autorelease pool, sequence begin..end */
+    struct metal_capture_h  *capture_manager;
+    bool                     capture_done;
+    int                      capture_skipped;
     /* diag: GEIST_METAL_SEQ_TRACE=1 — per-sequence encode/GPU timing. */
     uint64_t seq_dispatch_count;
     /* Command-buffer pipelining (llama.cpp n_cb-style): the sequence
@@ -595,7 +616,7 @@ struct metal_state {
     uint32_t                         seq_rotate_prefill;
     uint32_t                         seq_disp_at_rotate;
     uint32_t                         seq_pending_count;
-    void                            *seq_pending_cmds[16];
+    struct metal_cmdbuf_h           *seq_pending_cmds[16];
     uint64_t                         seq_pending_mask[16]; /* profile: stages per buffer */
     uint64_t                         seq_cur_mask;         /* profile: stages so far */
     uint64_t                         seq_begin_ns;
@@ -614,13 +635,15 @@ struct metal_state {
     bool               sequence_has_work;
     bool               profile_enabled;
     /* Opt-in PQ2 candidates; compile and allocate only for an eligible call. */
-    bool                 pq2_lowp_shared_acc;
-    uint32_t             pq2_lowp_mode, pq2_lowp_tile, pq2_lowp_simdgroups;
-    void                *pq2_lowp_library;
-    void                *pq2_lowp_x_function, *pq2_lowp_x_pipeline;
-    void                *pq2_lowp_mm_function[6], *pq2_lowp_mm_pipeline[6];
-    struct geist_buffer *pq2_lowp_x;
-    uint64_t             pq2_lowp_quant_dispatches, pq2_lowp_mm_dispatches;
+    bool                     pq2_lowp_shared_acc;
+    uint32_t                 pq2_lowp_mode, pq2_lowp_tile, pq2_lowp_simdgroups;
+    struct metal_library_h  *pq2_lowp_library;
+    struct metal_function_h *pq2_lowp_x_function;
+    struct metal_pipeline_h *pq2_lowp_x_pipeline;
+    struct metal_function_h *pq2_lowp_mm_function[6];
+    struct metal_pipeline_h *pq2_lowp_mm_pipeline[6];
+    struct geist_buffer     *pq2_lowp_x;
+    uint64_t                 pq2_lowp_quant_dispatches, pq2_lowp_mm_dispatches;
     /* Prefill GEMMs on the tensor API (#314): the GPU has matrix units
      * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
@@ -651,17 +674,17 @@ struct metal_state {
      * res_dirty and res_thread commits it with its next request; a leave
      * commits at once, because the set keeps its members alive until then.
      * res_lock guards the set's calls and res_dirty against res_thread. */
-    void           *residency_set;
-    void           *res_bufs[8192];
-    size_t          res_count;
-    bool            res_dirty;
-    bool            res_stop;
-    atomic_bool     res_used;
-    atomic_bool     res_parked;
-    uint64_t        res_keep_s;
-    pthread_t       res_thread;
-    pthread_mutex_t res_lock;
-    pthread_cond_t  res_wake;
+    struct metal_residency_set_h *residency_set;
+    struct metal_buffer_h        *res_bufs[8192];
+    size_t                        res_count;
+    bool                          res_dirty;
+    bool                          res_stop;
+    atomic_bool                   res_used;
+    atomic_bool                   res_parked;
+    uint64_t                      res_keep_s;
+    pthread_t                     res_thread;
+    pthread_mutex_t               res_lock;
+    pthread_cond_t                res_wake;
 
     /* #531: the device's recommendedMaxWorkingSetSize, read once at create.
      * metal_budget_admit refuses an allocation past it unless
@@ -680,10 +703,10 @@ struct metal_state {
 };
 
 struct geist_buffer {
-    struct metal_state *owner;
-    void               *buffer;
-    void               *mapped;
-    size_t              bytes;
+    struct metal_state    *owner;
+    struct metal_buffer_h *buffer;
+    void                  *mapped;
+    size_t                 bytes;
     /* Where this buffer's bytes start inside `buffer`. Non-zero only for a
      * zero-copy alias: of the loader's mmap (#357), where the MTLBuffer
      * wraps the enclosing page range, or of another Metal buffer (#528),
@@ -1121,7 +1144,7 @@ void metal_residency_create(struct metal_state *st, uint64_t keep_alive_s);
 
 void metal_residency_destroy(struct metal_state *st);
 
-void metal_residency_forget(struct metal_state *st, void *mtl_buf);
+void metal_residency_forget(struct metal_state *st, struct metal_buffer_h *mtl_buf);
 
 /* tuning.c: fold an applied calibration blob into the crossovers, once,
  * at the first weight resolve -- the engine closes the apply window just
@@ -1221,7 +1244,7 @@ void metal_release_pipeline_tables(struct metal_state *st);
 
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);
 
-void *metal_sequence_encoder(struct metal_state *st);
+struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st);
 
 void metal_release_sequence_objects(struct metal_state *st);
 
@@ -1229,11 +1252,17 @@ void metal_seq_ref_clear(struct metal_state *st);
 
 /* Could the open batch touch bytes [off, off + n) of mtl_buf? n = SIZE_MAX
  * asks about the whole buffer. */
-bool metal_seq_references(struct metal_state *st, const void *mtl_buf, size_t off, size_t n);
+bool metal_seq_references(struct metal_state          *st,
+                          const struct metal_buffer_h *mtl_buf,
+                          size_t                       off,
+                          size_t                       n);
 
 void metal_batch_flush(struct metal_state *st);
 
-void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size_t off, size_t n);
+void metal_flush_if_referenced(struct metal_state          *st,
+                               const struct metal_buffer_h *mtl_buf,
+                               size_t                       off,
+                               size_t                       n);
 
 [[nodiscard]] enum geist_status metal_command_sequence_begin(struct geist_backend            *be,
                                                              enum geist_command_sequence_kind kind,
@@ -1259,7 +1288,9 @@ metal_profile_wait_stage_for_sequence(enum geist_command_sequence_kind kind);
 void metal_profile_print_summary(const struct metal_state *st);
 /* Profile: account a completed command buffer's GPU time to the stages it
  * carried. No-op unless GEIST_METAL_PROFILE is set. */
-void metal_profile_add_cmd_buffer(struct metal_state *st, void *cmd, uint64_t stage_mask);
+void metal_profile_add_cmd_buffer(struct metal_state    *st,
+                                  struct metal_cmdbuf_h *cmd,
+                                  uint64_t               stage_mask);
 
 void metal_capture_begin(struct metal_state *st, enum geist_command_sequence_kind kind);
 

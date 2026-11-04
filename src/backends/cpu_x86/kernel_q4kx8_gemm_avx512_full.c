@@ -36,8 +36,8 @@
 
 /* Load 16 fp16 values from two 8-fp16 sources into 16 fp32 in a __m512.
  * Mirrors GGML_F32Cx8x2_LOAD in llama.cpp's repack.cpp. */
-__attribute__((target(AVX512_TARGET))) static inline __m512 ggml_f32cx8x2_load(const uint16_t *x,
-                                                                               const uint16_t *y) {
+[[gnu::target(AVX512_TARGET)]] static inline __m512 ggml_f32cx8x2_load(const uint16_t *x,
+                                                                       const uint16_t *y) {
     return _mm512_cvtph_ps(_mm256_set_m128i(_mm_loadu_si128((const __m128i *) y),
                                             _mm_loadu_si128((const __m128i *) x)));
 }
@@ -48,7 +48,7 @@ __attribute__((target(AVX512_TARGET))) static inline __m512 ggml_f32cx8x2_load(c
  * dst (row stride N, in floats).
  *
  * Verbatim port of llama.cpp's 16x16 inner (repack.cpp:2090-2447). */
-__attribute__((target(AVX512_TARGET))) static void
+[[gnu::target(AVX512_TARGET)]] static void
 q4kx8_gemm16x16_tile_avx512(size_t                     nb,
                             const struct block_q4_Kx8 *b_ptr_0,
                             const struct block_q4_Kx8 *b_ptr_1,

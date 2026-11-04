@@ -34,7 +34,7 @@ struct mxfp4_rows_job {
 
 #if defined(__ARM_NEON)
 /* The 32 weights of block blk as int8: lo = elements 0..15, hi = 16..31. */
-static inline __attribute__((always_inline)) void
+[[gnu::always_inline]] static inline void
 mxfp4_block_s8(const struct block_mxfp4_t *blk, int8x16_t kv, int8x16_t *lo, int8x16_t *hi) {
     const uint8x16_t q = vld1q_u8(blk->qs);
     *lo                = vqtbl1q_s8(kv, vandq_u8(q, vdupq_n_u8(0x0f)));
@@ -42,16 +42,15 @@ mxfp4_block_s8(const struct block_mxfp4_t *blk, int8x16_t kv, int8x16_t *lo, int
 }
 
 /* A block's integer dot with 32 int8 activations, as 4 partial lanes. */
-static inline __attribute__((always_inline)) int32x4_t mxfp4_idot(int8x16_t     lo,
-                                                                  int8x16_t     hi,
-                                                                  const int8_t *x) {
+[[gnu::always_inline]] static inline int32x4_t
+mxfp4_idot(int8x16_t lo, int8x16_t hi, const int8_t *x) {
     return vdotq_s32(vdotq_s32(vdupq_n_s32(0), vld1q_s8(x), lo), vld1q_s8(x + 16), hi);
 }
 
 /* One block group's float factors: 2^(e - 128) of each of the 4 blocks
  * times its activation scale. */
-static inline __attribute__((always_inline)) float32x4_t
-mxfp4_scales4(const struct block_mxfp4_t *blk, const float *xs) {
+[[gnu::always_inline]] static inline float32x4_t mxfp4_scales4(const struct block_mxfp4_t *blk,
+                                                               const float                *xs) {
     const float sc[4] = {mxfp4_e8m0_half(blk[0].e) * xs[0],
                          mxfp4_e8m0_half(blk[1].e) * xs[1],
                          mxfp4_e8m0_half(blk[2].e) * xs[2],
@@ -60,10 +59,8 @@ mxfp4_scales4(const struct block_mxfp4_t *blk, const float *xs) {
 }
 
 /* The four blocks' integer sums [s0, s1, s2, s3] from their partials. */
-static inline __attribute__((always_inline)) int32x4_t mxfp4_sum4(int32x4_t d0,
-                                                                  int32x4_t d1,
-                                                                  int32x4_t d2,
-                                                                  int32x4_t d3) {
+[[gnu::always_inline]] static inline int32x4_t
+mxfp4_sum4(int32x4_t d0, int32x4_t d1, int32x4_t d2, int32x4_t d3) {
     return vpaddq_s32(vpaddq_s32(d0, d1), vpaddq_s32(d2, d3));
 }
 
@@ -71,7 +68,7 @@ static inline __attribute__((always_inline)) int32x4_t mxfp4_sum4(int32x4_t d0,
  * sums gathered into one vector, converted once and scaled by a vector of
  * their factors; the nb % 4 tail blocks into a scalar. The prefill below
  * repeats exactly these operations per token. */
-static inline __attribute__((always_inline)) float
+[[gnu::always_inline]] static inline float
 mxfp4_row_dot(size_t nb, const struct block_mxfp4_t *row, const int8_t *xq, const float *xs) {
     const int8x16_t kv  = vld1q_s8(kvalues_mxfp4);
     float32x4_t     acc = vdupq_n_f32(0.0f);
@@ -102,13 +99,13 @@ mxfp4_row_dot(size_t nb, const struct block_mxfp4_t *row, const int8_t *xq, cons
 
 /* Two rows against one token: the activation blocks loaded once for both,
  * per row mxfp4_row_dot's operations in its order (the same bits). */
-static inline __attribute__((always_inline)) void mxfp4_row2_dot(size_t                      nb,
-                                                                 const struct block_mxfp4_t *r0,
-                                                                 const struct block_mxfp4_t *r1,
-                                                                 const int8_t               *xq,
-                                                                 const float                *xs,
-                                                                 float                      *y0,
-                                                                 float                      *y1) {
+[[gnu::always_inline]] static inline void mxfp4_row2_dot(size_t                      nb,
+                                                         const struct block_mxfp4_t *r0,
+                                                         const struct block_mxfp4_t *r1,
+                                                         const int8_t               *xq,
+                                                         const float                *xs,
+                                                         float                      *y0,
+                                                         float                      *y1) {
     const int8x16_t kv = vld1q_s8(kvalues_mxfp4);
     float32x4_t     a0 = vdupq_n_f32(0.0f), a1 = a0;
     size_t          b = 0;

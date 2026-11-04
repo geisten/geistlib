@@ -16,24 +16,32 @@ struct mock {
     size_t            calls;
     bool              no_logits;
 };
-static void *session_alloc(void *state, const struct geist_session_opts *opts) {
+/* Every handle of the vtable (<geist_arch.h>) is a struct mock here: the
+ * model's, each session's (a copy) and the readout (its session). */
+static struct mock *mock_of(const void *handle) {
+    return (struct mock *) handle;
+}
+static struct geist_arch_session *session_alloc(struct geist_arch_state         *state,
+                                                const struct geist_session_opts *opts) {
     (void) opts;
     struct mock *s = heap_alloc_array_aligned(struct mock, 1);
     if (s != nullptr) {
-        *s = *(struct mock *) state;
+        *s = *mock_of(state);
     }
-    return s;
+    return (struct geist_arch_session *) s;
 }
-static void session_free(void *state, void *s) {
+static void session_free(struct geist_arch_state *state, struct geist_arch_session *s) {
     (void) state;
-    safe_free(&s);
+    void *m = s;
+    safe_free(&m);
 }
-static void reset(void *s) {
-    ((struct mock *) s)->calls = 0;
+static void reset(struct geist_arch_session *s) {
+    mock_of(s)->calls = 0;
 }
-static enum geist_status prefill(void *s, size_t n, const geist_token_t ids[static n]) {
+static enum geist_status
+prefill(struct geist_arch_session *s, size_t n, const geist_token_t ids[static n]) {
     (void) ids;
-    struct mock *m = s;
+    struct mock *m = mock_of(s);
     dense_calls++;
     m->calls += n;
     return m->status;
@@ -41,8 +49,8 @@ static enum geist_status prefill(void *s, size_t n, const geist_token_t ids[stat
 [[gnu::noinline]] static float mock_softcap(float value, float c) {
     return tanhf(value / c) * c;
 }
-static const float *peek(size_t *n, void *s) {
-    struct mock *m = s;
+static const float *peek(size_t *n, struct geist_arch_session *s) {
+    struct mock *m = mock_of(s);
     peek_calls++;
     if (m->no_logits) {
         *n = 0;
@@ -57,37 +65,38 @@ static const float *peek(size_t *n, void *s) {
     }
     return m->logits;
 }
-static size_t vocab(const void *s) {
+static size_t vocab(const struct geist_arch_state *s) {
     (void) s;
     return 4;
 }
-static size_t no_vocab(const void *s) {
+static size_t no_vocab(const struct geist_arch_state *s) {
     (void) s;
     return 0;
 }
-static bool rows_supported(const void *state) {
+static bool rows_supported(const struct geist_arch_state *state) {
     (void) state;
     return true;
 }
-static enum geist_status rows_create(void *session, size_t cap, void **out) {
+static enum geist_status
+rows_create(struct geist_arch_session *session, size_t cap, struct geist_arch_readout **out) {
     (void) cap;
-    *out = session;
+    *out = (struct geist_arch_readout *) session;
     return GEIST_OK;
 }
-static void rows_destroy(void *r) {
+static void rows_destroy(struct geist_arch_readout *r) {
     (void) r;
 }
-static enum geist_status rows_prefill(size_t              *projected,
-                                      size_t              *readback,
-                                      uint64_t            *ns,
-                                      void                *r,
-                                      size_t               np,
-                                      size_t               nc,
-                                      const geist_token_t *prompt,
-                                      const geist_token_t *ids,
-                                      float               *out) {
+static enum geist_status rows_prefill(size_t                    *projected,
+                                      size_t                    *readback,
+                                      uint64_t                  *ns,
+                                      struct geist_arch_readout *r,
+                                      size_t                     np,
+                                      size_t                     nc,
+                                      const geist_token_t       *prompt,
+                                      const geist_token_t       *ids,
+                                      float                     *out) {
     (void) prompt;
-    struct mock *m = r;
+    struct mock *m = mock_of(r);
     *projected     = 0;
     *readback      = 0;
     *ns            = 0;
@@ -144,9 +153,9 @@ static int score_case_mode(struct geist_model      *model,
         fails += geist_expect(fabs(sum - 1) < 1e-12 && out.best_index == 0,
                               "normalization and first-maximum tie rule");
         if (softcap) {
-            struct mock  reference = *(const struct mock *) model->text_decoder.arch_meta;
+            struct mock  reference = *mock_of(model->text_decoder.arch_meta);
             size_t       n         = 0;
-            const float *expected  = peek(&n, &reference);
+            const float *expected  = peek(&n, (struct geist_arch_session *) &reference);
             for (size_t i = 0; i < 3; i++) {
                 fails += geist_expect(out.logits[i] == expected[i],
                                       "scores use peek_logits softcap values");
@@ -183,10 +192,11 @@ int main(void) {
                                                     .decision_rows_destroy   = rows_destroy,
                                                     .prefill_rows            = rows_prefill};
     struct geist_arch_ops_decoder       ops      = complete;
-    struct geist_model model = {.text_decoder = {.arch_ops = &ops, .arch_meta = &state},
-                                .backend      = be};
-    int                fails = score_case(&model, GEIST_OK, true);
-    state                    = (struct mock) {.logits = {FLT_MAX, -FLT_MAX, FLT_MAX, NAN}};
+    struct geist_model                  model    = {
+            .text_decoder = {.arch_ops = &ops, .arch_meta = (struct geist_arch_state *) &state},
+            .backend      = be};
+    int fails = score_case(&model, GEIST_OK, true);
+    state     = (struct mock) {.logits = {FLT_MAX, -FLT_MAX, FLT_MAX, NAN}};
     fails += score_case(&model, GEIST_OK, false); /* unselected NaN is irrelevant */
     const float invalid[] = {NAN, INFINITY, -INFINITY};
     for (size_t i = 0; i < 3; i++) {

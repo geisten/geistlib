@@ -279,7 +279,7 @@ static void w8a32_neon(const int8_t *w_q8,
  * x86-64-v3 baseline; only this kernel carries AVX-512, and the binding
  * only installs it when the runtime probe confirms VNNI — no SIGILL on
  * lesser hosts. */
-#define AUDIO_VNNI_TARGET __attribute__((target("avx512f,avx512bw,avx512vl,avx512vnni")))
+#define AUDIO_VNNI_TARGET [[gnu::target("avx512f,avx512bw,avx512vl,avx512vnni")]]
 
 AUDIO_VNNI_TARGET
 static inline int32_t hsum_epi32(__m256i v) {

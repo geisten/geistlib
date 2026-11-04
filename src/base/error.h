@@ -21,7 +21,7 @@
 #include <stdbool.h>
 
 /* Fixed-size message buffer to keep allocation deterministic. */
-#define GEIST_ERR_MSG_LEN 512
+constexpr int GEIST_ERR_MSG_LEN = 512;
 
 struct geist_error_slot {
     enum geist_status code;

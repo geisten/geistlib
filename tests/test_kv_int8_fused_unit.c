@@ -374,8 +374,7 @@ static geist_token_t TOKENS[PROMPT + STEPS];
 /* Whether every layer plan of `m` binds the INT8 kernel (the INT4 one when
  * int4), if want, or none does. */
 static bool plans_bind(struct geist_model *m, bool int4, bool want) {
-    const struct transformer_arch_state *st =
-            (const struct transformer_arch_state *) geist_model_internal_arch_meta(m);
+    const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
     if (st == nullptr || st->layer_plans == nullptr || st->n_layers == 0) {
         return false;
     }

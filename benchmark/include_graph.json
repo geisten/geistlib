@@ -112,7 +112,7 @@
   },
   "src/backends/common": {
    "include": 16,
-   "src/backends/common": 18,
+   "src/backends/common": 19,
    "src/base": 12,
    "src/quant": 3
   },
@@ -140,7 +140,7 @@
   "src/backends/metal": {
    "include": 3,
    "src/backends/common": 1,
-   "src/backends/metal": 12,
+   "src/backends/metal": 13,
    "src/base": 7,
    "src/quant": 3
   },
@@ -2489,6 +2489,11 @@
     "linux-arm64",
     "linux-x86_64"
    ],
+   "src/backends/common/host_buffer.h": [
+    "macos-arm64",
+    "linux-arm64",
+    "linux-x86_64"
+   ],
    "src/backends/common/tensor_view.h": [
     "macos-arm64",
     "linux-arm64",
@@ -4345,6 +4350,11 @@
     "macos-arm64"
    ],
    "src/quant/quant.h": [
+    "macos-arm64"
+   ]
+  },
+  "src/backends/metal/metal_objc.h": {
+   "src/backends/metal/metal_internal.h": [
     "macos-arm64"
    ]
   },

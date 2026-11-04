@@ -103,7 +103,7 @@ not help — it changes linkage, not the grammar. Headers under `include/`
 therefore spell the same contract
 
 ```c
-enum geist_status (*prefill)(void *session, size_t n,
+enum geist_status (*prefill)(struct geist_arch_session *session, size_t n,
                              const geist_token_t ids[GEIST_AT_LEAST(n)]);
 ```
 

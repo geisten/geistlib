@@ -41,24 +41,6 @@ static inline float32x4_t vexpq_f32_softmax(float32x4_t x) {
 }
 #endif
 
-/* Conv2d (chw, weight oc,ic,kh,kw, ph/pw zero-pad). Standard full-output
- * variant: computes all h_out × w_out positions. */
-void conv2d_fp32(int          c_in,
-                 int          c_out,
-                 int          h_in,
-                 int          w_in,
-                 int          kh,
-                 int          kw,
-                 int          sh,
-                 int          sw,
-                 int          ph,
-                 int          pw,
-                 const float *in,
-                 const float *w,
-                 float       *out) {
-    conv2d_fp32_from(c_in, c_out, h_in, w_in, kh, kw, sh, sw, ph, pw, 0, in, w, out);
-}
-
 /* Incremental variant: only writes outputs at oh >= start_h. Caller must
  * have written outputs [0, start_h) already (or initialized them). With
  * pad=1 + kernel=3 + stride=2, output at oh reads in at h-axis positions

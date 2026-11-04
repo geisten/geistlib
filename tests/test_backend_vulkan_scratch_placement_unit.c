@@ -203,7 +203,7 @@ static int check_op_fallback(struct rig *r, struct transformer_arch_session *ses
 /* fallbacks: also force the CPU fallbacks of part 4 (llama only: the host
  * linear check takes layer 0's q_proj, which a DeltaNet block has not). */
 static int check_placement(struct rig *r, const char *name, bool device, bool fallbacks) {
-    struct transformer_arch_state   *st   = geist_model_internal_arch_meta(r->m);
+    struct transformer_arch_state   *st   = tf_state(geist_model_internal_arch_meta(r->m));
     struct vk_state                 *vs   = r->be->state;
     const struct geist_backend_vtbl *vt   = r->be->desc->vtbl;
     const uint64_t                   dev0 = vs->stat_scratch_n[VK_PLACEMENT_DEVICE];

@@ -909,94 +909,6 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
 /* Exactly the dequant family's signature: a call through an incompatible
  * function pointer type is undefined (AGENT.md §6). */
 typedef void (*dequant_row_fn)(size_t n_elems, const void *blocks, float *out);
-static size_t blk_bytes_for(enum geist_dtype dt) {
-    switch (dt) {
-    case GEIST_DTYPE_Q4_0:
-        return Q4_0_BLOCK_BYTES;
-    case GEIST_DTYPE_Q4_1:
-        return Q4_1_BLOCK_BYTES;
-    case GEIST_DTYPE_Q5_0:
-        return Q5_0_BLOCK_BYTES;
-    case GEIST_DTYPE_Q4_K:
-        return Q4_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q5_K:
-        return Q5_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q6_K:
-        return Q6_K_BLOCK_BYTES;
-    case GEIST_DTYPE_Q8_0:
-        return Q8_0_BLOCK_BYTES;
-    case GEIST_DTYPE_TQ2_0:
-        return TQ2_0_BLOCK_BYTES;
-    case GEIST_DTYPE_PQ2_0:
-        return PQ2_0_BLOCK_BYTES;
-    case GEIST_DTYPE_MXFP4:
-        return MXFP4_BLOCK_BYTES;
-    case GEIST_DTYPE_IQ4_NL:
-        return IQ4_NL_BLOCK_BYTES;
-    case GEIST_DTYPE_IQ4_XS:
-        return IQ4_XS_BLOCK_BYTES;
-    case GEIST_DTYPE_F32:
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
-    case GEIST_DTYPE_I8:
-    case GEIST_DTYPE_U8:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_IQ2_S:
-    case GEIST_DTYPE_IQ3_S:
-    case GEIST_DTYPE_TQ1_0:
-    case GEIST_DTYPE_I2_S:
-    case GEIST_DTYPE_BINARY:
-    case GEIST_DTYPE_TERNARY:
-    case GEIST_DTYPE_CUSTOM:
-    case GEIST_DTYPE_COUNT:
-        break;
-    }
-    return 0; /* F16/BF16: not block-quantized */
-}
-static size_t blk_elems_for(enum geist_dtype dt) {
-    switch (dt) {
-    case GEIST_DTYPE_Q4_0:
-        return Q4_0_BLOCK_ELEMS;
-    case GEIST_DTYPE_Q4_1:
-        return Q4_1_BLOCK_ELEMS;
-    case GEIST_DTYPE_Q5_0:
-        return Q5_0_BLOCK_ELEMS;
-    case GEIST_DTYPE_Q4_K:
-        return Q4_K_BLOCK_ELEMS;
-    case GEIST_DTYPE_Q5_K:
-        return Q5_K_BLOCK_ELEMS;
-    case GEIST_DTYPE_Q6_K:
-        return Q6_K_BLOCK_ELEMS;
-    case GEIST_DTYPE_Q8_0:
-        return Q8_0_BLOCK_ELEMS;
-    case GEIST_DTYPE_TQ2_0:
-        return TQ2_0_BLOCK_ELEMS;
-    case GEIST_DTYPE_PQ2_0:
-        return PQ2_0_BLOCK_ELEMS;
-    case GEIST_DTYPE_MXFP4:
-        return MXFP4_BLOCK_ELEMS;
-    case GEIST_DTYPE_IQ4_NL:
-        return IQ4_NL_BLOCK_ELEMS;
-    case GEIST_DTYPE_IQ4_XS:
-        return IQ4_XS_BLOCK_ELEMS;
-    case GEIST_DTYPE_F32:
-    case GEIST_DTYPE_F16:
-    case GEIST_DTYPE_BF16:
-    case GEIST_DTYPE_I8:
-    case GEIST_DTYPE_U8:
-    case GEIST_DTYPE_Q3_K:
-    case GEIST_DTYPE_IQ2_S:
-    case GEIST_DTYPE_IQ3_S:
-    case GEIST_DTYPE_TQ1_0:
-    case GEIST_DTYPE_I2_S:
-    case GEIST_DTYPE_BINARY:
-    case GEIST_DTYPE_TERNARY:
-    case GEIST_DTYPE_CUSTOM:
-    case GEIST_DTYPE_COUNT:
-        break;
-    }
-    return 1;
-}
 static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
     switch (dt) {
     case GEIST_DTYPE_Q4_0:
@@ -1047,12 +959,13 @@ static dequant_row_fn dequant_row_fn_for(enum geist_dtype dt) {
  * (F16/BF16) sources. */
 static void
 dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, float *tile_fp32) {
-    const enum geist_dtype dt   = (enum geist_dtype) w->dtype;
-    const size_t           n_in = (size_t) w->n_in;
-    const dequant_row_fn   fn   = dequant_row_fn_for(dt);
-    if (fn != nullptr) {
-        const size_t   blk_bytes = blk_bytes_for(dt);
-        const size_t   blk_elems = blk_elems_for(dt);
+    const enum geist_dtype dt        = (enum geist_dtype) w->dtype;
+    const size_t           n_in      = (size_t) w->n_in;
+    const dequant_row_fn   fn        = dequant_row_fn_for(dt);
+    size_t                 blk_elems = 0;
+    size_t                 blk_bytes = 0;
+    size_t                 tail      = 0;
+    if (fn != nullptr && quant_block_layout(dt, &blk_elems, &blk_bytes, &tail)) {
         const size_t   row_bytes = (n_in / blk_elems) * blk_bytes;
         const uint8_t *src       = (const uint8_t *) w->raw + row_start * row_bytes;
         for (size_t r = 0; r < tile_rows; r++) {
@@ -1073,20 +986,7 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
             }
 #endif
             for (; i < n_in; i++) {
-                /* Scalar fallback — emulate F16-to-F32 via IEEE bit twiddle. */
-                uint16_t h     = src[i];
-                uint32_t sign  = (uint32_t) (h & 0x8000) << 16;
-                uint32_t exp16 = (h >> 10) & 0x1F;
-                uint32_t mant  = h & 0x3FF;
-                uint32_t bits;
-                if (exp16 == 0) {
-                    bits = sign | (mant ? (((uint32_t) (mant) << 13) | 0x38800000u) : 0u);
-                } else if (exp16 == 0x1F) {
-                    bits = sign | 0x7F800000u | (mant << 13);
-                } else {
-                    bits = sign | ((exp16 + 112u) << 23) | (mant << 13);
-                }
-                memcpy(dst + i, &bits, 4);
+                dst[i] = fp16_to_fp32(src[i]);
             }
             src += n_in;
         }

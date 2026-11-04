@@ -59,7 +59,7 @@ static bool decode(struct geist_model *m, struct geist_backend *be, struct run *
                                           geist_session_prefill_tokens(s, N_PROMPT, p) == GEIST_OK;
     memset(r, 0, sizeof *r);
     if (ok) {
-        const struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        const struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(s));
         r->spec_state                            = a->model->spec_state;
     }
     for (size_t i = 0; ok && i < N_STEPS; i++) {
