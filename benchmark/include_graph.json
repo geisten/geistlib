@@ -66,7 +66,7 @@
   "src/archs/audio_conformer": 14,
   "src/archs/transformer": 58,
   "src/archs/vision_siglip": 8,
-  "src/backends/common": 23,
+  "src/backends/common": 24,
   "src/backends/cpu_neon": 28,
   "src/backends/cpu_scalar": 5,
   "src/backends/cpu_x86": 72,
@@ -111,42 +111,42 @@
    "third_party/stb": 1
   },
   "src/backends/common": {
-   "include": 16,
+   "include": 17,
    "src/backends/common": 18,
    "src/base": 12,
    "src/quant": 3
   },
   "src/backends/cpu_neon": {
    "include": 27,
-   "src/backends/common": 23,
+   "src/backends/common": 24,
    "src/backends/cpu_neon": 22,
    "src/base": 54,
    "src/quant": 29
   },
   "src/backends/cpu_scalar": {
    "include": 11,
-   "src/backends/common": 10,
+   "src/backends/common": 11,
    "src/backends/cpu_scalar": 4,
    "src/base": 1,
    "src/quant": 2
   },
   "src/backends/cpu_x86": {
    "include": 49,
-   "src/backends/common": 24,
+   "src/backends/common": 25,
    "src/backends/cpu_x86": 122,
    "src/base": 45,
    "src/quant": 36
   },
   "src/backends/metal": {
    "include": 3,
-   "src/backends/common": 1,
+   "src/backends/common": 2,
    "src/backends/metal": 12,
    "src/base": 7,
    "src/quant": 3
   },
   "src/backends/vulkan": {
    "include": 5,
-   "src/backends/common": 4,
+   "src/backends/common": 5,
    "src/backends/vulkan": 108,
    "src/base": 10,
    "src/quant": 1
@@ -2248,6 +2248,13 @@
     "linux-x86_64"
    ]
   },
+  "src/backends/common/backend_tables.h": {
+   "include/geist_backend.h": [
+    "macos-arm64",
+    "linux-arm64",
+    "linux-x86_64"
+   ]
+  },
   "src/backends/common/cpu_threads.c": {
    "src/backends/common/cpu_threads.h": [
     "macos-arm64",
@@ -2585,6 +2592,10 @@
     "linux-arm64"
    ],
    "include/geist_backend.h": [
+    "macos-arm64",
+    "linux-arm64"
+   ],
+   "src/backends/common/backend_tables.h": [
     "macos-arm64",
     "linux-arm64"
    ],
@@ -3214,6 +3225,11 @@
     "linux-arm64",
     "linux-x86_64"
    ],
+   "src/backends/common/backend_tables.h": [
+    "macos-arm64",
+    "linux-arm64",
+    "linux-x86_64"
+   ],
    "src/backends/common/hadamard.h": [
     "macos-arm64",
     "linux-arm64",
@@ -3439,6 +3455,9 @@
     "linux-x86_64"
    ],
    "include/geist_weight.h": [
+    "linux-x86_64"
+   ],
+   "src/backends/common/backend_tables.h": [
     "linux-x86_64"
    ],
    "src/backends/common/cpu_threads.h": [
@@ -4352,6 +4371,9 @@
    "include/geist_util.h": [
     "macos-arm64"
    ],
+   "src/backends/common/backend_tables.h": [
+    "macos-arm64"
+   ],
    "src/backends/common/hadamard.h": [
     "macos-arm64"
    ],
@@ -4424,6 +4446,10 @@
    ]
   },
   "src/backends/vulkan/ops.c": {
+   "src/backends/common/backend_tables.h": [
+    "linux-arm64",
+    "linux-x86_64"
+   ],
    "src/backends/common/hadamard.h": [
     "linux-arm64",
     "linux-x86_64"
