@@ -575,6 +575,16 @@ endif
 check-handles:
 	@CC="$(CC)" CFLAGS="$(CFLAGS_STRICT)" sh scripts/check_handles.sh
 check-static: check-handles
+# Module boundaries (#344): tools/layers.json says which layer of src/ may use
+# which; tools/check_layers.py proves it from the compiler's include tree, the
+# objects' undefined symbols (nm), every internal header compiled alone and
+# the portability #ifs per file, against tools/layers_baseline.txt. The
+# selftest finds the violations seeded in tests/layers/; no binary runs.
+.PHONY: check-layers
+check-layers: lib
+	@CC="$(CC)" python3 tools/check_layers.py --selftest
+	@python3 tools/check_layers.py --build-dir $(BUILD_DIR)
+check-static: check-layers
 
 # make check-static: every static gate, no models and no GPU (#333 Phase 1).
 # A gate is its own target and adds itself here as one more prerequisite:
@@ -606,6 +616,12 @@ c23-metrics:
 	@python3 tools/c23_metrics.py write
 	@python3 tools/c23_metrics.py show
 
+# Which C23 features $(CC)/$(CXX) have: <stdbit.h>, counted_by, fixed enums
+# in a C++17 header, [[gnu::cleanup]], typeof, ... (#341). CI runs it on every
+# toolchain against tools/toolchain_probe.expect; docs/TOOLCHAIN_PROBE.md.
+.PHONY: toolchain-probe
+toolchain-probe:
+	@CC="$(CC)" CXX="$(CXX)" sh tools/toolchain_probe.sh
 # benchmark/include_graph.json + docs/INCLUDE_GRAPH.md: direct include edges
 # per layer, from clang's preprocessor output (#341). Needs clang; CI's
 # static-analysis job runs `tools/include_graph.py check`.
@@ -625,6 +641,7 @@ help:
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
 	"  make check-static          clang-tidy with a findings ratchet (no models, no GPU)" \
+	"  make check-layers          layer table: includes, symbols, headers alone, #ifs (#344)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \
 	"  make TOWERS=0              leave out the Gemma 4 audio/vision encoder towers" \
@@ -656,6 +673,7 @@ help:
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
+	"         make toolchain-probe                C23 features of CC/CXX (docs/TOOLCHAIN_PROBE.md)" \
 	"         make include-graph                  (benchmark/include_graph.json, docs/INCLUDE_GRAPH.md)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
