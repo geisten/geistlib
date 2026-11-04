@@ -113,8 +113,11 @@ endif
 # in a header, so the definition and its callers check one prototype. Not
 # -Wstrict-prototypes: in C23 `()` is a prototype and K&R definitions are
 # gone, so it has nothing left to report (#343).
+# -Wnull-dereference: gcc reports a dereference its optimizer sees on a path
+# where the pointer is null (clang only a literal null). Two sites needed a
+# check the compiler could follow (#343).
 WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wswitch-enum -Wimplicit-fallthrough \
-                   -Wmissing-prototypes -Werror
+                   -Wmissing-prototypes -Wnull-dereference -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:

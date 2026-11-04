@@ -63,6 +63,22 @@ int f(int x) {
         "int twice(int x);\n"
         "int twice(int x) { return 4 * half(x); }\n",
     ),
+    # gcc follows the null through its optimizer, clang reports only a
+    # dereference of a literal null; the probe is one both reject.
+    "-Wnull-dereference": (
+        """
+int load(void);
+int load(void) {
+    return *(int *) 0;
+}
+""",
+        """
+int load(const int *p);
+int load(const int *p) {
+    return p != nullptr ? *p : 0;
+}
+""",
+    ),
 }
 
 
