@@ -1,0 +1,82 @@
+# tools/check_layers.py: known violations of tools/layers.json; this list
+# only shrinks. `if <file> <n>` is a ceiling. Regenerate with --update.
+header src/backends/common/selected_rows.h
+header src/backends/metal/metal_objc.h
+if src/archs/audio_conformer/audio_kernels.c 7
+if src/archs/audio_conformer/audio_linear.c 9
+if src/archs/audio_conformer/encoder_internal.h 2
+if src/archs/audio_conformer/encoder_weights.c 1
+if src/archs/audio_conformer/mel_pipeline.c 7
+if src/archs/transformer/arch_state.c 1
+if src/archs/transformer/forward/attention.c 3
+if src/archs/transformer/forward/layer_deltanet.c 3
+if src/archs/transformer/forward/spec_head.c 6
+if src/archs/transformer/moe_gpu.c 1
+if src/archs/vision_siglip/vision_encoder.c 5
+if src/archs/vision_siglip/vision_kernels.c 1
+if src/backends/common/geist_gemm.c 5
+if src/backends/common/gemma4_kernels.c 5
+if src/backends/cpu_neon/attention_int4.c 1
+if src/backends/cpu_neon/attention_int8.c 1
+if src/backends/cpu_neon/attention_kv.h 2
+if src/backends/cpu_neon/backend.c 5
+if src/backends/cpu_neon/elementwise.c 5
+if src/backends/cpu_neon/internal.h 1
+if src/backends/cpu_neon/kernels/iq2_s.c 6
+if src/backends/cpu_neon/kernels/iq3_s.c 6
+if src/backends/cpu_neon/kernels/iq4_xs.c 7
+if src/backends/cpu_neon/kernels/mxfp4.c 4
+if src/backends/cpu_neon/kernels/pq2_0.c 1
+if src/backends/cpu_neon/kernels/q3_K.c 6
+if src/backends/cpu_neon/kernels/q4_01.c 4
+if src/backends/cpu_neon/kernels/q4_K.c 19
+if src/backends/cpu_neon/kernels/q5_K.c 4
+if src/backends/cpu_neon/kernels/q6_K.c 12
+if src/backends/cpu_neon/kernels/q8_0.c 5
+if src/backends/cpu_neon/kernels/tq2_0.c 29
+if src/backends/cpu_neon/tl1.c 3
+if src/backends/cpu_neon/transformer_ops.c 6
+if src/backends/cpu_neon/weight_resolve.c 14
+if src/backends/cpu_scalar/backend.c 1
+if src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c 2
+if src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c 1
+if src/backends/cpu_x86/linear_pq2_0.c 7
+if src/backends/cpu_x86/linear_util.h 5
+if src/backends/metal/lifecycle.c 1
+if src/engine/backend_registry.c 1
+if src/engine/decision.c 1
+if src/formats/gguf/common.c 3
+if src/formats/gguf/iq2_s.c 1
+if src/formats/gguf/iq3_s.c 1
+if src/formats/gguf/q3_K.c 3
+if src/formats/gguf/q4_0.c 1
+if src/formats/gguf/tq2_0.c 1
+if src/io/gguf_reader.c 4
+if src/quant/quant.h 4
+if src/quant/quant_blocks.h 1
+include src/archs/transformer/arch_state.h -> src/engine/sampler.h
+include src/archs/transformer/forward/spec_head.c -> src/engine/sampler.h
+include src/engine/session.c -> src/archs/vision_siglip/image_pipeline.h
+symbol src/archs/transformer/arch.c -> geist_sampler_penalties_set_breakers (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/arch_state.c -> geist_rng_seed (src/engine/sampler.c)
+symbol src/archs/transformer/arch_state.c -> geist_sampler_penalties_destroy (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/arch_state.c -> geist_sampler_workspace_destroy (src/engine/sampler.c)
+symbol src/archs/transformer/forward/head.c -> geist_sampler_argmax (src/engine/sampler.c)
+symbol src/archs/transformer/forward/head.c -> geist_sampler_penalties_active (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/forward/head.c -> geist_sampler_penalties_apply (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/forward/head.c -> geist_sampler_temperature_ws (src/engine/sampler.c)
+symbol src/archs/transformer/forward/head.c -> geist_sampler_top_k_ws (src/engine/sampler.c)
+symbol src/archs/transformer/forward/head.c -> geist_sampler_top_p_ws (src/engine/sampler.c)
+symbol src/archs/transformer/forward/mtp.c -> geist_sampler_argmax (src/engine/sampler.c)
+symbol src/archs/transformer/forward/spec_head.c -> geist_sampler_argmax (src/engine/sampler.c)
+symbol src/archs/transformer/forward/spec_head.c -> geist_sampler_penalties_active (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/forward/step.c -> geist_rng_seed (src/engine/sampler.c)
+symbol src/archs/transformer/forward/step.c -> geist_sampler_penalties_active (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/forward/step.c -> geist_sampler_penalties_init (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/forward/step.c -> geist_sampler_penalty_params_from_opts (src/engine/sampler_penalties.c)
+symbol src/archs/transformer/forward/step.c -> geist_sampler_workspace_destroy (src/engine/sampler.c)
+symbol src/archs/transformer/forward/step.c -> geist_sampler_workspace_init (src/engine/sampler.c)
+symbol src/backends/cpu_x86/backend.c -> cpu_scalar_fused (src/backends/cpu_scalar/backend.c)
+symbol src/backends/cpu_x86/backend.c -> cpu_scalar_prims (src/backends/cpu_scalar/backend.c)
+symbol src/backends/cpu_x86/backend.c -> cpu_scalar_resolve_weight (src/backends/cpu_scalar/weight_resolve.c)
+symbol src/backends/cpu_x86/backend.c -> cpu_scalar_vtbl (src/backends/cpu_scalar/backend.c)
