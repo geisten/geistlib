@@ -508,7 +508,7 @@ struct f32_m1_job {
     size_t       n_in, n_out;
 };
 
-enum { F32_M1_ROWS = 32 };
+constexpr int F32_M1_ROWS = 32;
 
 static void f32_m1_rows(void *ctx, size_t c0, size_t c1) {
     const struct f32_m1_job *j  = ctx;
@@ -902,9 +902,9 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
  * (or where the policy prefers SGEMM). Per call, one dequant pass over the
  * weight plus a cblas call, tiled by output rows so the FP32 scratch stays
  * bounded (a 262144×1536 lm_head would otherwise need 1.5 GB). */
-#define DEQ_TILE_ROWS_DEFAULT 32
+constexpr int DEQ_TILE_ROWS_DEFAULT = 32;
 /* The M=1 trampoline's tile: 64 output rows per sgemv. */
-#define DEQ_GEMV_TILE_ROWS 64
+constexpr int DEQ_GEMV_TILE_ROWS = 64;
 
 /* Exactly the dequant family's signature: a call through an incompatible
  * function pointer type is undefined (AGENT.md §6). */

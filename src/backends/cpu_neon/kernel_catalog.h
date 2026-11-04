@@ -31,12 +31,10 @@
  * checked once at resolve time against the runtime hw_probe so a
  * binary cross-built with a feature its host lacks fails-loudly at
  * model load instead of SIGILL'ing at first decode. */
-typedef uint32_t cpu_neon_isa_mask;
-enum {
-    CPU_NEON_ISA_NEON    = 1u << 0,
-    CPU_NEON_ISA_DOTPROD = 1u << 1,
-    CPU_NEON_ISA_FP16    = 1u << 2,
-};
+typedef uint32_t            cpu_neon_isa_mask;
+constexpr cpu_neon_isa_mask CPU_NEON_ISA_NEON    = 1u << 0;
+constexpr cpu_neon_isa_mask CPU_NEON_ISA_DOTPROD = 1u << 1;
+constexpr cpu_neon_isa_mask CPU_NEON_ISA_FP16    = 1u << 2;
 
 /* Kernel-table entry. The resolver scans CPU_NEON_KERNELS in order and
  * installs the first row whose dtype matches the requested dtype AND

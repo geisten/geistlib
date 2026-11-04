@@ -103,7 +103,7 @@ struct w8_gemm {
     float         *out;
 };
 
-#define W8A8_JT 4
+constexpr int W8A8_JT = 4;
 
 static void w8a8_gemm_rows(void *ctx, size_t r0, size_t r1) {
     const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
@@ -210,7 +210,7 @@ void w8a8_gemm_avx512_vnni(size_t        n_tokens,
  * one 8-wide fp32 FMA for all 8 rows. JT tokens kept live per group so the
  * 8-row weight stripe is reused across the token tile. See kernel_w8a8.h
  * for the interleaved layout. */
-#define W8X8_JT 4
+constexpr int W8X8_JT = 4;
 
 static void w8x8_groups(void *ctx, size_t g0, size_t g1) {
     const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
@@ -315,7 +315,7 @@ void w8x8_gemm(size_t        n_tokens,
 
 /* 512-bit / 16-row variant of w8x8_gemm: one VPDPBUSD lands 16 output rows
  * in the 16 int32 lanes. ~1.5× w8x8 on Zen 5's full-width AVX-512 datapath. */
-#define W8X16_JT 4
+constexpr int W8X16_JT = 4;
 
 static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
     const struct w8_gemm c               = *(const struct w8_gemm *) ctx;

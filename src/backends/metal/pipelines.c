@@ -653,8 +653,8 @@ static void **metal_state_slot(struct metal_state *st, size_t offset) {
 /* The IQ3_S grid as an MSL constant array, emitted from quant/iq_grids.h
  * so the 512 entries live in one place; nullptr on allocation failure. */
 static char *metal_iq3s_grid_source(void) {
-    enum { GRID_STR_CAP = 512 * 12 + 64 };
-    char *grid = malloc(GRID_STR_CAP);
+    constexpr int GRID_STR_CAP = 512 * 12 + 64;
+    char         *grid         = malloc(GRID_STR_CAP);
     if (grid == nullptr) {
         return nullptr;
     }

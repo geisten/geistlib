@@ -95,7 +95,7 @@ void i2s_gemv_m1_avx512_vnni(size_t        n_out,
  * is read once per (row, block, tile) and the VPDPBUSD throughput is the
  * limiter. y is [m, n_out] row-major. 4 measured best of 2/4/6/8 on the
  * 9950X (#212); 8 spills the acc[] registers. */
-#define I2S_JT 4
+constexpr int I2S_JT = 4;
 
 /* The native-layout GEMM for geist_par_for: perm rows, then output rows. */
 struct i2s_mN {
@@ -419,7 +419,8 @@ void i2s_t5_gemv_pair_m1_avx512_vnni(size_t        n_in_pad,
     geist_par_for(g0 + n_out1 / 4, i2s_t5_groups, &c);
 }
 
-#define I2S_X4_TT 4 /* 16 live accumulators; 4 measured best of 2/4/8 on the 9950X (#102) */
+constexpr int I2S_X4_TT =
+        4; /* 16 live accumulators; 4 measured best of 2/4/8 on the 9950X (#102) */
 
 /* The x4 GEMM's row groups for geist_par_for. */
 struct i2s_x4_mN {

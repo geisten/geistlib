@@ -112,6 +112,7 @@ void tq2_0_gemm_rows_avx512_vnni(size_t                      m,
                                  const int32_t              *s_x,
                                  float                      *y) {
     const size_t n_in = nb * QK;
+/* A macro, not a function (#348): it spells the caller's locals into one call of tile(). */
 #define TILE(R, T, J, TT)   \
     tile(R,                 \
          T,                 \

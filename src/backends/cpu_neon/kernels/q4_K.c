@@ -549,7 +549,7 @@ static inline void q4k_unpack_scales_mins(const uint8_t *s, uint8_t scales[8], u
 #endif
 
 #if defined(__ARM_NEON)
-#define MT 2
+constexpr int MT = 2;
 
 /* Loop-reordered blocked GEMM: tile output rows into NC-row panels; per
  * panel, loop blocks OUTER and rows INNER so each activation block (m×256)
@@ -557,7 +557,7 @@ static inline void q4k_unpack_scales_mins(const uint8_t *s, uint8_t scales[8], u
  * land in btile (m×NC); once its NC rows are done, ytile += x_scale × btile,
  * one broadcast FMA per 4 outputs, so the per-row inner loop does no more
  * float work than it did with a row-wide scale (#698). */
-#define NC 64
+constexpr int NC = 64;
 
 /* Panels [p0, p1) of linear_q4k_w4a8_prefill_pre; packed = job->act, the
  * packed activation, or nullptr. */
@@ -762,8 +762,6 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                                   .act      = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
-#undef NC
-#undef MT
 #else
     (void) x_q8;
     (void) x_scales;
@@ -1315,6 +1313,7 @@ static void q4k_prefill_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t 
                     }
                 }
 
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define Q4K_ACC_ROW_PACKED(NR, A0, A1, A2, A3)                                           \
     do {                                                                                 \
         if ((NR) < valid_nr) {                                                           \
@@ -1516,6 +1515,7 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
                     }
                 }
 
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define Q4K_ACC_8(NR, A0, A1, A2, A3, A4, A5, A6, A7)                                    \
     do {                                                                                 \
         if ((NR) < valid_nr) {                                                           \
@@ -1625,6 +1625,7 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
                         minc[nr][3] += mn * sum32[(mt + 3) * n_chunks + sum_idx];
                     }
                 }
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define Q4K_ACC_4(NR, A0, A1, A2, A3)                                                    \
     do {                                                                                 \
         if ((NR) < valid_nr) {                                                           \
@@ -1828,7 +1829,7 @@ static void q4k_sdot_tile4x8(const struct q4k_prefill_job *job,
 }
 
 /* Blocks per q4k_sdot_prep pass: 21 KB of prepared weights on the stack. */
-enum { Q4K_SDOT_PREP_BLOCKS = 16 };
+constexpr int Q4K_SDOT_PREP_BLOCKS = 16;
 
 /* Tiles [nt0, nt1) of the SDOT kernel: full 4-row tiles and full groups
  * of 8 tokens; a ragged tile or token tail takes the kernel below. A tile's
@@ -1999,6 +2000,7 @@ q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t tt0, si
                     }
                 }
 
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define Q4K_PAIR_ACC_ROW(NR, A0, A1, A2, A3)                                             \
     do {                                                                                 \
         if ((NR) < valid_nr) {                                                           \

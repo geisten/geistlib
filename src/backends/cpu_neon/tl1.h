@@ -58,8 +58,8 @@
 struct geist_weight;
 struct geist_backend;
 
-#define TL1_BM 32
-#define TL1_BBK 128
+constexpr int TL1_BM  = 32;
+constexpr int TL1_BBK = 128;
 
 /* Returns total bytes for the packed TL1 representation of a (n_in, n_out)
  * weight, including the per-row scale tail. Zero if shape is unsupported. */

@@ -178,20 +178,18 @@ struct vk_dirty {
     bool     write;
 };
 
-enum {
-    VK_XRING_CAP    = 192u << 20, /* a full prefill chunk stages ~124 MB */
-    VK_MAX_M        = 512,
-    VK_STREAM_M_MIN = 32,
-    VK_STAGE_MAX    = 192, /* staging slots (#239): 64 experts of one MoE layer step */
-    /* default row threshold for streaming spilled weights (#78) */ /* caps.max_m; resolve_weight
-                                                                       checks it x n_in fits the
-                                                                       ring */
-    VK_DIRTY_CAP   = 96,
-    VK_DSET_CACHE  = 4096,
-    VK_SEQ_CMDBUFS = 1024, /* rolling submission ring; async streaming cuts it per streamed GEMM */
-    VK_SEQ_ROLL_RING = 64, /* ring slots the VK_SEQ_ROTATE rolls may use */
-    VK_SEQ_ROTATE    = 64, /* dispatches per submit — keeps the GPU fed */
-};
+constexpr int VK_XRING_CAP = 192 << 20; /* a full prefill chunk stages ~124 MB */
+/* caps.max_m; resolve_weight checks it x n_in fits the ring */
+constexpr int VK_MAX_M = 512;
+/* default row threshold for streaming spilled weights (#78) */
+constexpr int VK_STREAM_M_MIN = 32;
+constexpr int VK_STAGE_MAX    = 192; /* staging slots (#239): 64 experts of one MoE layer step */
+constexpr int VK_DIRTY_CAP    = 96;
+constexpr int VK_DSET_CACHE   = 4096;
+/* rolling submission ring; async streaming cuts it per streamed GEMM */
+constexpr int VK_SEQ_CMDBUFS   = 1024;
+constexpr int VK_SEQ_ROLL_RING = 64; /* ring slots the VK_SEQ_ROTATE rolls may use */
+constexpr int VK_SEQ_ROTATE    = 64; /* dispatches per submit — keeps the GPU fed */
 
 /* Cached descriptor set: decode re-binds the same (pipeline-layout,
  * buffers) tuple every token — building sets once kills the dominant
@@ -202,14 +200,12 @@ struct vk_dset_entry {
     uint32_t        nbind; /* bindings of the layout `set` was allocated with */
 };
 
-enum {
-    VK_SEL_TABS         = 1024,     /* linear_t_sel tables cached (3 per MoE layer) */
-    VK_SEL_TAB_BYTES    = 4u << 20, /* their buffer */
-    VK_MAX_BINDINGS     = 14,       /* storage buffers per dispatch (dn_scan_b needs 14) */
-    VK_SEQ_MAX_SETS     = 4096,     /* descriptor sets per flush window */
-    VK_SEQ_MAX_DISPATCH = 4000,     /* rotate the sequence before pool runs dry */
-    VK_PUSH_RANGE       = 128,      /* one push range covers every shader block */
-};
+constexpr int VK_SEL_TABS         = 1024;    /* linear_t_sel tables cached (3 per MoE layer) */
+constexpr int VK_SEL_TAB_BYTES    = 4 << 20; /* their buffer */
+constexpr int VK_MAX_BINDINGS     = 14;      /* storage buffers per dispatch (dn_scan_b needs 14) */
+constexpr int VK_SEQ_MAX_SETS     = 4096;    /* descriptor sets per flush window */
+constexpr int VK_SEQ_MAX_DISPATCH = 4000;    /* rotate the sequence before pool runs dry */
+constexpr int VK_PUSH_RANGE       = 128;     /* one push range covers every shader block */
 
 /* Where work can leave the GPU (vk_fallback). */
 enum vk_fb : uint32_t {

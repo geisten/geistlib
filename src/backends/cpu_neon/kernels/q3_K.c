@@ -225,6 +225,7 @@ static void q3k_prefill_rows(void *ctx, size_t n0, size_t n1) {
             for (size_t i = 0; i < m; i++)
                 block_int_accs[i] = 0;
 
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define PROCESS_GROUP_M(G, QSL, QSH, HML, HMH, XOFF)                               \
     do {                                                                           \
         int8x16_t q_l, q_h;                                                        \

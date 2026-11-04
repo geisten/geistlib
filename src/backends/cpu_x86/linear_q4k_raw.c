@@ -390,7 +390,7 @@ static void cpu_x86_linear_q5k_m1(const float               *x,
 
 /* The tiled int8 GEMM (#18) on hosts with AVX-512 VNNI, from 16 rows:
  * Q5_K reads the GGUF bytes there as well. Elsewhere, the row kernel. */
-enum { Q5K_TILED_MIN_ROWS = 16 };
+constexpr int Q5K_TILED_MIN_ROWS = 16;
 
 static bool q5k_tiled_on(void) {
     static atomic_int on = -1;

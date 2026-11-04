@@ -99,6 +99,7 @@ void pq2_0_gemm_rows_avx512_vnni(size_t         m,
                                  const int32_t *neg_sum,
                                  const float   *inv,
                                  float         *y) {
+/* A macro, not a function (#348): it spells the caller's locals into one call of tile(). */
 #define TILE(R, T, J, TT) \
     tile(R,               \
          T,               \

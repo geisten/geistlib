@@ -91,7 +91,7 @@ metal_op_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
 /* Below this many rows a quantized linear reads the weights once per row
  * through the matvec kernel instead of one pass of a tiled GEMM: a bounded
  * GEMM tile costs about as much as ten matvec rows (#578). */
-#define METAL_MATVEC_MAX_ROWS 9u
+constexpr unsigned METAL_MATVEC_MAX_ROWS = 9u;
 
 /* Whether a one-row Q4_K matvec takes matvec_q4k_h (#196): K a multiple
  * of 512 but not of 1024, where the n4 kernel leaves half its block groups
@@ -1980,7 +1980,7 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
 /* Batched twin: one dispatch embeds a whole prefill chunk.
  * ids travel via setBytes (constant buffer), so the row count is bounded
  * by the 4 KB setBytes budget. */
-enum { METAL_EMBED_ROWS_MAX = 1024 };
+constexpr int METAL_EMBED_ROWS_MAX = 1024;
 
 [[nodiscard]] static enum geist_status
 metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
@@ -2456,7 +2456,7 @@ metal_dec_pipeline(const struct metal_state *st, size_t head_dim, bool f16, bool
     return slots[head_dim / 32u - 1u];
 }
 
-enum { METAL_DECQ_MAX_GROUPS = 256 };
+constexpr int METAL_DECQ_MAX_GROUPS = 256;
 
 /* rows==1 (decode) fast path: the split-KV decode kernel — the scalar
  * kernel uses one threadgroup per head (8 tgs on a 32-core GPU) and its
@@ -4136,7 +4136,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
 /* Rows up to which DeltaNet runs the decode kernels (dn_dec_v_rows for
  * more than one) rather than the 64-row chunked kernels, which pad every
  * call to 64 rows (#192). */
-enum { METAL_DN_DECODE_ROWS = 8 };
+constexpr int METAL_DN_DECODE_ROWS = 8;
 
 [[nodiscard]] static enum geist_status
 metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_args *args) {
@@ -4247,7 +4247,8 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
      * has its own two kernels. State buffers thread through Metal's
      * hazard tracking; scratch is reused per piece. DNF_DVB is dnf_state's
      * value-column block (the shader's DNF_DVB). */
-    enum { DNF_CALL = 512u, DNF_DVB = 16u };
+    constexpr int DNF_CALL = 512;
+    constexpr int DNF_DVB  = 16;
     bool fast = args->seq > METAL_DN_DECODE_ROWS && args->conv_kernel == 4u &&
                 args->head_k % 32u == 0 && args->head_k <= 128u && args->head_v % 32u == 0 &&
                 args->head_v <= 256u && st->dnf_out_pipeline != nullptr;
@@ -4391,7 +4392,7 @@ metal_deltanet_mix_states(struct geist_backend                 *be,
                           const struct geist_deltanet_mix_args *args,
                           struct geist_tensor *const            conv_states[static n],
                           struct geist_tensor *const            delta_states[static n]) {
-    enum { MAX_STATES = 8 };
+    constexpr int MAX_STATES = 8;
     if (be == nullptr || be->state == nullptr || args == nullptr || args->qkv == nullptr ||
         args->z == nullptr || args->beta == nullptr || args->alpha == nullptr ||
         args->conv_w == nullptr || args->ssm_a == nullptr || args->dt_bias == nullptr ||

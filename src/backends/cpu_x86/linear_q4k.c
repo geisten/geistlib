@@ -211,7 +211,7 @@ void cpu_x86_linear_q4k_m1(const float               *x,
  * with AVX-512 VNNI: it unpacks each weight K block once per 256-row
  * activation window, which pays off once a window holds enough rows.
  * Elsewhere, and where it declines, the Q4_Kx8 GEMM. */
-enum { TILED_MIN_ROWS = 16 };
+constexpr int TILED_MIN_ROWS = 16;
 
 static bool q4k_tiled_wanted(size_t m) {
     static atomic_int enabled = -1;

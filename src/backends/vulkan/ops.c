@@ -380,7 +380,7 @@ vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *
 
 /* GPU copies of Q6_K are repacked to 216-byte blocks (210 + 6 pad) so
  * every field sits 4-byte aligned and the kernels use word loads. */
-enum { VK_Q6K_GPU_BLOCK = 216 };
+constexpr int VK_Q6K_GPU_BLOCK = 216;
 
 /* Bytes of an SOA copy of n_blocks blocks with qbytes quant bytes each:
  * the quants, then the f16 scales padded to a whole word. true on overflow. */
@@ -2471,7 +2471,7 @@ static void vk_submit(struct geist_backend *be) {
     vk_seq_cut(be->state); /* a roll; with the ring full a flush, just as correct */
 }
 
-enum { VK_URING_BYTES = 16u << 20 }; /* a 512-token chunk's partial sums: 4 MiB */
+constexpr int VK_URING_BYTES = 16 << 20; /* a 512-token chunk's partial sums: 4 MiB */
 
 /* Reserves `bytes` of the upload ring, which the work in flight does not
  * read, for the caller to write at st->uring->mapped + the returned byte
@@ -2632,7 +2632,7 @@ struct vk_push_topk {
     return vk_seq_dispatch_acc(be, VK_PIPE_MOE_TOPK, bi, acc, &push, sizeof push, m32, 1, 1);
 }
 
-enum { VK_SEL_TAB_MAX = 512 }; /* experts per layer linear_t_sel takes */
+constexpr int VK_SEL_TAB_MAX = 512; /* experts per layer linear_t_sel takes */
 
 struct vk_push_sel {
     uint32_t n_in, n_out, blocks_per_row, pad, x_offset, y_offset, x_stride, y_stride, ids_off,
@@ -3438,7 +3438,7 @@ vk_deltanet_mix_states(struct geist_backend                 *be,
                        const struct geist_deltanet_mix_args *a,
                        struct geist_tensor *const            conv_states[static n],
                        struct geist_tensor *const            delta_states[static n]) {
-    enum { MAXS = VK_DN_MAX_STATES };
+    constexpr int MAXS = VK_DN_MAX_STATES;
     if (a == nullptr || a->qkv == nullptr || a->z == nullptr || a->beta == nullptr ||
         a->alpha == nullptr || a->conv_w == nullptr || a->ssm_a == nullptr ||
         a->dt_bias == nullptr || a->norm_w == nullptr || n < 1 || n > MAXS || a->seq != n) {
