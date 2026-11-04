@@ -64,7 +64,7 @@
  "layers": {
   "include": 7,
   "src/archs/audio_conformer": 14,
-  "src/archs/transformer": 57,
+  "src/archs/transformer": 58,
   "src/archs/vision_siglip": 8,
   "src/backends/common": 23,
   "src/backends/cpu_neon": 28,
@@ -93,7 +93,7 @@
   },
   "src/archs/transformer": {
    "include": 50,
-   "src/archs/transformer": 154,
+   "src/archs/transformer": 155,
    "src/backends/common": 17,
    "src/base": 53,
    "src/engine": 2,
@@ -525,6 +525,11 @@
   },
   "src/archs/transformer/arch_family.h": {
    "src/archs/transformer/arch_state.h": [
+    "macos-arm64",
+    "linux-arm64",
+    "linux-x86_64"
+   ],
+   "src/archs/transformer/family_list.h": [
     "macos-arm64",
     "linux-arm64",
     "linux-x86_64"

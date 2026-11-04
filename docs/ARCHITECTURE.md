@@ -151,19 +151,28 @@ The split is a separation of concerns, checked in review:
 Where shared code needs to know something about a family outside the layer,
 it asks the family's capabilities instead of its name: `rotation` (prism
 rotated checkpoints are wired), `prefill_delta` (a larger prefill chunk from a
-model size on) and `towers` (the audio/vision towers fit; the engine reads it
-through the decoder hook `supports_towers`).
+model size on), `towers` (the audio/vision towers fit; the engine reads it
+through the decoder hook `supports_towers`) and `decode_batch` (the batched
+decode step is proven on the family's layers).
 
 `forward/layer.c` runs `attention_block` (or the DeltaNet block for a DeltaNet
 layer) and `ffn_block`, which also owns the layer tail (Gemma 4's PLE and
-layer scale). `state_create` refuses a family without both hooks.
+layer scale). A unit defines its table with `TRANSFORMER_FAMILY(sym,
+populate, populate_layers, attention_block, ffn_block, .optional = ...)`
+(`arch_family.h`), so a table without one of the four hooks does not compile
+(#345).
 
-**Adding a family:** write `families/<name>.c` (copy the closest unit), add
-its `extern` to `arch_family.h`, its entry to `REGISTRY[]` and its
-`general.architecture` string to `geist_arch_transformer_gguf_names[]` in
-`arch_family.c` (each under `#if defined(GEIST_FAMILY_<NAME>)`), and its name
-to `ALL_FAMILIES` in `mk/common.mk`. New mechanics go into a block, not the
-unit. **Removing a family** is the reverse: those four places.
+**Adding a family:** write `families/<name>.c` (copy the closest unit) and
+add its line to `family_list.h`. That list is the only one: the externs, the
+registry, the `general.architecture` names, the default selection and
+`ALL_FAMILIES` in `mk/common.mk` all come from it, and make stops when a unit
+has no line or a line no unit. New mechanics go into a block, not the unit.
+Shared code that needs a family's behaviour asks a capability in
+`struct transformer_family`, never `== &transformer_family_<x>`: a build
+without that family has no such table. `make check-static` proves both
+(`scripts/check_wiring.py`: the wiring mistakes in `tests/wiring/` fail to
+compile, and every family builds and links alone). **Removing a family** is
+the reverse: the file and its line.
 
 **Building only some families:** `make FAMILIES="bitnet llama"` compiles and
 registers only those units; any other GGUF is refused at load like an unknown

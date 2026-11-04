@@ -19,8 +19,8 @@
  *
  *   h_out       = blk_moe_ffn(h_post_attn)
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -114,25 +114,22 @@ static bool populate_layers_llama_moe(struct transformer_arch_state *st) {
 
 /* ---- Registry entries -------------------------------------------------- */
 
-const struct transformer_family transformer_family_llama = {
-        .name                 = "llama",
-        .populate             = populate_llama,
-        .populate_layers      = populate_layers_llama,
-        .fused_residual_norms = true,
-        .attention_block      = llama_attention_block,
-        .ffn_block            = blk_ffn_swiglu,
-};
+TRANSFORMER_FAMILY(llama,
+                   populate_llama,
+                   populate_layers_llama,
+                   llama_attention_block,
+                   blk_ffn_swiglu,
+                   .fused_residual_norms = true);
 
-const struct transformer_family transformer_family_llama_moe = {
-        .name            = "llama",
-        .populate        = populate_llama_moe,
-        .populate_layers = populate_layers_llama_moe,
-        .wire_layer      = wire_layer_llama_moe,
-        .session_alloc   = moe_session_alloc,
-        .session_free    = moe_session_free,
-        .attention_block = llama_attention_block,
-        .ffn_block       = blk_moe_ffn,
-        /* As qwen3moe: routing amplifies KV quantization error. */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY_AS(llama_moe,
+                      llama,
+                      populate_llama_moe,
+                      populate_layers_llama_moe,
+                      llama_attention_block,
+                      blk_moe_ffn,
+                      .wire_layer    = wire_layer_llama_moe,
+                      .session_alloc = moe_session_alloc,
+                      .session_free  = moe_session_free,
+                      /* As qwen3moe: routing amplifies KV quantization error. */
+                      .kv_auto         = GEIST_KV_F16,
+                      .kv_int4_instead = GEIST_KV_F16);

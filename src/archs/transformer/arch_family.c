@@ -4,8 +4,8 @@
  *
  * Layer: ARCHITECTURE.
  *
- * Registry: gemma4, gemma3, llama, qwen3, qwen35, bitnet-b1.58, bitnet — a
- * static array searched linearly.
+ * Registry: the selected lines of family_list.h, a static array searched
+ * linearly.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -235,122 +235,32 @@ bool family_moe_ok(const struct geist_arch_config *c) {
 
 /* ---- Registry --------------------------------------------------------- */
 
-/* Only the families the build selected (make FAMILIES=..., mk/common.mk).
- * A build that selects none (no -DGEIST_FAMILY_*, e.g. another build system)
- * gets all of them. */
-#if !defined(GEIST_FAMILY_BITNET) && !defined(GEIST_FAMILY_GEMMA3) &&         \
-        !defined(GEIST_FAMILY_GEMMA4) && !defined(GEIST_FAMILY_LLAMA) &&      \
-        !defined(GEIST_FAMILY_QWEN3) && !defined(GEIST_FAMILY_QWEN35) &&      \
-        !defined(GEIST_FAMILY_QWEN3MOE) && !defined(GEIST_FAMILY_OLMOE) &&    \
-        !defined(GEIST_FAMILY_GPT_OSS) && !defined(GEIST_FAMILY_DEEPSEEK2) && \
-        !defined(GEIST_FAMILY_LLAMA4) && !defined(GEIST_FAMILY_GRANITEMOE)
-#define GEIST_FAMILY_BITNET 1
-#define GEIST_FAMILY_GEMMA3 1
-#define GEIST_FAMILY_GEMMA4 1
-#define GEIST_FAMILY_LLAMA 1
-#define GEIST_FAMILY_QWEN3 1
-#define GEIST_FAMILY_QWEN35 1
-#define GEIST_FAMILY_QWEN3MOE 1
-#define GEIST_FAMILY_OLMOE 1
-#define GEIST_FAMILY_GRANITEMOE 1
-#define GEIST_FAMILY_GPT_OSS 1
-#define GEIST_FAMILY_DEEPSEEK2 1
-#define GEIST_FAMILY_LLAMA4 1
-#endif
-static const struct transformer_family *const REGISTRY[] = {
-#if defined(GEIST_FAMILY_GEMMA4)
-        &transformer_family_gemma4, /* families/gemma4.c */
-#endif
-#if defined(GEIST_FAMILY_GEMMA3)
-        &transformer_family_gemma3, /* families/gemma3.c */
-#endif
-#if defined(GEIST_FAMILY_LLAMA)
-        &transformer_family_llama, /* families/llama.c */
-#endif
-#if defined(GEIST_FAMILY_QWEN3)
-        &transformer_family_qwen3, /* families/qwen3.c */
-#endif
-#if defined(GEIST_FAMILY_QWEN35)
-        &transformer_family_qwen35, /* families/qwen35.c */
-        &transformer_family_qwen35moe,
-#endif
-#if defined(GEIST_FAMILY_BITNET)
-        &transformer_family_bitnet_b158, /* families/bitnet.c */
-        &transformer_family_bitnet,
-#endif
-#if defined(GEIST_FAMILY_QWEN3MOE)
-        &transformer_family_qwen3moe, /* families/qwen3moe.c */
-#endif
-#if defined(GEIST_FAMILY_OLMOE)
-        &transformer_family_olmoe, /* families/olmoe.c */
-#endif
-#if defined(GEIST_FAMILY_GRANITEMOE)
-        &transformer_family_granitemoe, /* families/granitemoe.c */
-#endif
-#if defined(GEIST_FAMILY_GPT_OSS)
-        &transformer_family_gpt_oss, /* families/gpt_oss.c */
-#endif
-#if defined(GEIST_FAMILY_DEEPSEEK2)
-        &transformer_family_deepseek2, /* families/deepseek2.c */
-#endif
-#if defined(GEIST_FAMILY_LLAMA4)
-        &transformer_family_llama4, /* families/llama4.c */
-#endif
-};
+/* Every name, selected or not: a unit's TRANSFORMER_FAMILY takes its name
+ * from here, so the string exists once. */
+#define FAMILY_NAME_(unit, UNIT, sym, gguf_name) \
+    const char transformer_family_name_##sym[] = gguf_name;
+GEIST_FAMILY_LIST(FAMILY_NAME_)
+#undef FAMILY_NAME_
+
+/* Only the families the build selected (make FAMILIES=..., mk/common.mk;
+ * GEIST_FAMILY_ON in family_list.h). Both lists come from family_list.h. */
+#define FAMILY_ENTRY_(unit, UNIT, sym, gguf_name) \
+    GEIST_PP_IF(GEIST_FAMILY_ON(UNIT))(&transformer_family_##sym, )
+static const struct transformer_family *const REGISTRY[] = {GEIST_FAMILY_LIST(FAMILY_ENTRY_)};
+#undef FAMILY_ENTRY_
 static const size_t REGISTRY_N = sizeof REGISTRY / sizeof REGISTRY[0];
 
 /* Engine-facing match list: the exact `general.architecture` values this
- * architecture accepts, NULL-terminated. Referenced by desc_transformer in
- * src/engine/arch_registry.c — the engine gate rejects any GGUF whose arch
- * string is not listed here, before weights are touched. Must mirror
- * REGISTRY above (count enforced below; a string mismatch fails closed at
- * transformer_family_select, never loads the wrong family). */
+ * architecture accepts, NULL-terminated, in REGISTRY's order. Referenced by
+ * desc_transformer in src/engine/arch_registry.c — the engine gate rejects
+ * any GGUF whose arch string is not listed here, before weights are
+ * touched. */
+#define FAMILY_GGUF_NAME_(unit, UNIT, sym, gguf_name) \
+    GEIST_PP_IF(GEIST_FAMILY_ON(UNIT))(transformer_family_name_##sym, )
 const char *const geist_arch_transformer_gguf_names[] = {
-#if defined(GEIST_FAMILY_GEMMA4)
-        "gemma4",
-#endif
-#if defined(GEIST_FAMILY_GEMMA3)
-        "gemma3",
-#endif
-#if defined(GEIST_FAMILY_LLAMA)
-        "llama",
-#endif
-#if defined(GEIST_FAMILY_QWEN3)
-        "qwen3",
-#endif
-#if defined(GEIST_FAMILY_QWEN35)
-        "qwen35",
-        "qwen35moe",
-#endif
-#if defined(GEIST_FAMILY_BITNET)
-        "bitnet-b1.58",
-        "bitnet",
-#endif
-#if defined(GEIST_FAMILY_QWEN3MOE)
-        "qwen3moe",
-#endif
-#if defined(GEIST_FAMILY_OLMOE)
-        "olmoe",
-#endif
-#if defined(GEIST_FAMILY_GRANITEMOE)
-        "granitemoe",
-#endif
-#if defined(GEIST_FAMILY_GPT_OSS)
-        "gpt-oss",
-#endif
-#if defined(GEIST_FAMILY_DEEPSEEK2)
-        "deepseek2",
-#endif
-#if defined(GEIST_FAMILY_LLAMA4)
-        "llama4",
-#endif
-        nullptr,
+        GEIST_FAMILY_LIST(FAMILY_GGUF_NAME_) nullptr,
 };
-static_assert(sizeof geist_arch_transformer_gguf_names /
-                                      sizeof geist_arch_transformer_gguf_names[0] -
-                              1 ==
-                      sizeof REGISTRY / sizeof REGISTRY[0],
-              "gguf name list must mirror REGISTRY");
+#undef FAMILY_GGUF_NAME_
 
 const struct transformer_family *transformer_family_select(struct gguf_ctx *gguf) {
     size_t      arch_len = 0;
@@ -360,7 +270,7 @@ const struct transformer_family *transformer_family_select(struct gguf_ctx *gguf
             const struct transformer_family *f    = REGISTRY[i];
             const size_t                     flen = strlen(f->name);
             if (flen == arch_len && memcmp(arch, f->name, flen) == 0) {
-#if defined(GEIST_FAMILY_LLAMA)
+#if GEIST_FAMILY_ON(LLAMA)
                 /* Mixtral shares its architecture name with dense Llama. */
                 uint32_t experts = 0;
                 if (f == &transformer_family_llama &&

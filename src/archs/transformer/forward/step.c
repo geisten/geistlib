@@ -906,15 +906,22 @@ enum geist_status transformer_session_apply_opts(struct transformer_arch_session
  * cover (#186, #221). The MoE block takes the n rows as it takes a prefill
  * chunk's, on the device when moe_gpu_device says so. */
 size_t transformer_decode_batch_max(const struct transformer_arch_state *st) {
-    if (st == nullptr || st->config.has_ple || geist_pooling_is_embedding(st->config.pooling) ||
-        st->offload != nullptr) {
+    if (st == nullptr || st->family == nullptr || st->config.has_ple ||
+        geist_pooling_is_embedding(st->config.pooling) || st->offload != nullptr) {
         return 0;
     }
-    const bool q35 = (st->family == &transformer_family_qwen35 ||
-                      st->family == &transformer_family_qwen35moe) &&
-                     st->config.has_attn_output_gate;
-    if (!q35 && st->family != &transformer_family_qwen3moe) {
+    /* The family's capability, not its table's address: a build without
+     * that family has no table to compare against (#345). */
+    switch (st->family->decode_batch) {
+    case TRANSFORMER_DECODE_BATCH_NO:
         return 0;
+    case TRANSFORMER_DECODE_BATCH_GATED_ATTN:
+        if (!st->config.has_attn_output_gate) {
+            return 0;
+        }
+        break;
+    case TRANSFORMER_DECODE_BATCH_YES:
+        break;
     }
     /* An MoE batches where it pays (#245): on the device route (Metal,
      * every expert resident), or on the host route with the experts split

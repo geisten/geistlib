@@ -31,8 +31,8 @@
  * override llama.cpp's fixed 8192 (no converter writes them; the unit test
  * shrinks the chunk to reach it).
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -304,16 +304,14 @@ llama4_attention_block(struct transformer_layer_forward_ctx *ctx) {
     return s;
 }
 
-const struct transformer_family transformer_family_llama4 = {
-        .name            = "llama4",
-        .populate        = populate_llama4,
-        .populate_layers = populate_layers_llama4,
-        .wire_layer      = wire_layer_llama4,
-        .session_alloc   = moe_session_alloc,
-        .session_free    = moe_session_free,
-        .attention_block = llama4_attention_block,
-        .ffn_block       = llama4_ffn_block,
-        /* As the other MoE families: routing amplifies KV quantization. */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(llama4,
+                   populate_llama4,
+                   populate_layers_llama4,
+                   llama4_attention_block,
+                   llama4_ffn_block,
+                   .wire_layer    = wire_layer_llama4,
+                   .session_alloc = moe_session_alloc,
+                   .session_free  = moe_session_free,
+                   /* As the other MoE families: routing amplifies KV quantization. */
+                   .kv_auto         = GEIST_KV_F16,
+                   .kv_int4_instead = GEIST_KV_F16);

@@ -19,8 +19,8 @@
  *   h_post_attn = h_in + o_proj(attend_sinks(rope(qkv(norm(h_in)) + b))) + b_o
  *   h_out       = blk_moe_ffn(h_post_attn)
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -152,17 +152,15 @@ gpt_oss_attention_block(struct transformer_layer_forward_ctx *ctx) {
     return s == GEIST_OK ? blk_attn_residual(ctx, nullptr) : s;
 }
 
-const struct transformer_family transformer_family_gpt_oss = {
-        .name            = "gpt-oss",
-        .populate        = populate_gpt_oss,
-        .populate_layers = populate_layers_gpt_oss,
-        .wire_layer      = wire_layer_gpt_oss,
-        .session_alloc   = moe_session_alloc,
-        .session_free    = moe_session_free,
-        .attention_block = gpt_oss_attention_block,
-        .ffn_block       = blk_moe_ffn,
-        /* The sinks run on an F32 or F16 cache only (kv_store.c); F16 as the
-         * other MoE families. */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(gpt_oss,
+                   populate_gpt_oss,
+                   populate_layers_gpt_oss,
+                   gpt_oss_attention_block,
+                   blk_moe_ffn,
+                   .wire_layer    = wire_layer_gpt_oss,
+                   .session_alloc = moe_session_alloc,
+                   .session_free  = moe_session_free,
+                   /* The sinks run on an F32 or F16 cache only (kv_store.c); F16 as the
+                    * other MoE families. */
+                   .kv_auto         = GEIST_KV_F16,
+                   .kv_int4_instead = GEIST_KV_F16);

@@ -6,11 +6,9 @@
  * observable by loading a GGUF.
  *
  *   1. The engine gate rejects any `general.architecture` it does not
- *      list, before weights are touched. Adding a family means adding it
- *      to BOTH the registry and geist_arch_transformer_gguf_names, and the
- *      static_assert in arch_family.c only checks their COUNTS match — two
- *      lists of the same length with different contents would compile and
- *      then fail closed on a real model.
+ *      list, before weights are touched. The registry and
+ *      geist_arch_transformer_gguf_names both come from family_list.h
+ *      (#345); this pins that the gemma3 line reaches the gate.
  *
  *   2. sqrt(d_model) embedding scaling (has_embed_scale) is separate from
  *      per-layer embeddings (has_ple): Gemma 3 has the scale and no PLE.

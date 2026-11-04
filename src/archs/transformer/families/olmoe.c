@@ -16,8 +16,8 @@
  *   h_post_attn = h_in + o_proj(attend(rope(qk_norm(qkv(rot(attn_norm(h_in)))))))
  *   h_out       = blk_moe_ffn(h_post_attn)
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk.
+ * Removing the family is this file and its line in family_list.h
+ * (make check-static builds it alone, #345).
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -86,16 +86,14 @@ olmoe_attention_block(struct transformer_layer_forward_ctx *ctx) {
     return s == GEIST_OK ? blk_attn_out(ctx, nullptr) : s;
 }
 
-const struct transformer_family transformer_family_olmoe = {
-        .name            = "olmoe",
-        .populate        = populate_olmoe,
-        .populate_layers = populate_layers_olmoe,
-        .wire_layer      = wire_layer_olmoe,
-        .session_alloc   = moe_session_alloc,
-        .session_free    = moe_session_free,
-        .attention_block = olmoe_attention_block,
-        .ffn_block       = blk_moe_ffn,
-        /* As qwen3moe: routing amplifies KV quantization error. */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(olmoe,
+                   populate_olmoe,
+                   populate_layers_olmoe,
+                   olmoe_attention_block,
+                   blk_moe_ffn,
+                   .wire_layer    = wire_layer_olmoe,
+                   .session_alloc = moe_session_alloc,
+                   .session_free  = moe_session_free,
+                   /* As qwen3moe: routing amplifies KV quantization error. */
+                   .kv_auto         = GEIST_KV_F16,
+                   .kv_int4_instead = GEIST_KV_F16);

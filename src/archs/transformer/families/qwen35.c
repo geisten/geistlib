@@ -14,9 +14,9 @@
  *
  * The output gate and the rotation are model features the blocks apply.
  *
- * Removing the family is this file, its registry lines in arch_family.c and
- * arch_family.h, and its line in mk/common.mk (plus the DeltaNet block and
- * the MTP drafter, which only this family uses).
+ * Removing the family is this file and its line in family_list.h (make
+ * check-static builds it alone, #345); the DeltaNet block and the MTP
+ * drafter, which only this family uses, can go after it.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -486,21 +486,20 @@ qwen35_attention_block(struct transformer_layer_forward_ctx *ctx) {
 
 /* ---- Registry entry --------------------------------------------------- */
 
-const struct transformer_family transformer_family_qwen35 = {
-        .name     = "qwen35",
-        .rotation = true,
-        /* 27B weights (Ternary-Bonsai-2-27B, Qwen3.5-27B) dequantized once
-         * per chunk are the prefill's cost: twice the chunk from 4 GiB on
-         * (256 is no better than 128). */
-        .prefill_delta   = {.from_bytes = (size_t) 4 << 30, .m_max_rows = 64},
-        .populate        = populate_qwen35,
-        .populate_layers = populate_layers_qwen35,
-        .wire_layer      = qwen35_wire_layer,
-        .session_alloc   = qwen35_session_alloc,
-        .session_free    = qwen35_session_free,
-        .attention_block = qwen35_attention_block,
-        .ffn_block       = blk_ffn_swiglu,
-};
+TRANSFORMER_FAMILY(qwen35,
+                   populate_qwen35,
+                   populate_layers_qwen35,
+                   qwen35_attention_block,
+                   blk_ffn_swiglu,
+                   .decode_batch = TRANSFORMER_DECODE_BATCH_GATED_ATTN,
+                   .rotation     = true,
+                   /* 27B weights (Ternary-Bonsai-2-27B, Qwen3.5-27B) dequantized once
+                    * per chunk are the prefill's cost: twice the chunk from 4 GiB on
+                    * (256 is no better than 128). */
+                   .prefill_delta = {.from_bytes = (size_t) 4 << 30, .m_max_rows = 64},
+                   .wire_layer    = qwen35_wire_layer,
+                   .session_alloc = qwen35_session_alloc,
+                   .session_free  = qwen35_session_free);
 
 /* ---- qwen35moe (Qwen3.5/3.6 MoE hybrid, #169) ------------------------- */
 /*
@@ -556,17 +555,16 @@ static void qwen35moe_session_free(struct transformer_arch_session *sess) {
     qwen35_session_free(sess);
 }
 
-const struct transformer_family transformer_family_qwen35moe = {
-        .name            = "qwen35moe",
-        .rotation        = true,
-        .populate        = populate_qwen35moe,
-        .populate_layers = populate_layers_qwen35moe,
-        .wire_layer      = qwen35moe_wire_layer,
-        .session_alloc   = qwen35moe_session_alloc,
-        .session_free    = qwen35moe_session_free,
-        .attention_block = qwen35_attention_block,
-        .ffn_block       = blk_moe_ffn,
-        /* As qwen3moe: an MoE amplifies KV quantization error (#48, #53). */
-        .kv_auto         = GEIST_KV_F16,
-        .kv_int4_instead = GEIST_KV_F16,
-};
+TRANSFORMER_FAMILY(qwen35moe,
+                   populate_qwen35moe,
+                   populate_layers_qwen35moe,
+                   qwen35_attention_block,
+                   blk_moe_ffn,
+                   .decode_batch  = TRANSFORMER_DECODE_BATCH_GATED_ATTN,
+                   .rotation      = true,
+                   .wire_layer    = qwen35moe_wire_layer,
+                   .session_alloc = qwen35moe_session_alloc,
+                   .session_free  = qwen35moe_session_free,
+                   /* As qwen3moe: an MoE amplifies KV quantization error (#48, #53). */
+                   .kv_auto         = GEIST_KV_F16,
+                   .kv_int4_instead = GEIST_KV_F16);

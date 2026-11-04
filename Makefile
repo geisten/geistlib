@@ -600,6 +600,13 @@ check-static-tidy:
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
 
+# Family wiring (#345): the mistakes in tests/wiring/ fail to compile, and
+# each family builds and links alone.
+.PHONY: check-static-wiring
+check-static-wiring:
+	@python3 scripts/check_wiring.py
+check-static: check-static-wiring
+
 format:
 	@$(CLANG_FORMAT) -i $(FORMAT_FILES)
 	@echo "Formatted $(words $(FORMAT_FILES)) files."
@@ -640,7 +647,7 @@ help:
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
-	"  make check-static          clang-tidy with a findings ratchet (no models, no GPU)" \
+	"  make check-static          clang-tidy ratchet, wiring cases, family matrix (no models, no GPU)" \
 	"  make check-layers          layer table: includes, symbols, headers alone, #ifs (#344)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
 	"  make FAMILIES=\"bitnet llama\"  build only these model families (default: all)" \

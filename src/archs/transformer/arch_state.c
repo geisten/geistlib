@@ -1108,11 +1108,8 @@ geometry_from_metadata(struct geist_backend             *be,
                                 "general.architecture in GGUF");
         return GEIST_E_UNSUPPORTED;
     }
-    if (fam->attention_block == nullptr || fam->ffn_block == nullptr) {
-        geist_backend_set_error(
-                be, GEIST_E_INTERNAL, "transformer: family %s has no layer forward", fam->name);
-        return GEIST_E_INTERNAL;
-    }
+    /* Its hooks are there: TRANSFORMER_FAMILY (arch_family.h) does not
+     * compile a table without them (#345). */
     st->family = fam;
     fam->populate(gguf, st);
     if (st->n_layers == 0) {
