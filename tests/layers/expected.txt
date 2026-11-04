@@ -1,0 +1,6 @@
+# The violations seeded in this tree; tools/check_layers.py --selftest must
+# report exactly these.
+include src/base/upward.c -> src/engine/engine.h
+symbol src/base/calls_up.c -> engine_step (src/engine/engine.c)
+header src/base/not_alone.h
+if src/engine/engine.c 2
