@@ -213,7 +213,8 @@ Neither is "cleaner" in general. Match the surrounding code.
 - Express invariants through **explicit validation**, not `assert`. Release
   builds define `NDEBUG`.
 - Portability differences live **behind clear boundaries**, not scattered
-  `#ifdef`s in logic.
+  `#ifdef`s in logic. `make check-layers` counts the `#if`s on a platform
+  macro per file outside `src/base/`; a file's count may only fall.
 
 ## 6. Changing an existing API
 

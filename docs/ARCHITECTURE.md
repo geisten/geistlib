@@ -25,6 +25,7 @@ src/backends/            compute: the kernels that actually run the ops
       metal/               Apple GPU (experimental, built on Apple Silicon; dlopen'd Metal.framework)
       vulkan/              Linux/NVIDIA GPU (opt-in, experimental; dlopen'd libvulkan)
 src/formats/             GGUF quant (de)quantization; ptqtp/ holds only the AWQ scale loader
+src/quant/               the quantization contract: block layouts, codec declarations
 src/io/                  GGUF reader, safetensors reader
 src/base/                freestanding utilities: heap, error, hw_probe
 ```
@@ -40,20 +41,68 @@ are listed in registries (`src/engine/arch_registry.c`,
 
 ### Dependency rules
 
-The include graph follows the layers strictly:
+The layers and what each may use are one table, `tools/layers.json`, shown
+here; `make check-layers` (part of `make check-static`) proves the tree
+against it with `tools/check_layers.py`:
 
-- `src/base/` includes nothing above it; everyone may include `src/base/`.
-- `src/engine/` includes `base` and the public headers. It never reaches into
-  an arch or backend implementation — with exactly **two composition points**:
-  `arch_registry.c` and `backend_registry.c`, the only files that name concrete
-  archs/backends.
-- `src/archs/` never includes a concrete backend (`cpu_*`, `metal`, `vulkan`).
+- every **include edge**, read from the compiler's include tree (`-H`) of each
+  library source and each internal header, not from the text: with
+  `-Isrc/base` and friends, `#include "heap.h"` names a layer only once the
+  compiler has resolved it;
+- every **undefined symbol** of every built object (`nm`), against the layer
+  that defines it, which catches a call that repeats a prototype instead of
+  including a header. A function declared in an interface layer's header
+  (`include/`, `src/quant/`) belongs to that layer, wherever it is defined;
+- every **internal header compiles on its own**, as `check-headers` does for
+  the public ones, except the templates the table lists with their reason;
+- the **portability `#if`s** per file outside the wrapper headers of
+  `src/base/` may only fall (AGENT.md §5).
+
+Known violations are listed in `tools/layers_baseline.txt`, which only
+shrinks.
+
+<!-- layers:begin (generated from tools/layers.json by tools/check_layers.py --doc) -->
+| layer | files | may use | |
+| :-- | :-- | :-- | :-- |
+| public | `include/` | nothing | the public C ABI; its functions are defined in engine and base (interface) |
+| base | `src/base/` | public | freestanding utilities: heap, errors, hardware probe, threads |
+| quant | `src/quant/` | base, public | the quantization contract: block layouts and codec declarations, defined in formats (interface) |
+| io | `src/io/` | base, public, quant | GGUF and safetensors readers, file mapping |
+| formats | `src/formats/` | base, public, quant, io | per-quant decode of GGUF tensors, the AWQ scale loader |
+| backend_common | `src/backends/common/` | base, public, quant | the shared compute library: GEMM facade, gemma4 kernels, KIVI, host buffers |
+| cpu_neon | `src/backends/cpu_neon/` | base, public, quant, backend_common | backend: Apple Silicon and ARM64 |
+| cpu_scalar | `src/backends/cpu_scalar/` | base, public, quant, backend_common | backend: the portable reference |
+| cpu_x86 | `src/backends/cpu_x86/` | base, public, quant, backend_common | backend: x86-64-v3 with AVX-512/VNNI dispatch |
+| metal | `src/backends/metal/` | base, public, quant, backend_common | backend: Apple GPU |
+| vulkan | `src/backends/vulkan/` | base, public, quant, backend_common | backend: Vulkan GPU |
+| transformer | `src/archs/transformer/` | base, public, quant, io, formats, backend_common | arch: the decoder stack, families, forward blocks, weight loading |
+| audio_conformer | `src/archs/audio_conformer/` | base, public, quant, io, formats, backend_common | arch: the Conformer audio tower |
+| vision_siglip | `src/archs/vision_siglip/` | base, public, quant, io, formats, backend_common, third_party | arch: the SigLIP vision tower |
+| engine | `src/engine/` | base, public, quant, io, formats, backend_common | orchestration: model load, sessions, sampler, tokenizers, registries |
+| third_party | `third_party/` | nothing | vendored stb image headers |
+
+Composition point `src/engine/arch_registry.c` may also use transformer, audio_conformer, vision_siglip.
+
+Composition point `src/engine/backend_registry.c` may also use cpu_neon, cpu_scalar, cpu_x86, metal, vulkan.
+<!-- layers:end -->
+
+In words:
+
+- `src/base/` uses nothing but the public types; everyone may use it.
+- `src/quant/` is the quantization contract: block layouts and the codec
+  declarations. `src/formats/` implements it; `src/io/` reads its block sizes.
+- `src/engine/` uses the layers below the archs. It never reaches into an arch
+  or backend implementation, with exactly **two composition points**:
+  `arch_registry.c` and `backend_registry.c`, the only files that name
+  concrete archs/backends.
+- `src/archs/` never uses a concrete backend (`cpu_*`, `metal`, `vulkan`).
   Ops reach compute through the backend vtbl. The one sanctioned shortcut is
-  `src/backends/common/` — the shared compute library (GEMM facade, gemma4
+  `src/backends/common/`: the shared compute library (GEMM facade, gemma4
   kernels, KIVI) that is always compiled and may be called directly from archs.
-- `src/backends/<name>/` includes `base` and `backends/common` only; a backend
-  never includes another backend or an arch.
-- `src/formats/` and `src/io/` sit beside the backends: `base` only.
+- `src/backends/<name>/` uses `base`, `quant` and `backends/common` only; a
+  backend never uses another backend or an arch.
+- `src/formats/` and `src/io/` sit beside the backends: `base`, `quant`, and
+  for `formats` the GGUF reader's types.
 
 A new backend or arch therefore touches its own directory, one `mk/backend-*.mk`
 fragment, and one registry entry — nothing else.
