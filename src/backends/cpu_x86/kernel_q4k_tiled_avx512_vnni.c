@@ -360,13 +360,13 @@ static void prep_band(bool                       q8_0,
  *   sub   elements per subblock (32 Q4_K, 16 Q6_K)
  *   mins  the format subtracts a scaled min (Q4_K)
  *   bias  the stored code is value + bias (32 Q6_K, 0 Q4_K). */
-static inline __attribute__((always_inline)) void micro_8x16(int                    sub,
-                                                             bool                   mins,
-                                                             int                    bias,
-                                                             int                    i0,
-                                                             int                    j0,
-                                                             const struct act_view *av,
-                                                             struct q4k_tiled_ws   *ws) {
+[[gnu::always_inline]] static inline void micro_8x16(int                    sub,
+                                                     bool                   mins,
+                                                     int                    bias,
+                                                     int                    i0,
+                                                     int                    j0,
+                                                     const struct act_view *av,
+                                                     struct q4k_tiled_ws   *ws) {
     enum { ROWS = 8 };
     const int    nsub = TILE / sub, per16 = sub / 16, groups = sub / 4;
     const __m512 a_d = _mm512_load_ps(&av->d[j0]);
@@ -453,7 +453,7 @@ static inline __attribute__((always_inline)) void micro_8x16(int                
  * block on both sides, so each block's exact int32 sum is scaled in float
  * right away: Q4_0 w = d (q - 8) gives d dx (P - 8 S), Q4_1 w = d q + m
  * gives d dx P + m dx S (P = sum q x, S = sum x, both exact). */
-static inline __attribute__((always_inline)) void
+[[gnu::always_inline]] static inline void
 micro_8x16_f(bool q4_1, int i0, int j0, const struct act_view *av, struct q4k_tiled_ws *ws) {
     enum { ROWS = 8 };
     __m512 f[ROWS];

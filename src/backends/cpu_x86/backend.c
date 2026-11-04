@@ -531,7 +531,7 @@ static bool cpu_x86_fused_supported(struct geist_backend *be, const struct geist
 
 /* ---------- Vtbl init ---------- */
 
-__attribute__((constructor)) static void cpu_x86_init_vtbl(void) {
+[[gnu::constructor]] static void cpu_x86_init_vtbl(void) {
     cpu_x86_vtbl                = cpu_scalar_vtbl;
     cpu_x86_vtbl.create         = cpu_x86_create;
     cpu_x86_vtbl.destroy        = cpu_x86_destroy;
