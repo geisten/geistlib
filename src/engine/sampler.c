@@ -64,9 +64,9 @@ float geist_rng_next_unit(struct geist_rng *rng) {
  * fmaxf vectorizes on both compilers (fmaxnm / maxps). It skips a NaN,
  * which the plain scan also never picks. */
 geist_token_t geist_sampler_argmax(size_t n_vocab, const float logits[static n_vocab]) {
-    enum { BLOCK = 256 };
-    float  best       = logits[0];
-    size_t best_block = 0;
+    constexpr int BLOCK      = 256;
+    float         best       = logits[0];
+    size_t        best_block = 0;
     for (size_t b = 0; b < n_vocab; b += BLOCK) {
         const size_t n = n_vocab - b < BLOCK ? n_vocab - b : BLOCK;
         float        m = logits[b];

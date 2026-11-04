@@ -41,7 +41,7 @@ typedef enum {
     ST_DTYPE_BOOL,
 } st_dtype_t;
 
-#define ST_MAX_RANK 8
+constexpr int ST_MAX_RANK = 8;
 
 struct st_tensor_t {
     const char *name; // owned by ctx, NUL-terminated

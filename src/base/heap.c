@@ -293,7 +293,7 @@ bool heap_grow_slow(void       **buf,
  * TLV blocks through a pthread key of its own, in unspecified order).
  * ponytail: fixed HEAP_TL_MAX slots per thread; a site beyond them gets
  * false (its kernel's fallback path), raise it when kernels add more. */
-#define HEAP_TL_MAX 32
+constexpr int HEAP_TL_MAX = 32;
 
 struct heap_tl {
     size_t n;

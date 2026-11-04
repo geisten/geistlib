@@ -32,9 +32,9 @@ enum {
  * u64 length + a u32 type for the KV, a u64 name length + u32 n_dims for the
  * tensor info. A strict lower bound by the format, so bounding the header's
  * counts with it can never reject a well-formed file. */
-enum { GGUF_MIN_RECORD_BYTES = 12 };
+constexpr int GGUF_MIN_RECORD_BYTES = 12;
 
-#define MAGIC_LE 0x46554747u /* "GGUF" little-endian */
+constexpr unsigned MAGIC_LE = 0x46554747u; /* "GGUF" little-endian */
 
 /* Metadata KV record. Each entry points into the mmap for both
  * key and value bytes; ctx lifetime keeps the mmap mapped. */
