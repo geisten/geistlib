@@ -142,6 +142,10 @@ geist_ffn_activation_select(size_t act_len, enum geist_ffn_activation_kind dflt,
     return act == GEIST_FFN_SQUARED_RELU || act == GEIST_FFN_GATED_SQUARED_RELU;
 }
 
+/* A family refuses more experts than this at load (blk_moe_ffn lists the
+ * active experts of a layer on the stack). */
+constexpr int GEIST_MOE_MAX_EXPERTS = 512;
+
 struct geist_arch_config {
     /* ---- Numerics. */
     float rms_eps;       /* RMSNorm epsilon. Gemma 4: 1e-6f. */
@@ -245,9 +249,7 @@ struct geist_arch_config {
      * more expert, slot moe_n_experts, so every placement of the routed
      * experts (CPU, hot on a GPU) takes it as it is. */
     size_t moe_n_shared;
-    /* A family refuses more experts than this at load (blk_moe_ffn lists
-     * the active experts of a layer on the stack). */
-#define GEIST_MOE_MAX_EXPERTS 512
+    /* A family refuses more than GEIST_MOE_MAX_EXPERTS at load. */
     /* How the router's logits become the selection and its weights
      * (llama.cpp's expert_gating_func, moe_route):
      *   SOFTMAX         p = softmax(logits) over all experts; the k largest

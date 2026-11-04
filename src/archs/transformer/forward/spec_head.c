@@ -93,7 +93,7 @@
  * sketch is equally good at any model width (stride 4 for the 2B-4T, 2 for
  * bitnet_b1_58-large). A fixed stride gives narrow models a coarser sketch
  * that silently loses the true argmax. */
-#define SPEC_SKETCH_DIMS 640
+constexpr int SPEC_SKETCH_DIMS = 640;
 
 /* How much smaller a sketch row must be than a dense row before the sketch is
  * worth building. This is the whole trade in one number: the sketch replaces
@@ -103,12 +103,12 @@
  *
  * On a Pi 5 an F16 head (8x shrink) decodes +82 % faster; a Q6_K head (1.64x)
  * gains under 1 % while holding a 201 MB table. 3.0 sits between the two. */
-#define SPEC_MIN_ROW_SHRINK 3.0
+constexpr double SPEC_MIN_ROW_SHRINK = 3.0;
 
 /* Finalists for a ~128 K vocab. 512 has a thin margin: a near-tie whose loser
  * the sketch ranks past the cutoff flips greedy (#102). 1024 doubles the
  * recall margin for ~3 % of the head read. */
-#define SPEC_TOPK_DEFAULT 1024
+constexpr int SPEC_TOPK_DEFAULT = 1024;
 
 /* (rough score, vocab index) entry of the top-K min-heap. */
 struct spec_cand {

@@ -1515,10 +1515,12 @@ void moe_gpu_stage_calibrate(struct transformer_arch_state *st) {
     const struct geist_backend_vtbl *gv    = gbe->desc->vtbl;
     const size_t                     d     = st->d_model;
     const size_t                     inter = layer != SIZE_MAX ? st->layers[layer].intermediate : 0;
-    enum { M_LO = 16, M_HI = 256, M_CPU = 32 };
-    struct geist_buffer *buf[4] = {nullptr};
-    const size_t      bytes[4]  = {M_HI * d * 4, M_HI * inter * 4, M_HI * inter * 4, M_HI * d * 4};
-    enum geist_status s         = layer != SIZE_MAX ? GEIST_OK : GEIST_E_UNSUPPORTED;
+    constexpr int                    M_LO  = 16;
+    constexpr int                    M_HI  = 256;
+    constexpr int                    M_CPU = 32;
+    struct geist_buffer             *buf[4] = {nullptr};
+    const size_t      bytes[4] = {M_HI * d * 4, M_HI * inter * 4, M_HI * inter * 4, M_HI * d * 4};
+    enum geist_status s        = layer != SIZE_MAX ? GEIST_OK : GEIST_E_UNSUPPORTED;
     for (size_t i = 0; i < 4 && s == GEIST_OK; i++)
         s = gv->buffer_create(gbe, bytes[i], GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &buf[i]);
     float *zero = s == GEIST_OK ? heap_calloc_array_aligned(float, M_HI *d) : nullptr;
@@ -1529,7 +1531,7 @@ void moe_gpu_stage_calibrate(struct transformer_arch_state *st) {
      * then R rounds of n_cold staged experts' copies, each read by one
      * GEMM of its first expert at M_LO rows. After a warm-up that clocks
      * the card and its link up. */
-    enum { R = 16 };
+    constexpr int              R = 16;
     const struct geist_weight *th =
             s == GEIST_OK ? &mg->twins[(layer * slots + e_hot) * 3] : nullptr;
     const struct geist_weight *w[3 * 64];

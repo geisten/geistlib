@@ -570,7 +570,7 @@ enum geist_status transformer_kv_bytes_per_token(size_t                         
 
 /* The 15 per-layer KV slot arrays, in the order they partition the one
  * allocation session_alloc makes; k_cache is its base. */
-enum { KV_SLOT_ARRAYS = 15 };
+constexpr int KV_SLOT_ARRAYS = 15;
 
 static void kv_slot_arrays(struct transformer_arch_session *sess,
                            struct geist_buffer           ***out[static KV_SLOT_ARRAYS]) {

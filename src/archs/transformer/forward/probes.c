@@ -23,7 +23,7 @@
  *   - Layer indices ≥ ACT_SPARSITY_MAX_LAYERS are dropped; the first
  *     overflow logs a warning to stderr.
  */
-#define ACT_SPARSITY_MAX_LAYERS 64
+constexpr int ACT_SPARSITY_MAX_LAYERS = 64;
 
 static pthread_once_t  g_act_sparsity_once            = PTHREAD_ONCE_INIT;
 static pthread_mutex_t g_act_sparsity_mutex           = PTHREAD_MUTEX_INITIALIZER;

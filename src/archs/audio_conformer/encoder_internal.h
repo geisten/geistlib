@@ -65,21 +65,21 @@ static inline void ae_profile_print_and_reset(void) {
 }
 #endif
 
-#define AUDIO_HIDDEN 1024
-#define MEL_DIM 128
-#define LN_EPS 1e-6f
-#define RMS_EPS 1e-6f
-#define FFN_INTER 4096
-#define N_HEADS 8
-#define HEAD_DIM 128 /* AUDIO_HIDDEN / N_HEADS */
-#define CHUNK_SIZE 12
-#define MAX_PAST_HORIZON 12 /* attention_context_left - 1 */
-#define MAX_FUTURE 0
-#define CONTEXT_SIZE (CHUNK_SIZE + MAX_PAST_HORIZON + MAX_FUTURE) /* 24 */
-#define POS_LEN (CONTEXT_SIZE / 2 + 1)                            /* 13 */
-#define CONV_KERNEL 5
-#define ATTN_SOFTCAP 50.0f
-#define N_LAYERS 12
+constexpr int   AUDIO_HIDDEN     = 1024;
+constexpr int   MEL_DIM          = 128;
+constexpr float LN_EPS           = 1e-6f;
+constexpr float RMS_EPS          = 1e-6f;
+constexpr int   FFN_INTER        = 4096;
+constexpr int   N_HEADS          = 8;
+constexpr int   HEAD_DIM         = AUDIO_HIDDEN / N_HEADS;
+constexpr int   CHUNK_SIZE       = 12;
+constexpr int   MAX_PAST_HORIZON = 12; /* attention_context_left - 1 */
+constexpr int   MAX_FUTURE       = 0;
+constexpr int   CONTEXT_SIZE     = CHUNK_SIZE + MAX_PAST_HORIZON + MAX_FUTURE; /* 24 */
+constexpr int   POS_LEN          = CONTEXT_SIZE / 2 + 1;                       /* 13 */
+constexpr int   CONV_KERNEL      = 5;
+constexpr float ATTN_SOFTCAP     = 50.0f;
+constexpr int   N_LAYERS         = 12;
 
 /* Per-tensor precision tag, set at load time per call-site class by
  * audio_prec_policy_resolve (encoder_weights.c): struct FFN, struct Attn
@@ -140,15 +140,15 @@ struct ConformerLayer {
  * variants — the checkpoint's output_proj_dims. The TEXT-side width of the
  * final embedding_projection (1536 on E2B, 2560 on E4B) is per-instance:
  * AudioEncoder.soft_dim, read from the safetensors shape (#258). */
-#define OUTPUT_PROJ_DIMS AUDIO_SOFT_TOKEN_DIM /* 1536 */
+constexpr int OUTPUT_PROJ_DIMS = AUDIO_SOFT_TOKEN_DIM; /* 1536 */
 
 /* PCM-buffer cap = 30s × 16 kHz = 480 000 samples (matches model's
  * audio_seq_length=750 × 40ms/token). */
-#define PCM_BUFFER_CAP (16000 * 30)
+constexpr int PCM_BUFFER_CAP = 16000 * 30;
 /* Max mel frames for a PCM_BUFFER_CAP-second utterance (~30 s × 50 Hz frames + 1). */
-#define MEL_BUF_CAP ((PCM_BUFFER_CAP / 160) + 4)
+constexpr int MEL_BUF_CAP = (PCM_BUFFER_CAP / 160) + 4;
 /* Max sub-tokens = mel cap / 4 (two stride-2 convs in subsample) + ceiling slack. */
-#define MAX_SUB_TOKENS ((MEL_BUF_CAP / 4) + 16)
+constexpr int MAX_SUB_TOKENS = (MEL_BUF_CAP / 4) + 16;
 
 /* === Chunk-streaming state ===
  *
@@ -179,12 +179,12 @@ struct lconv_state {
  * Conv2d outputs are stable for already-computed time positions as the
  * input grows - the kernel taps are at deterministic offsets from oh,
  * not anchored to h_in. */
-#define SUBS_T_OUT0_CAP ((MEL_BUF_CAP / 2) + 2)
-#define SUBS_T_OUT1_CAP ((SUBS_T_OUT0_CAP / 2) + 2)
-#define SUBS_W_OUT0 64
-#define SUBS_W_OUT1 32
-#define SUBS_L0_CHANNELS 128
-#define SUBS_L1_CHANNELS 32
+constexpr int SUBS_T_OUT0_CAP  = (MEL_BUF_CAP / 2) + 2;
+constexpr int SUBS_T_OUT1_CAP  = (SUBS_T_OUT0_CAP / 2) + 2;
+constexpr int SUBS_W_OUT0      = 64;
+constexpr int SUBS_W_OUT1      = 32;
+constexpr int SUBS_L0_CHANNELS = 128;
+constexpr int SUBS_L1_CHANNELS = 32;
 
 struct subs_cache {
     /* Layer-0 conv intermediate, (128, T_out0, 64). Stores post-LN+ReLU
@@ -227,8 +227,8 @@ static inline size_t audio_subsample_stable_tokens(size_t n_mel) {
  * padded (mask=false) frame appended after the real ones — HF's
  * Gemma4AudioFeatureExtractor convention. Keep both paths on these
  * constants so they cannot diverge. */
-#define MEL_HOP 160
-#define AUDIO_MAX_MEL_FRAMES 3000 /* 30 s at the 10 ms hop */
+constexpr int MEL_HOP              = 160;
+constexpr int AUDIO_MAX_MEL_FRAMES = 3000; /* 30 s at the 10 ms hop */
 
 /* All-true mask for n_frames real frames, optionally with the extra
  * padded frame (mask=false). Caller frees. The single home of the

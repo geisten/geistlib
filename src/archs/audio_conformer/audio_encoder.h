@@ -22,7 +22,7 @@ size_t audio_encoder_max_soft_tokens(size_t n_samples);
 /* E2B soft-token width AND the tower-internal output_proj width (constant
  * across variants). The per-instance soft-token width — the text model's
  * residual stream, 2560 on E4B — comes from audio_encoder_soft_dim(). */
-#define AUDIO_SOFT_TOKEN_DIM 1536
+constexpr int AUDIO_SOFT_TOKEN_DIM = 1536;
 
 /* Soft-token width of THIS tower checkpoint (embedding_projection rows):
  * 1536 for E2B, 2560 for E4B. Size pull buffers with this. */

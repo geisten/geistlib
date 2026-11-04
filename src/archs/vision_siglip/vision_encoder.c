@@ -47,14 +47,14 @@
 #endif
 
 /* Tower constants for Gemma 4 vision (config.json vision_config). */
-#define VTH VISION_TOWER_HIDDEN /* 768  */
-#define V_INTER 3072            /* intermediate_size */
-#define V_HEADS 12              /* num_attention_heads */
-#define V_HEAD_D 64             /* head_dim */
-#define V_LAYERS 16             /* num_hidden_layers */
-#define V_EPS 1e-6f             /* rms_norm_eps */
-#define V_THETA 100.0f          /* rope_theta */
-#define V_POS_GRID 10240        /* position_embedding_size */
+constexpr int   VTH        = VISION_TOWER_HIDDEN; /* 768  */
+constexpr int   V_INTER    = 3072;                /* intermediate_size */
+constexpr int   V_HEADS    = 12;                  /* num_attention_heads */
+constexpr int   V_HEAD_D   = 64;                  /* head_dim */
+constexpr int   V_LAYERS   = 16;                  /* num_hidden_layers */
+constexpr float V_EPS      = 1e-6f;               /* rms_norm_eps */
+constexpr float V_THETA    = 100.0f;              /* rope_theta */
+constexpr int   V_POS_GRID = 10240;               /* position_embedding_size */
 
 /* Per-Linear activation clip (Gemma4ClippableLinear): input is clamped
  * to [in_min, in_max] before the matmul, output is clamped to
