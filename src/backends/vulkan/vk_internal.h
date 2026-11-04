@@ -696,15 +696,6 @@ void vk_seq_hazard(struct vk_state              *st,
                                                     uint32_t                      gy,
                                                     uint32_t                      gz);
 
-[[nodiscard]] enum geist_status vk_seq_dispatch(struct geist_backend         *be,
-                                                enum vk_pipe                  pipe,
-                                                const VkDescriptorBufferInfo *infos,
-                                                const void                   *push,
-                                                uint32_t                      push_bytes,
-                                                uint32_t                      gx,
-                                                uint32_t                      gy,
-                                                uint32_t                      gz);
-
 uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out);
 
 uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m);

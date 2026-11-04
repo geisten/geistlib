@@ -13,22 +13,9 @@
  *   out: (c_out, h_out, w_out)
  *     h_out = (h_in + 2*ph - kh) / sh + 1
  *     w_out = (w_in + 2*pw - kw) / sw + 1
- * Indices outside [0, h_in) / [0, w_in) are treated as zeros (zero-padding). */
-void conv2d_fp32(int          c_in,
-                 int          c_out,
-                 int          h_in,
-                 int          w_in,
-                 int          kh,
-                 int          kw,
-                 int          sh,
-                 int          sw,
-                 int          ph,
-                 int          pw,
-                 const float *in,
-                 const float *w,
-                 float       *out);
-
-/* Incremental Conv2D: only writes outputs at oh >= start_h. With
+ * Indices outside [0, h_in) / [0, w_in) are treated as zeros (zero-padding).
+ *
+ * Incremental: only writes outputs at oh >= start_h (0 computes them all). With
  * deterministic kernel taps relative to oh, outputs at oh < start_h
  * computed under an earlier (smaller) h_in remain bit-equivalent to the
  * current values, so the caller can keep the prior cached writes and

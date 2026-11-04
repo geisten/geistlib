@@ -63,10 +63,9 @@ static uint32_t prng(uint32_t *s) {
 
 /* ---- (a) shipping x4 layout: byte = 4 rows x 1 col, 2 bit each ---------- */
 
-__attribute__((target(T5_TARGET))) static void
-x4_rowgroup_dot(const uint8_t *Wg, /* K/4*4 = K bytes */
-                const int8_t  *xq,
-                int32_t        out[4]) {
+[[gnu::target(T5_TARGET)]] static void x4_rowgroup_dot(const uint8_t *Wg, /* K/4*4 = K bytes */
+                                                       const int8_t  *xq,
+                                                       int32_t        out[4]) {
     const __m512i m3 = _mm512_set1_epi8(3);
     __m512i       a0 = _mm512_setzero_si512();
     __m512i       a1 = _mm512_setzero_si512();
@@ -90,7 +89,7 @@ x4_rowgroup_dot(const uint8_t *Wg, /* K/4*4 = K bytes */
 /* ---- (b) T5 base-3 rows: byte = 5 trits of ONE row, stride-64 planes ---- */
 
 /* Extract trit plane from m (= s*3^k mod 256): (m>85) + (m>170). */
-__attribute__((target(T5_TARGET))) static inline __m512i t5_trits(__m512i m) {
+[[gnu::target(T5_TARGET)]] static inline __m512i t5_trits(__m512i m) {
     const __m512i   one  = _mm512_set1_epi8(1);
     const __mmask64 g85  = _mm512_cmpgt_epu8_mask(m, _mm512_set1_epi8(85));
     const __mmask64 g170 = _mm512_cmpgt_epu8_mask(m, _mm512_set1_epi8((char) 170));
@@ -98,7 +97,7 @@ __attribute__((target(T5_TARGET))) static inline __m512i t5_trits(__m512i m) {
     return _mm512_mask_add_epi8(t, g170, t, one);
 }
 
-__attribute__((target(T5_TARGET))) static void
+[[gnu::target(T5_TARGET)]] static void
 t5_rowgroup_dot(const uint8_t *w_rows[4], const int8_t *xq, int32_t out[4]) {
     __m512i acc[4];
     for (int r = 0; r < 4; r++) {

@@ -214,7 +214,7 @@ static void band_interleave(uint8_t *base) {
         uint8_t *cbase = base + t * (MICRO * 4);
         __m512i  v[16];
         for (int r = 0; r < 16; r++) {
-            v[r] = _mm512_load_si512((const void *) (cbase + r * TILE));
+            v[r] = _mm512_load_si512((cbase + r * TILE));
         }
         {
             const __m512i a_idx =
@@ -266,7 +266,7 @@ static void band_interleave(uint8_t *base) {
         }
         static const int col_order[16] = {0, 8, 1, 9, 4, 12, 5, 13, 2, 10, 3, 11, 6, 14, 7, 15};
         for (int g = 0; g < 16; g++) {
-            _mm512_store_si512((void *) (cbase + col_order[g] * TILE), v[g]);
+            _mm512_store_si512((cbase + col_order[g] * TILE), v[g]);
         }
     }
 }
@@ -362,13 +362,13 @@ static void prep_band(bool                       q8_0,
  *   sub   elements per subblock (32 Q4_K, 16 Q6_K)
  *   mins  the format subtracts a scaled min (Q4_K)
  *   bias  the stored code is value + bias (32 Q6_K, 0 Q4_K). */
-static inline __attribute__((always_inline)) void micro_8x16(int                    sub,
-                                                             bool                   mins,
-                                                             int                    bias,
-                                                             int                    i0,
-                                                             int                    j0,
-                                                             const struct act_view *av,
-                                                             struct q4k_tiled_ws   *ws) {
+[[gnu::always_inline]] static inline void micro_8x16(int                    sub,
+                                                     bool                   mins,
+                                                     int                    bias,
+                                                     int                    i0,
+                                                     int                    j0,
+                                                     const struct act_view *av,
+                                                     struct q4k_tiled_ws   *ws) {
     constexpr int ROWS = 8;
     const int     nsub = TILE / sub, per16 = sub / 16, groups = sub / 4;
     const __m512  a_d = _mm512_load_ps(&av->d[j0]);
@@ -387,9 +387,9 @@ static inline __attribute__((always_inline)) void micro_8x16(int                
 #pragma GCC unroll 8
 #endif
         for (int g = 0; g < groups; g++) {
-            const int     kg    = s * groups + g;
-            const __m512i codes = _mm512_load_si512(
-                    (const void *) (band + (kg % MICRO) * TILE + (kg / MICRO) * (MICRO * 4)));
+            const int     kg = s * groups + g;
+            const __m512i codes =
+                    _mm512_load_si512((band + (kg % MICRO) * TILE + (kg / MICRO) * (MICRO * 4)));
             for (int t = 0; t < ROWS; t++) {
                 uint32_t w4;
                 memcpy(&w4, &ws->w_q[(size_t) (i0 + t) * TILE + kg * 4], 4);
@@ -398,13 +398,10 @@ static inline __attribute__((always_inline)) void micro_8x16(int                
         }
         if (bias != 0) {
             /* sum (code - bias) * a = raw - bias * (activation sum) */
-            __m512i asum =
-                    _mm512_load_si512((const void *) &av->bsum[(s * per16) * av->stride + j0]);
+            __m512i asum = _mm512_load_si512(&av->bsum[(s * per16) * av->stride + j0]);
             for (int u = 1; u < per16; u++) {
                 asum = _mm512_add_epi32(
-                        asum,
-                        _mm512_load_si512(
-                                (const void *) &av->bsum[(s * per16 + u) * av->stride + j0]));
+                        asum, _mm512_load_si512(&av->bsum[(s * per16 + u) * av->stride + j0]));
             }
             const __m512i corr = _mm512_mullo_epi32(asum, _mm512_set1_epi32(bias));
             for (int t = 0; t < ROWS; t++) {
@@ -423,13 +420,10 @@ static inline __attribute__((always_inline)) void micro_8x16(int                
      * registers there. */
     if (mins) {
         for (int s = 0; s < nsub; s++) {
-            __m512i asum =
-                    _mm512_load_si512((const void *) &av->bsum[(s * per16) * av->stride + j0]);
+            __m512i asum = _mm512_load_si512(&av->bsum[(s * per16) * av->stride + j0]);
             for (int u = 1; u < per16; u++) {
                 asum = _mm512_add_epi32(
-                        asum,
-                        _mm512_load_si512(
-                                (const void *) &av->bsum[(s * per16 + u) * av->stride + j0]));
+                        asum, _mm512_load_si512(&av->bsum[(s * per16 + u) * av->stride + j0]));
             }
             for (int t = 0; t < ROWS; t++) {
                 s2[t] = _mm512_add_epi32(
@@ -455,7 +449,7 @@ static inline __attribute__((always_inline)) void micro_8x16(int                
  * block on both sides, so each block's exact int32 sum is scaled in float
  * right away: Q4_0 w = d (q - 8) gives d dx (P - 8 S), Q4_1 w = d q + m
  * gives d dx P + m dx S (P = sum q x, S = sum x, both exact). */
-static inline __attribute__((always_inline)) void
+[[gnu::always_inline]] static inline void
 micro_8x16_f(bool q4_1, int i0, int j0, const struct act_view *av, struct q4k_tiled_ws *ws) {
     constexpr int ROWS = 8;
     __m512        f[ROWS];
@@ -472,16 +466,16 @@ micro_8x16_f(bool q4_1, int i0, int j0, const struct act_view *av, struct q4k_ti
 #pragma GCC unroll 8
 #endif
         for (int g = 0; g < 8; g++) {
-            const int     kg    = s * 8 + g;
-            const __m512i codes = _mm512_load_si512(
-                    (const void *) (band + (kg % MICRO) * TILE + (kg / MICRO) * (MICRO * 4)));
+            const int     kg = s * 8 + g;
+            const __m512i codes =
+                    _mm512_load_si512((band + (kg % MICRO) * TILE + (kg / MICRO) * (MICRO * 4)));
             for (int t = 0; t < ROWS; t++) {
                 uint32_t w4;
                 memcpy(&w4, &ws->w_q[(size_t) (i0 + t) * TILE + kg * 4], 4);
                 acc[t] = _mm512_dpbusd_epi32(acc[t], _mm512_set1_epi32((int) w4), codes);
             }
         }
-        const __m512i asum = _mm512_load_si512((const void *) &av->bsum[s * av->stride + j0]);
+        const __m512i asum = _mm512_load_si512(&av->bsum[s * av->stride + j0]);
         const __m512  dx   = _mm512_load_ps(&av->fd[s * av->stride + j0]);
         const __m512  sf   = _mm512_cvtepi32_ps(asum);
         const __m512i bias = _mm512_slli_epi32(asum, 3); /* 8 S */

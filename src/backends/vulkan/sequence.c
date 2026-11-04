@@ -464,14 +464,3 @@ void vk_seq_hazard(struct vk_state              *st,
     }
     return GEIST_OK;
 }
-
-[[nodiscard]] enum geist_status vk_seq_dispatch(struct geist_backend         *be,
-                                                enum vk_pipe                  pipe,
-                                                const VkDescriptorBufferInfo *infos,
-                                                const void                   *push,
-                                                uint32_t                      push_bytes,
-                                                uint32_t                      gx,
-                                                uint32_t                      gy,
-                                                uint32_t                      gz) {
-    return vk_seq_dispatch_acc(be, pipe, infos, nullptr, push, push_bytes, gx, gy, gz);
-}

@@ -414,12 +414,12 @@ constexpr int ATTN_HEADS_MAX = 4;
 
 /* qv[h] . kv for g heads, dot_f32_neon_256's or dot_f32_neon's shape per
  * head (head_dim a multiple of 16). */
-static inline __attribute__((always_inline)) void attn_heads_dots(size_t             g,
-                                                                  const float *const qv[],
-                                                                  const float       *kv,
-                                                                  size_t             head_dim,
-                                                                  bool               hd256,
-                                                                  float              out[]) {
+[[gnu::always_inline]] static inline void attn_heads_dots(size_t             g,
+                                                          const float *const qv[],
+                                                          const float       *kv,
+                                                          size_t             head_dim,
+                                                          bool               hd256,
+                                                          float              out[]) {
     if (hd256) {
         float32x4_t a0[ATTN_HEADS_MAX], a1[ATTN_HEADS_MAX], a2[ATTN_HEADS_MAX], a3[ATTN_HEADS_MAX];
         for (size_t h = 0; h < g; h++) {
@@ -461,18 +461,18 @@ static inline __attribute__((always_inline)) void attn_heads_dots(size_t        
 
 /* attn_row_neon for g <= ATTN_HEADS_MAX heads over one K/V head and one
  * key range [s_lo, s_hi]; inlined per g, so the head loops unroll. */
-static inline __attribute__((always_inline)) void attn_heads_neon(size_t             g,
-                                                                  const float *const qv[],
-                                                                  const float       *k,
-                                                                  const float       *v,
-                                                                  size_t             row,
-                                                                  size_t             s_lo,
-                                                                  size_t             s_hi,
-                                                                  size_t             head_dim,
-                                                                  bool               hd256,
-                                                                  float *const       outv[],
-                                                                  float             *part_max,
-                                                                  double            *part_sum) {
+[[gnu::always_inline]] static inline void attn_heads_neon(size_t             g,
+                                                          const float *const qv[],
+                                                          const float       *k,
+                                                          const float       *v,
+                                                          size_t             row,
+                                                          size_t             s_lo,
+                                                          size_t             s_hi,
+                                                          size_t             head_dim,
+                                                          bool               hd256,
+                                                          float *const       outv[],
+                                                          float             *part_max,
+                                                          double            *part_sum) {
     float  scores[ATTN_HEADS_MAX][ATTN_F32_BLOCK];
     float  max_score[ATTN_HEADS_MAX] = {};
     double sum_exp[ATTN_HEADS_MAX]   = {};

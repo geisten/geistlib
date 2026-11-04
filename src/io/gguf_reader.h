@@ -78,7 +78,7 @@ enum {
     GGUF_META_VT_F64    = 12,
 };
 
-#define GGUF_MAX_DIMS 4
+constexpr int GGUF_MAX_DIMS = 4;
 
 struct gguf_tensor_t {
     const char  *name; /* NUL-terminated, owned by ctx */

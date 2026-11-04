@@ -57,7 +57,7 @@ static void i2s_m1_rows(void *ctx, size_t r0, size_t r1) {
         const uint8_t *Wr  = c.w_raw + r * c.row_bytes;
         __m512i        acc = _mm512_setzero_si512();
         for (size_t b = 0; b < n_blocks; b++) {
-            const __m512i w  = _mm512_loadu_si512((const void *) (Wr + b * I2S_BLOCK_BYTES));
+            const __m512i w  = _mm512_loadu_si512((Wr + b * I2S_BLOCK_BYTES));
             const int8_t *ab = perm + b * 256;
 
             const __m512i c0 = _mm512_and_si512(_mm512_srli_epi16(w, 6), m3);
@@ -65,10 +65,10 @@ static void i2s_m1_rows(void *ctx, size_t r0, size_t r1) {
             const __m512i c2 = _mm512_and_si512(_mm512_srli_epi16(w, 2), m3);
             const __m512i c3 = _mm512_and_si512(w, m3);
 
-            acc = _mm512_dpbusd_epi32(acc, c0, _mm512_loadu_si512((const void *) (ab + 0)));
-            acc = _mm512_dpbusd_epi32(acc, c1, _mm512_loadu_si512((const void *) (ab + 64)));
-            acc = _mm512_dpbusd_epi32(acc, c2, _mm512_loadu_si512((const void *) (ab + 128)));
-            acc = _mm512_dpbusd_epi32(acc, c3, _mm512_loadu_si512((const void *) (ab + 192)));
+            acc = _mm512_dpbusd_epi32(acc, c0, _mm512_loadu_si512((ab + 0)));
+            acc = _mm512_dpbusd_epi32(acc, c1, _mm512_loadu_si512((ab + 64)));
+            acc = _mm512_dpbusd_epi32(acc, c2, _mm512_loadu_si512((ab + 128)));
+            acc = _mm512_dpbusd_epi32(acc, c3, _mm512_loadu_si512((ab + 192)));
         }
         const int32_t dot = _mm512_reduce_add_epi32(acc) - c.sum_a;
         c.y[r]            = (float) dot * c.scale;
@@ -139,7 +139,7 @@ static void i2s_mN_rows(void *ctx, size_t r0, size_t r1) {
                 acc[jj] = _mm512_setzero_si512();
             }
             for (size_t b = 0; b < n_blocks; b++) {
-                const __m512i w  = _mm512_loadu_si512((const void *) (Wr + b * I2S_BLOCK_BYTES));
+                const __m512i w  = _mm512_loadu_si512((Wr + b * I2S_BLOCK_BYTES));
                 const __m512i c0 = _mm512_and_si512(_mm512_srli_epi16(w, 6), m3);
                 const __m512i c1 = _mm512_and_si512(_mm512_srli_epi16(w, 4), m3);
                 const __m512i c2 = _mm512_and_si512(_mm512_srli_epi16(w, 2), m3);
@@ -147,11 +147,11 @@ static void i2s_mN_rows(void *ctx, size_t r0, size_t r1) {
                 for (size_t jj = 0; jj < jt; jj++) {
                     const int8_t *ab = perm + (j0 + jj) * n_in + b * 256;
                     __m512i       a  = acc[jj];
-                    a = _mm512_dpbusd_epi32(a, c0, _mm512_loadu_si512((const void *) (ab + 0)));
-                    a = _mm512_dpbusd_epi32(a, c1, _mm512_loadu_si512((const void *) (ab + 64)));
-                    a = _mm512_dpbusd_epi32(a, c2, _mm512_loadu_si512((const void *) (ab + 128)));
-                    a = _mm512_dpbusd_epi32(a, c3, _mm512_loadu_si512((const void *) (ab + 192)));
-                    acc[jj] = a;
+                    a                = _mm512_dpbusd_epi32(a, c0, _mm512_loadu_si512((ab + 0)));
+                    a                = _mm512_dpbusd_epi32(a, c1, _mm512_loadu_si512((ab + 64)));
+                    a                = _mm512_dpbusd_epi32(a, c2, _mm512_loadu_si512((ab + 128)));
+                    a                = _mm512_dpbusd_epi32(a, c3, _mm512_loadu_si512((ab + 192)));
+                    acc[jj]          = a;
                 }
             }
             for (size_t jj = 0; jj < jt; jj++) {
@@ -210,8 +210,8 @@ static inline void i2s_x4_group_m1(const uint8_t *Wg,
          * evicting the resident activations/KV out of L3. 512 B measured
          * best of 256/512/1024 (+2.7 % decode, #102). */
         _mm_prefetch((const char *) (Wg + cb * 64 + 512), _MM_HINT_NTA);
-        const __m512i w = _mm512_loadu_si512((const void *) (Wg + cb * 64));
-        const __m512i a = _mm512_loadu_si512((const void *) (xq + cb * 64));
+        const __m512i w = _mm512_loadu_si512((Wg + cb * 64));
+        const __m512i a = _mm512_loadu_si512((xq + cb * 64));
         a0              = _mm512_dpbusd_epi32(a0, _mm512_and_si512(_mm512_srli_epi16(w, 6), m3), a);
         a1              = _mm512_dpbusd_epi32(a1, _mm512_and_si512(_mm512_srli_epi16(w, 4), m3), a);
         a2              = _mm512_dpbusd_epi32(a2, _mm512_and_si512(_mm512_srli_epi16(w, 2), m3), a);
@@ -331,17 +331,16 @@ static inline void i2s_t5_group_m1(const uint8_t *Wg, /* 4 rows x row_bytes, row
         _mm_prefetch((const char *) (Wg + 1 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
         _mm_prefetch((const char *) (Wg + 2 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
         _mm_prefetch((const char *) (Wg + 3 * row_bytes + g * 64 + 512), _MM_HINT_NTA);
-        __m512i m0 = _mm512_loadu_si512((const void *) (Wg + 0 * row_bytes + g * 64));
-        __m512i m1 = _mm512_loadu_si512((const void *) (Wg + 1 * row_bytes + g * 64));
-        __m512i m2 = _mm512_loadu_si512((const void *) (Wg + 2 * row_bytes + g * 64));
-        __m512i m3 = _mm512_loadu_si512((const void *) (Wg + 3 * row_bytes + g * 64));
+        __m512i m0 = _mm512_loadu_si512((Wg + 0 * row_bytes + g * 64));
+        __m512i m1 = _mm512_loadu_si512((Wg + 1 * row_bytes + g * 64));
+        __m512i m2 = _mm512_loadu_si512((Wg + 2 * row_bytes + g * 64));
+        __m512i m3 = _mm512_loadu_si512((Wg + 3 * row_bytes + g * 64));
         for (int plane = 0; plane < 5; plane++) {
-            const __m512i a =
-                    _mm512_loadu_si512((const void *) (xq + g * 320 + (size_t) plane * 64));
-            acc0 = _mm512_dpbusd_epi32(acc0, i2s_t5_plane(m0), a);
-            acc1 = _mm512_dpbusd_epi32(acc1, i2s_t5_plane(m1), a);
-            acc2 = _mm512_dpbusd_epi32(acc2, i2s_t5_plane(m2), a);
-            acc3 = _mm512_dpbusd_epi32(acc3, i2s_t5_plane(m3), a);
+            const __m512i a = _mm512_loadu_si512((xq + g * 320 + (size_t) plane * 64));
+            acc0            = _mm512_dpbusd_epi32(acc0, i2s_t5_plane(m0), a);
+            acc1            = _mm512_dpbusd_epi32(acc1, i2s_t5_plane(m1), a);
+            acc2            = _mm512_dpbusd_epi32(acc2, i2s_t5_plane(m2), a);
+            acc3            = _mm512_dpbusd_epi32(acc3, i2s_t5_plane(m3), a);
             if (plane < 4) { /* m *= 3 (mod 256) exposes the next plane */
                 m0 = _mm512_add_epi8(_mm512_add_epi8(m0, m0), m0);
                 m1 = _mm512_add_epi8(_mm512_add_epi8(m1, m1), m1);
@@ -458,18 +457,17 @@ static void i2s_x4_mN_groups(void *ctx, size_t ga, size_t gb) {
                 }
             }
             for (size_t cb = 0; cb < n_cblocks; cb++) {
-                const __m512i w  = _mm512_loadu_si512((const void *) (Wg + cb * 64));
+                const __m512i w  = _mm512_loadu_si512((Wg + cb * 64));
                 const __m512i r0 = _mm512_and_si512(_mm512_srli_epi16(w, 6), m3);
                 const __m512i r1 = _mm512_and_si512(_mm512_srli_epi16(w, 4), m3);
                 const __m512i r2 = _mm512_and_si512(_mm512_srli_epi16(w, 2), m3);
                 const __m512i r3 = _mm512_and_si512(w, m3);
                 for (size_t jj = 0; jj < tt; jj++) {
-                    const __m512i a =
-                            _mm512_loadu_si512((const void *) (xq + (j0 + jj) * n_in + cb * 64));
-                    acc[0][jj] = _mm512_dpbusd_epi32(acc[0][jj], r0, a);
-                    acc[1][jj] = _mm512_dpbusd_epi32(acc[1][jj], r1, a);
-                    acc[2][jj] = _mm512_dpbusd_epi32(acc[2][jj], r2, a);
-                    acc[3][jj] = _mm512_dpbusd_epi32(acc[3][jj], r3, a);
+                    const __m512i a = _mm512_loadu_si512((xq + (j0 + jj) * n_in + cb * 64));
+                    acc[0][jj]      = _mm512_dpbusd_epi32(acc[0][jj], r0, a);
+                    acc[1][jj]      = _mm512_dpbusd_epi32(acc[1][jj], r1, a);
+                    acc[2][jj]      = _mm512_dpbusd_epi32(acc[2][jj], r2, a);
+                    acc[3][jj]      = _mm512_dpbusd_epi32(acc[3][jj], r3, a);
                 }
             }
             for (size_t jj = 0; jj < tt; jj++) {

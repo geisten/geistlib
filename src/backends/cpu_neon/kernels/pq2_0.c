@@ -457,7 +457,7 @@ struct pq2_0_x8_q8_ctx {
 /* Tokens [t0, t0 + nt) of row tile `tile`; nt is PQ2_0_MT or 1, a
  * constant after inlining, so the token loops unroll and the
  * accumulators stay in registers. */
-static inline __attribute__((always_inline)) void
+[[gnu::always_inline]] static inline void
 pq2_0_x8_q8_tile(const struct pq2_0_x8_q8_ctx *c, size_t tile, size_t t0, const size_t nt) {
     const uint8_t   *row  = c->W + tile * c->nb * PQ2_0_X8_BLOCK_BYTES;
     const uint8x16_t mask = vdupq_n_u8(3);

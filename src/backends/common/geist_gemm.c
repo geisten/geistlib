@@ -142,19 +142,19 @@ static inline __m256i avx2_lane_mask(int n) {
  * 8-float accumulators per row against a contiguous row of B. MR is a
  * constant at every call, so the accumulators live in registers (6x16:
  * 12 accumulators, 2 B vectors, 1 broadcast of the 16 ymm registers). */
-constexpr int                                     AVX2_MR = 6;
-static inline __attribute__((always_inline)) void avx2_tile_bn(int          MR,
-                                                               int          w,
-                                                               int          transA,
-                                                               int          K,
-                                                               float        alpha,
-                                                               const float *A,
-                                                               int          lda,
-                                                               const float *B,
-                                                               int          ldb,
-                                                               float        beta,
-                                                               float       *C,
-                                                               int          ldc) {
+constexpr int                             AVX2_MR = 6;
+[[gnu::always_inline]] static inline void avx2_tile_bn(int          MR,
+                                                       int          w,
+                                                       int          transA,
+                                                       int          K,
+                                                       float        alpha,
+                                                       const float *A,
+                                                       int          lda,
+                                                       const float *B,
+                                                       int          ldb,
+                                                       float        beta,
+                                                       float       *C,
+                                                       int          ldc) {
     const __m256i m0 = avx2_lane_mask(w), m1 = avx2_lane_mask(w - 8);
     __m256        acc[AVX2_MR][2];
     for (int r = 0; r < MR; r++)
@@ -246,17 +246,17 @@ static inline float avx2_hsum(__m256 v) {
 /* C[i0:i0+MR, j0:j0+NR] for C = alpha A B^T + beta C (both operands
  * K-contiguous): dot products along K, 8 at a time, a K tail under a mask.
  * 2x4 tiles: 8 accumulators. */
-static inline __attribute__((always_inline)) void avx2_tile_nt(int          MR,
-                                                               int          NR,
-                                                               int          K,
-                                                               float        alpha,
-                                                               const float *A,
-                                                               int          lda,
-                                                               const float *B,
-                                                               int          ldb,
-                                                               float        beta,
-                                                               float       *C,
-                                                               int          ldc) {
+[[gnu::always_inline]] static inline void avx2_tile_nt(int          MR,
+                                                       int          NR,
+                                                       int          K,
+                                                       float        alpha,
+                                                       const float *A,
+                                                       int          lda,
+                                                       const float *B,
+                                                       int          ldb,
+                                                       float        beta,
+                                                       float       *C,
+                                                       int          ldc) {
     __m256 acc[2][4];
     for (int r = 0; r < MR; r++)
         for (int c = 0; c < NR; c++)
