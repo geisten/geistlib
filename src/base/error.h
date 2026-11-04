@@ -31,10 +31,8 @@ struct geist_error_slot {
 
 /* Set the thread-local create-time error slot. Used when no handle
  * exists to attach the error to. */
-void geist_error_set_create_time(enum geist_status code,
-                                 const char       *origin_func,
-                                 const char       *fmt,
-                                 ...);
+[[gnu::format(printf, 3, 4)]] void
+geist_error_set_create_time(enum geist_status code, const char *origin_func, const char *fmt, ...);
 
 /* Empty the create-time slot. A multi-stage create (geist_model_load ->
  * decoder state_create -> ...) calls this on entry so that a generic

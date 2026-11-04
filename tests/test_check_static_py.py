@@ -37,6 +37,24 @@ class Reasons(unittest.TestCase):
         self.assertEqual(check_static.unexplained({key: 1}), [key[:2]])
 
 
+class Selftest(unittest.TestCase):
+    FIXTURE = "int f(void) {\n    int *p = nullptr;\n    return *p; // expect: clang-analyzer-core.NullDereference\n}\n"
+    MARK = ("tests/static/x.c", 3, "clang-analyzer-core.NullDereference")
+
+    def test_marks_parse_with_their_line(self):
+        self.assertEqual(check_static.expectations("tests/static/x.c", self.FIXTURE), {self.MARK})
+
+    def test_exact_match_is_clean(self):
+        self.assertEqual(check_static.selftest_diff({self.MARK}, {self.MARK}), ([], []))
+
+    def test_a_seeded_defect_not_reported_fails(self):
+        self.assertEqual(check_static.selftest_diff({self.MARK}, set()), ([self.MARK], []))
+
+    def test_an_unmarked_defect_in_a_fixture_fails(self):
+        uaf = ("tests/static/x.c", 9, "clang-analyzer-unix.Malloc")
+        self.assertEqual(check_static.selftest_diff({self.MARK}, {self.MARK, uaf}), ([], [uaf]))
+
+
 class Nolint(unittest.TestCase):
     def test_reason_required(self):
         self.assertTrue(check_static.nolint_ok("int x; // NOLINT(bugprone-x): the header wants it"))
