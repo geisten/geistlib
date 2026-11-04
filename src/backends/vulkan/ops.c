@@ -2672,7 +2672,7 @@ static_assert(sizeof(struct vk_push_sel) <= VK_PUSH_RANGE, "sel push block");
      * copies here do). ponytail: a scan of the cached keys, a few hundred. */
     uint32_t tab_at = UINT32_MAX;
     for (uint32_t i = 0; i < st->n_sel_tabs; i++)
-        if (st->sel_key[i] == (const void *) w && st->sel_n[i] == n)
+        if (st->sel_key[i] == w && st->sel_n[i] == n)
             tab_at = st->sel_off[i];
     if (tab_at == UINT32_MAX) {
         uint64_t tab[VK_SEL_TAB_MAX];

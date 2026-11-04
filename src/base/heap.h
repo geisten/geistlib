@@ -9,20 +9,21 @@
 #include <stdint.h>
 #include <stdalign.h>
 
-#define CACHE_LINE_SIZE 64
+constexpr int CACHE_LINE_SIZE = 64;
 
 #if defined(__AVX512F__)
-#define SIMD_ALIGNMENT 64
+constexpr int SIMD_ALIGNMENT = 64;
 #elif defined(__AVX__) || defined(__AVX2__)
-#define SIMD_ALIGNMENT 32
+constexpr int SIMD_ALIGNMENT = 32;
 #elif defined(__SSE__) || defined(__SSE2__) || defined(__NEON__)
-#define SIMD_ALIGNMENT 16
+constexpr int SIMD_ALIGNMENT = 16;
 #else
-#define SIMD_ALIGNMENT 8
+constexpr int SIMD_ALIGNMENT = 8;
 #endif
 
 /* Minimum alignment of every allocation: the larger of cache line and SIMD width. */
-#define OPTIMAL_ALIGNMENT (CACHE_LINE_SIZE > SIMD_ALIGNMENT ? CACHE_LINE_SIZE : SIMD_ALIGNMENT)
+constexpr int OPTIMAL_ALIGNMENT =
+        CACHE_LINE_SIZE > SIMD_ALIGNMENT ? CACHE_LINE_SIZE : SIMD_ALIGNMENT;
 
 static_assert((CACHE_LINE_SIZE & (CACHE_LINE_SIZE - 1)) == 0,
               "CACHE_LINE_SIZE must be a power of 2");
@@ -75,7 +76,8 @@ void heap_fail_after(int64_t n);
  * large blocks (~1.3 GB after a cpu_neon model destroy, #733). Page-aligned
  * and zero-filled; smaller requests, or alignment above a page, fall back to
  * heap_alloc_aligned. Free with safe_free() only, never free(). */
-#define HEAP_LARGE_MIN ((size_t) 1u << 20)
+constexpr size_t HEAP_LARGE_MIN = (size_t) 1u << 20;
+
 void *heap_alloc_large(size_t size, size_t alignment);
 
 /* Release *ptr (free(), or munmap for a heap_alloc_large mapping) and set

@@ -177,22 +177,6 @@ enum geist_status linear_w_or_legacy(struct geist_backend            *be,
     return GEIST_OK;
 }
 
-enum geist_status linear_w_scaled_input_or_legacy(struct geist_backend            *be,
-                                                  const struct geist_backend_vtbl *v,
-                                                  struct geist_buffer             *x_buf,
-                                                  struct geist_buffer             *y_buf,
-                                                  const struct geist_weight       *w,
-                                                  size_t                           seq,
-                                                  size_t                           scale_n,
-                                                  const float                     *scale,
-                                                  const struct geist_tensor       *t_x,
-                                                  const struct geist_tensor       *t_w,
-                                                  struct geist_tensor             *t_y) {
-
-    apply_per_channel_inv_scale_inplace(v, x_buf, seq, scale_n, scale);
-    return linear_w_or_legacy(be, v, x_buf, y_buf, w, seq, t_x, t_w, t_y);
-}
-
 enum geist_status linear_w_pair_or_legacy(struct geist_backend            *be,
                                           const struct geist_backend_vtbl *v,
                                           struct geist_buffer             *x_buf,

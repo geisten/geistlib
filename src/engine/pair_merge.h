@@ -115,7 +115,7 @@ static inline void pair_merge_offer(struct pair_merge_entry     *heap,
 
 /* Heap entries a chunk of up to this many symbols keeps on the stack
  * (2.3 KB) instead of allocating them. */
-enum { PAIR_MERGE_STACK_SYMS = 32 };
+constexpr int PAIR_MERGE_STACK_SYMS = 32;
 
 /* Runs the merges over syms[0, n), a list in buffer order (head 0, tail
  * n - 1, n and every length <= INT_MAX), in place: afterwards the list from syms[0] holds
