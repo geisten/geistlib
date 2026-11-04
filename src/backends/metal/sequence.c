@@ -15,7 +15,7 @@ bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes) {
  * so when the caller has waited on the FINAL buffer these are complete. */
 static void metal_sequence_drain_pending(struct metal_state *st, bool *out_failed) {
     for (uint32_t i = 0; i < st->seq_pending_count; i++) {
-        void *cmd = st->seq_pending_cmds[i];
+        struct metal_cmdbuf_h *cmd = st->seq_pending_cmds[i];
         if (out_failed != nullptr && metal_msg_send_id0(st, cmd, "error") != nullptr) {
             *out_failed = true;
         }
@@ -29,7 +29,7 @@ static void metal_sequence_drain_pending(struct metal_state *st, bool *out_faile
 /* Op-start encoder accessor with pipelined rotation. Called ONLY at op
  * boundaries — never mid-op, an op's local `enc` must stay valid across
  * its own dispatches. Returns the current encoder (possibly fresh). */
-void *metal_sequence_encoder(struct metal_state *st) {
+struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st) {
     if (st == nullptr || !metal_seq_mine(st)) {
         return nullptr;
     }
@@ -55,8 +55,9 @@ void *metal_sequence_encoder(struct metal_state *st) {
                 &st->seq_pending_mask[1],
                 st->seq_pending_count * sizeof(st->seq_pending_mask[0]));
     }
-    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
-    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    struct metal_cmdbuf_h  *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    struct metal_encoder_h *enc =
+            cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
     if (cmd == nullptr || enc == nullptr) {
         return st->sequence_compute_encoder; /* keep the old buffer */
     }
@@ -100,12 +101,12 @@ void metal_seq_ref_clear(struct metal_state *st) {
 }
 
 /* Slot hash of a (MTLBuffer, bind offset) pair. */
-static size_t metal_seq_ref_hash(const void *buf, size_t off, size_t mask) {
+static size_t metal_seq_ref_hash(const struct metal_buffer_h *buf, size_t off, size_t mask) {
     const uint64_t x = ((uint64_t) (uintptr_t) buf >> 4) ^ ((uint64_t) off * 0x9e3779b97f4a7c15u);
     return (size_t) (x ^ (x >> 29)) & mask;
 }
 
-void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off) {
+void metal_seq_mark_buffer(struct metal_state *st, struct metal_buffer_h *mtl_buf, size_t off) {
     if (st == nullptr || !metal_seq_mine(st) || mtl_buf == nullptr) {
         return;
     }
@@ -136,7 +137,10 @@ void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off) {
  * there was bound. That is exact while no bound handle starts before a
  * queried view and runs into it: views of one buffer are disjoint slices
  * (#528), and the buffer they are cut from is never bound itself. */
-bool metal_seq_references(struct metal_state *st, const void *mtl_buf, size_t off, size_t n) {
+bool metal_seq_references(struct metal_state          *st,
+                          const struct metal_buffer_h *mtl_buf,
+                          size_t                       off,
+                          size_t                       n) {
     if (st == nullptr || !metal_seq_mine(st) || mtl_buf == nullptr) {
         return false;
     }
@@ -166,7 +170,10 @@ void metal_batch_flush(struct metal_state *st) {
     (void) metal_command_sequence_begin(be, kind, &tok);
 }
 
-void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size_t off, size_t n) {
+void metal_flush_if_referenced(struct metal_state          *st,
+                               const struct metal_buffer_h *mtl_buf,
+                               size_t                       off,
+                               size_t                       n) {
     if (metal_seq_references(st, mtl_buf, off, n)) {
         metal_batch_flush(st);
     }
@@ -206,17 +213,17 @@ void metal_flush_if_referenced(struct metal_state *st, const void *mtl_buf, size
      * included) and encoders -- drains when _end pops this pool. What must
      * outlive it is retained explicitly: the current buffer and encoder
      * below, the pipelined ones in seq_pending_cmds. */
-    void *pool = metal_pool_push(st);
+    struct metal_pool_h *pool = metal_pool_push(st);
     metal_capture_begin(st, kind);
 
-    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    struct metal_cmdbuf_h *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         metal_pool_pop(st, pool);
         geist_backend_set_error(
                 be, GEIST_E_BACKEND, "metal command sequence: command buffer failed");
         return GEIST_E_BACKEND;
     }
-    void *enc = metal_msg_send_id0(st, cmd, "computeCommandEncoder");
+    struct metal_encoder_h *enc = metal_msg_send_id0(st, cmd, "computeCommandEncoder");
     if (enc == nullptr) {
         metal_pool_pop(st, pool);
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal command sequence: encoder failed");
@@ -256,15 +263,15 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
         return GEIST_E_INVALID_ARG;
     }
 
-    void      *cmd               = st->sequence_command_buffer;
-    void      *enc               = st->sequence_compute_encoder;
-    void      *pool              = st->sequence_pool;
-    const bool has_work          = st->sequence_has_work;
-    st->sequence_compute_encoder = nullptr;
-    st->sequence_command_buffer  = nullptr;
-    st->sequence_pool            = nullptr;
-    st->sequence_active          = false;
-    st->sequence_has_work        = false;
+    struct metal_cmdbuf_h  *cmd      = st->sequence_command_buffer;
+    struct metal_encoder_h *enc      = st->sequence_compute_encoder;
+    struct metal_pool_h    *pool     = st->sequence_pool;
+    const bool              has_work = st->sequence_has_work;
+    st->sequence_compute_encoder     = nullptr;
+    st->sequence_command_buffer      = nullptr;
+    st->sequence_pool                = nullptr;
+    st->sequence_active              = false;
+    st->sequence_has_work            = false;
     atomic_store_explicit(&st->seq_owner, (uintptr_t) 0, memory_order_relaxed);
 
     metal_msg_send_void0(st, enc, "endEncoding");

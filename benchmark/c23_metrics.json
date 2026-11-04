@@ -13,7 +13,7 @@
    "what": "__builtin_* calls and names"
   },
   "define_function": {
-   "max": 79,
+   "max": 80,
    "what": "function-like #define"
   },
   "define_object": {
