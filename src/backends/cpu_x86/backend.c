@@ -570,7 +570,7 @@ static const struct geist_backend_primitives cpu_x86_prims =
                             .relu_squared = cpu_scalar_relu_squared);
 
 /* The fused paths are all optional: cpu_scalar's, with cpu_x86's on top. */
-__attribute__((constructor)) static void cpu_x86_init_fused(void) {
+[[gnu::constructor]] static void cpu_x86_init_fused(void) {
     cpu_x86_fused                      = cpu_scalar_fused;
     cpu_x86_fused.supported            = cpu_x86_fused_supported;
     cpu_x86_fused.gelu_tanh_mul        = cpu_x86_gelu_tanh_mul;
