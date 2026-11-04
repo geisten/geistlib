@@ -32,6 +32,7 @@
 #include <geist_util.h>
 
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -185,9 +186,12 @@ static void rmsnorm(const double x[static D], const float w[static D], double y[
         y[i] = (double) w[i] * x[i] / rms;
 }
 
-static const float *weight(struct gguf_ctx *g, const char *fmt, int layer) {
-    char name[64];
-    snprintf(name, sizeof name, fmt, layer);
+[[gnu::format(printf, 2, 3)]] static const float *weight(struct gguf_ctx *g, const char *fmt, ...) {
+    char    name[64];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(name, sizeof name, fmt, ap);
+    va_end(ap);
     const struct gguf_tensor_t *t = gguf_get_tensor(g, name);
     return t == nullptr ? nullptr : (const float *) t->data;
 }
@@ -197,7 +201,7 @@ static void literal_logits(struct gguf_ctx          *g,
                            int                       token,
                            float                     out[static VOCAB]) {
     const double r = c->residual_scale;
-    const float *e = weight(g, "token_embd.weight", 0);
+    const float *e = weight(g, "token_embd.weight");
     double       h[D], x[D], y[D];
     for (size_t i = 0; i < D; i++)
         h[i] = (double) c->embedding_scale * e[(size_t) token * D + i];
@@ -250,7 +254,7 @@ static void literal_logits(struct gguf_ctx          *g,
         for (size_t i = 0; i < D; i++)
             h[i] += r * acc[i];
     }
-    rmsnorm(h, weight(g, "output_norm.weight", 0), x);
+    rmsnorm(h, weight(g, "output_norm.weight"), x);
     for (size_t t = 0; t < VOCAB; t++) {
         double sum = 0.0;
         for (size_t i = 0; i < D; i++)

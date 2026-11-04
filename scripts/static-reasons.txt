@@ -3,7 +3,7 @@
 include/geist_backend.h	clang-analyzer-core.NullDereference	be->desc is set once in backend.c create_from; the defensive check at exec_plan.c:201 seeds the report
 src/archs/audio_conformer/audio_kernels.c	clang-analyzer-deadcode.DeadStores	harmless dead store under NEON
 src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	state->backend is set after the null check; split_sess exists only under state->split; be->desc is set once in create_from
-src/archs/transformer/forward/attention.c	clang-analyzer-core.UndefinedBinaryOperatorResult	REAL at the KIVI path (:152): head_dim % 4 != 0 is not refused; the :909 one needs an odd head_dim, which allocate_runtime_rope rejects
+src/archs/transformer/forward/attention.c	clang-analyzer-core.UndefinedBinaryOperatorResult	was REAL at the KIVI path (:152); since #392 transformer_session_alloc (arch_state.c) refuses KIVI unless head_dim % 4 == 0, a check in another file the analyzer does not see. The :909 one needs an odd head_dim, which allocate_runtime_rope rejects
 src/archs/transformer/forward/layer_deltanet.c	clang-analyzer-core.UndefinedBinaryOperatorResult	convd = 2*keyd+vald is nonzero when d_k and n_kh are, and both convolution branches write y[0,convd)
 src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	n_hot > 0 and a GPU status imply moe_gpu is non-null, across the translation unit
 src/archs/transformer/forward/spec_head.c	clang-analyzer-optin.taint.TaintedDiv	spec_env_sz clamps to [1,H] and the :423 loop stops at 1
