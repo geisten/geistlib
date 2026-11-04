@@ -234,6 +234,44 @@ static int expect_missing_extent_rejected(struct geist_backend *be) {
     return 0;
 }
 
+/* F16 prefill (the dequant trampoline) with n_in % 4 != 0, so the last
+ * column goes through dequant_tile's scalar tail: a subnormal there must
+ * convert as a subnormal. The tail's own bit-twiddle once made 0x0001
+ * (2^-24) into 2^-14 * (1 + 2^-10). */
+static int expect_f16_tail_subnormal(struct geist_backend *be) {
+    constexpr size_t n_in  = 5;
+    constexpr size_t n_out = 2;
+    constexpr size_t m     = 2;
+    /* 1.0, 2.0, -1.0, 0.5, then the smallest subnormal (row 0) / -0.0 (row 1). */
+    uint16_t raw[n_out * n_in] = {
+            0x3C00, 0x4000, 0xBC00, 0x3800, 0x0001, 0x3C00, 0x3C00, 0x3C00, 0x3C00, 0x8000};
+    struct geist_weight w = {
+            .raw        = raw,
+            .raw_nbytes = sizeof raw,
+            .n_in       = (int32_t) n_in,
+            .n_out      = (int32_t) n_out,
+            .dtype      = (uint16_t) GEIST_DTYPE_F16,
+    };
+    if (be->desc->vtbl->resolve_weight(be, &w) != GEIST_OK || w.linear_mN == nullptr) {
+        fprintf(stderr, "  [F16 tail] resolve_weight gave no linear_mN\n");
+        return 1;
+    }
+    /* x[4] = 2^24 lifts the subnormal's contribution to exactly 1. */
+    const float x[m * n_in] = {1.0f, 1.0f, 1.0f, 1.0f, 16777216.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    float       y[m * n_out];
+    w.linear_mN(m, x, &w, be, y);
+    /* y is [m, n_out]; every product and sum here is exact. */
+    const float want[m * n_out] = {3.5f, 4.0f, 0x1p-24f, 0.0f};
+    int         fails           = 0;
+    for (size_t i = 0; i < m * n_out; i++) {
+        if (y[i] != want[i]) {
+            fprintf(stderr, "  [F16 tail] y[%zu] = %.9g, want %.9g\n", i, y[i], want[i]);
+            fails = 1;
+        }
+    }
+    return fails;
+}
+
 int main(void) {
     struct geist_backend *be = nullptr;
     enum geist_status     s  = geist_backend_create("cpu_neon", nullptr, nullptr, &be);
@@ -298,6 +336,7 @@ int main(void) {
     fails += expect_short_buffer_rejected(be, GEIST_DTYPE_Q4_0, "Q4_0 short");
     fails += expect_missing_extent_rejected(be);
     fails += expect_extent_known_for_every_supported_dtype(be);
+    fails += expect_f16_tail_subnormal(be);
 
     geist_backend_destroy(be);
 
