@@ -2,9 +2,13 @@
  * backend: typed objc_msgSend wrappers over the handles in metal_state.
  *
  * Included from metal_internal.h after struct metal_state is defined (the
- * wrappers read its objc handles); everything is static. */
+ * wrappers read its objc handles); everything is static. Included first,
+ * it pulls metal_internal.h in, which then skips its own include of this
+ * file, so it also compiles on its own (#344). */
 #ifndef GEIST_METAL_OBJC_H
 #define GEIST_METAL_OBJC_H
+
+#include "metal_internal.h"
 
 static inline void *metal_dlsym(void *handle, const char *name) {
     return handle != nullptr ? dlsym(handle, name) : nullptr;

@@ -1,6 +1,7 @@
 /* Backend-only borrowed row tiles. Never slice an unknown repack layout. */
 #pragma once
 #include <geist_backend.h>
+#include "host_buffer.h" /* struct geist_buffer of the CPU backends */
 #include "quant.h"
 #include "tensor_view.h"
 #include "par.h"
