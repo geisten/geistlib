@@ -600,6 +600,14 @@ c23-metrics:
 	@python3 tools/c23_metrics.py write
 	@python3 tools/c23_metrics.py show
 
+# benchmark/include_graph.json + docs/INCLUDE_GRAPH.md: direct include edges
+# per layer, from clang's preprocessor output (#341). Needs clang; CI's
+# static-analysis job runs `tools/include_graph.py check`.
+.PHONY: include-graph
+include-graph:
+	@python3 tools/include_graph.py write
+	@python3 tools/include_graph.py show
+
 help:
 	@printf '%s\n' \
 	"geist build system   (detected TARGET=$(TARGET), MODE=$(MODE), CC=$(CC))" \
@@ -642,6 +650,7 @@ help:
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
+	"         make include-graph                  (benchmark/include_graph.json, docs/INCLUDE_GRAPH.md)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
 	"         make release-state-check            geisten.net latest: version, ancestry, assets" \
