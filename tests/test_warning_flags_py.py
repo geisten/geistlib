@@ -66,13 +66,29 @@ int f(int x) {
 }
 
 
-def library_flags():
-    """The compiler and flags of one library object, with -Werror."""
+# Directories that build with -Wconversion -Wsign-conversion (#343), and the
+# probes: (rejected, accepted).
+CONVERSION_DIRS = ("src/base/", "src/io/", "src/engine/")
+CONVERSION_CASES = {
+    "-Wsign-conversion": (
+        "unsigned f(int x);\nunsigned f(int x) { return x; }\n",
+        "unsigned f(unsigned x);\nunsigned f(unsigned x) { return x; }\n",
+    ),
+    "-Wconversion": (
+        "short g(long x);\nshort g(long x) { return x; }\n",
+        "long g(short x);\nlong g(short x) { return x; }\n",
+    ),
+}
+
+
+def library_flags(prefix="src/"):
+    """The compiler and flags of one library object under prefix, with -Werror."""
     out = subprocess.run(
         ["make", "-n", "-B", "lib"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout
     for line in out.splitlines():
-        if " -c " in line and " -o " in line and SOURCE.search(line):
+        src = SOURCE.search(line)
+        if " -c " in line and " -o " in line and src and src.group(1).startswith(prefix):
             argv = shlex.split(line)
             keep = []
             skip = False
@@ -86,7 +102,7 @@ def library_flags():
                 else:
                     keep.append(a)
             return keep
-    raise AssertionError("make -n lib printed no compile command")
+    raise AssertionError(f"make -n lib printed no compile command under {prefix}")
 
 
 def compiles(flags, code):
@@ -120,6 +136,18 @@ class WarningFlags(unittest.TestCase):
                 self.assertIn(warning.split("=")[0].removeprefix("-W"), bad.stderr)
                 good = compiles(self.flags, accepted)
                 self.assertEqual(good.returncode, 0, good.stderr)
+
+    def test_conversion_per_directory(self):
+        for prefix in CONVERSION_DIRS:
+            flags = library_flags(prefix)
+            for warning, (rejected, accepted) in CONVERSION_CASES.items():
+                with self.subTest(dir=prefix, warning=warning):
+                    self.assertIn(warning, flags)
+                    bad = compiles(flags, rejected)
+                    self.assertNotEqual(bad.returncode, 0, f"{warning} let the probe through")
+                    self.assertIn(warning.removeprefix("-W"), bad.stderr)
+                    good = compiles(flags, accepted)
+                    self.assertEqual(good.returncode, 0, good.stderr)
 
 
 if __name__ == "__main__":

@@ -476,6 +476,12 @@ $(BUILD_DIR)/tests/test_attention_int8_unit.o $(BUILD_DIR)/tests/test_x86_attent
 $(BUILD_DIR)/tests/test_sampler_penalties_unit.o: CFLAGS += -fno-finite-math-only
 $(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-contract=off
 
+# -Wconversion -Wsign-conversion, one directory at a time (#343): an implicit
+# conversion that can change a value or its sign is an error in these
+# directories. src/base and src/io had no site; src/engine had one, a real
+# bug (#427).
+$(BUILD_DIR)/src/base/%.o $(BUILD_DIR)/src/io/%.o $(BUILD_DIR)/src/engine/%.o: CFLAGS_STRICT += -Wconversion -Wsign-conversion
+
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); tools/ and tests/ use
 # the slightly more relaxed CFLAGS. Both build clean under -Wall -Wextra -Werror.
