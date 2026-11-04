@@ -9,7 +9,9 @@ stay out, so moving code does not disturb the baseline.
                             baseline entry that is gone: it only shrinks
   check_static.py --update  rewrite the baseline
   check_static.py --selftest
-                            the seeded defects in tests/static/ must be found
+                            tests/static/ must report exactly its seeded
+                            defects: a missed one fails, and so does an
+                            unmarked one
 
 A NOLINT needs its reason on the same line: NOLINT(check): why. So does an
 analyzer finding in the baseline, in static-reasons.txt.
@@ -72,8 +74,8 @@ def tidy(tool, db, src):
     return r.stdout
 
 
-def findings(tool, cmds):
-    """{(file, check, message): count}; a header's finding counts once."""
+def scan(tool, cmds):
+    """{(file, line, column, check, message)}; a header's finding counts once."""
     with tempfile.TemporaryDirectory() as db:
         with open(os.path.join(db, "compile_commands.json"), "w") as f:
             json.dump(cmds, f)
@@ -89,8 +91,12 @@ def findings(tool, cmds):
             path = os.path.relpath(os.path.normpath(os.path.join(ROOT, m[1])), ROOT)
             if path.startswith(REPORTED):
                 seen.add((path, int(m[2]), int(m[3]), m[6], m[5]))
-    counts = collections.Counter((p, check, msg) for p, _, _, check, msg in seen)
-    return counts
+    return seen
+
+
+def findings(tool, cmds):
+    """{(file, check, message): count}; line numbers stay out."""
+    return collections.Counter((p, check, msg) for p, _, _, check, msg in scan(tool, cmds))
 
 
 def read_baseline():
@@ -150,8 +156,26 @@ def nolint_without_reason():
     return bad
 
 
+def expectations(path, text):
+    """{(file, line, check)} from the `// expect: <check>` marks of a fixture."""
+    return {
+        (path, no, c)
+        for no, line in enumerate(text.splitlines(), 1)
+        for c in re.findall(r"// expect: (\S+)", line)
+    }
+
+
+def selftest_diff(want, got):
+    """(seeded defects not reported, findings on no `// expect:` line).
+
+    Both must be empty: a seeded defect the analyzer stops finding fails, and
+    so does a defect added to a fixture without its mark -- the fixtures say
+    exactly what the job catches."""
+    return sorted(want - got), sorted(got - want)
+
+
 def selftest(tool):
-    """Each `// expect: <check>` in tests/static/ must be reported."""
+    """tests/static/ must report exactly its `// expect:` marks."""
     cmds = compile_commands()
     flags = [a for a in cmds[0]["arguments"] if a.startswith(("-std=", "-I", "-D"))]
     fixtures = sorted(
@@ -162,17 +186,20 @@ def selftest(tool):
     want = set()
     for path in fixtures:
         with open(os.path.join(ROOT, path)) as f:
-            want |= {(path, c) for c in re.findall(r"// expect: (\S+)", f.read())}
+            want |= expectations(path, f.read())
     seeded = [
         {"directory": ROOT, "arguments": ["cc", *flags, "-c", p, "-o", "/dev/null"], "file": p}
         for p in fixtures
     ]
-    got = {(p, check) for p, check, _ in findings(tool, seeded)}
-    missed = sorted(want - got)
-    for path, check in missed:
-        print(f"selftest: {path}: {check} was not reported")
-    print(f"selftest: {len(want) - len(missed)} of {len(want)} seeded defects found")
-    return 1 if missed else 0
+    got = {(p, line, check) for p, line, _, check, _ in scan(tool, seeded)}
+    missed, unmarked = selftest_diff(want, got)
+    for path, line, check in missed:
+        print(f"selftest: {path}:{line}: {check} was not reported")
+    for path, line, check in unmarked:
+        print(f"selftest: {path}:{line}: {check} reported, but the line has no // expect: mark")
+    print(f"selftest: {len(want) - len(missed)} of {len(want)} seeded defects found, "
+          f"{len(unmarked)} unmarked")
+    return 1 if missed or unmarked else 0
 
 
 def main():
