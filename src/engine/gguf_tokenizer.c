@@ -1346,7 +1346,10 @@ static bool is_ascii_space(unsigned char b) {
  * so a mark classifies as a letter there. \p{L} / \p{N} and \s are
  * llama.cpp's own (unicode_class.h and its whitespace list). */
 static uint32_t q2_cp_at(const char *text, size_t tlen, size_t i, size_t *adv) {
-    uint32_t cp = utf8_decode_one(text + i, tlen - i, adv);
+    /* A malformed sequence returns -1 with *adv = 1, so it arrives here as
+     * 0xFFFFFFFF and the branch below never runs; llama.cpp uses U+FFFD
+     * (#427). Written out until that fix lands with its parity test. */
+    uint32_t cp = (uint32_t) utf8_decode_one(text + i, tlen - i, adv);
     if (*adv == 0) { /* malformed byte — treat as 1-byte symbol */
         *adv = 1;
         cp   = (uint8_t) text[i];

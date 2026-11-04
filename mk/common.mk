@@ -113,8 +113,17 @@ endif
 # in a header, so the definition and its callers check one prototype. Not
 # -Wstrict-prototypes: in C23 `()` is a prototype and K&R definitions are
 # gone, so it has nothing left to report (#343).
+# -Wformat=2: a format string that is not a literal is an error, so every
+# printf-like helper carries [[gnu::format(printf, ...)]] and its callers'
+# arguments are checked against the format (#343).
+# -Wnull-dereference: gcc reports a dereference its optimizer sees on a path
+# where the pointer is null (clang only a literal null). Two sites needed a
+# check the compiler could follow (#343).
+# Not -Wcast-qual: its 111 sites all drop a qualifier on purpose (free of an
+# owned const field, a const job handed to geist_par_for, read-only mmap
+# aliased into a void * API) and found no bug (#343).
 WARNINGS_BASE   := -Wall -Wextra -Wpedantic -Wswitch-enum -Wimplicit-fallthrough \
-                   -Wmissing-prototypes -Werror
+                   -Wmissing-prototypes -Wformat=2 -Wnull-dereference -Werror
 WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 
 # Include paths:
@@ -488,6 +497,18 @@ $(BUILD_DIR)/src/archs/transformer/forward/attention.o $(BUILD_DIR)/src/backends
 $(BUILD_DIR)/tests/test_attention_int8_unit.o $(BUILD_DIR)/tests/test_x86_attention_int8_unit.o: CFLAGS += -fno-reciprocal-math
 $(BUILD_DIR)/tests/test_sampler_penalties_unit.o: CFLAGS += -fno-finite-math-only
 $(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-contract=off
+
+# -Wconversion -Wsign-conversion, per directory (#343): an implicit
+# conversion that can change a value or its sign is an error in these
+# directories. src/engine had one site, a real bug (#427); the others had
+# none. Not in src/archs (146 sites), src/backends/{common,cpu_neon,cpu_x86}
+# (65), src/formats (10), src/quant (4) and tests/ (173): every site there is
+# index or geometry arithmetic on non-negative ints that only a cast would
+# silence, and none was a bug (numbers in #343).
+CONVERSION_DIRS := src/base src/io src/engine src/archs/vision_siglip \
+                   src/backends/cpu_scalar src/backends/metal src/backends/vulkan
+$(foreach d,$(CONVERSION_DIRS),$(BUILD_DIR)/$(d)/%.o): CFLAGS_STRICT += -Wconversion -Wsign-conversion
+$(BUILD_DIR)/tools/%.o: CFLAGS += -Wconversion -Wsign-conversion
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); tools/ and tests/ use

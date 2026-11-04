@@ -275,6 +275,36 @@ the overall figure and per-subsystem table published to the job summary.
   `make test-py`) proves the gate fires on regression, empty scope, unset
   baseline and floor violation — and passes when on-baseline.
 
+## Static analysis
+
+`make check-static` is the umbrella for every static gate; each gate is its
+own target and a prerequisite of it. Today: `check-static-tidy`, clang-tidy
+22 over the library sources with this host's flags (`.clang-tidy`: every
+`clang-analyzer-*` and `bugprone-*` check but four, each excluded with a
+reason). Required job `static analysis (clang-tidy, macOS arm64)`: 20 s on
+`macmini-m6`, 44-51 s on `mac-light`, of which the check is 14 s and 32-34 s
+(runs 2732-2780, Nov 2026). It runs beside the build legs, so it adds no
+wall time to the required tier.
+
+- **Ratchet:** `scripts/static-baseline.txt` (file, check, message, count; no
+  line numbers). A new finding fails, a fixed one must leave the list. An
+  analyzer finding in it needs a reason in `scripts/static-reasons.txt`, a
+  `NOLINT` its reason on the same line.
+- **Self-test:** `tests/static/seeded_defects.c` holds a null dereference and
+  a use-after-free, each on a `// expect: <check>` line. The job fails unless
+  the findings there are exactly those marks: a seeded defect that goes
+  unreported fails, and so does a defect added to a fixture without its mark.
+- **Gap:** only the macOS arm64 sources are analysed (NEON, Metal, scalar);
+  `cpu_x86`, Vulkan, `tests/` and `tools/` are not.
+
+Evaluated and not adopted (#342, measured on main 13cb783e):
+
+| Tool | Result | Decision |
+| :-- | :-- | :-- |
+| gcc-14 `-fanalyzer`, Linux arm64, 128 sources, 42 s | 9 findings: 4 repeat clang-tidy's baseline, 5 new, all false positives (no real one). Gave up (`-Wanalyzer-too-complex`) at 2034 program points in 64 of 128 files. At `-O0`: 2 findings, both false positives. Finds both seeded defects. | Rejected: nothing beyond clang-tidy, and half the files are not fully explored |
+| cppcheck 2.22, `warning,portability`, the 135 macOS sources, 72 s | 11 findings: 9 `invalidPointerCast` on intentional byte-buffer views, 2 false positives (`calibration.c` snprintf target, `moe.c` `rbe` under `routed`). On the fixture: misses the `nullptr` dereference, reports a leak that is not there. | Rejected: finds nothing the other two miss, does not parse C23 `nullptr` |
+| clang `-Wthread-safety`, every mutex in `src/` (Metal sequence and residency locks, audio stream queue, heap large-map cache, par pool and workers, backend error, profile and probe registries) through an annotated wrapper | `guarded_by` on a struct member does not bind to the object in C (clang 21 and 22 both report `a->n` as unguarded while `a->mu` is held), so only lock balance and globals are checkable. 9 findings, 0 bugs: 6 intentional lock hand-offs (Metal region begin/end, standalone pool, `compute_segment_locked`), 3 single-threaded atexit reads of probe counters. TSan multi-session already runs post-merge. | Rejected: ~70 call sites renamed for a check that cannot see the shared state |
+
 ## Fuzzing (parsers)
 
 Two harnesses in `tests/`, ordered by attack surface — both need neither a

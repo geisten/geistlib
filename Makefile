@@ -570,16 +570,26 @@ $(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip inst
 endif
 endif
 
-# Static analysis, no models and no GPU: the seeded defects must be found, and
-# the library must have no finding beyond scripts/static-baseline.txt (#342).
-# check_wiring.py: the family wiring mistakes in tests/wiring/ fail to
-# compile, and each family builds and links alone (#345).
-CLANG_TIDY ?= clang-tidy
+# make check-static: every static gate, no models and no GPU (#333 Phase 1).
+# A gate is its own target and adds itself here as one more prerequisite:
+#   check-static: check-static-<name>
 .PHONY: check-static
-check-static:
+check-static: check-static-tidy
+
+# clang-tidy: the seeded defects in tests/static/ must be found, and the
+# library must have no finding beyond scripts/static-baseline.txt (#342).
+CLANG_TIDY ?= clang-tidy
+.PHONY: check-static-tidy
+check-static-tidy:
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
+
+# Family wiring (#345): the mistakes in tests/wiring/ fail to compile, and
+# each family builds and links alone.
+.PHONY: check-static-wiring
+check-static-wiring:
 	@python3 scripts/check_wiring.py
+check-static: check-static-wiring
 
 format:
 	@$(CLANG_FORMAT) -i $(FORMAT_FILES)
@@ -589,13 +599,21 @@ format-check:
 	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES) && \
 	echo "All $(words $(FORMAT_FILES)) files conform to .clang-format"
 
-# benchmark/c23_metrics.json: the C23 gaps of #333 per file (#341). CI runs
-# `tools/c23_metrics.py check`; a change that adds or removes one of them
-# commits the regenerated file.
+# benchmark/c23_metrics.json: a ceiling per C23 gap of #333 (#341). CI runs
+# `tools/c23_metrics.py check`; a change that adds one raises the ceiling and
+# commits the file, one that removes some may lower it.
 .PHONY: c23-metrics
 c23-metrics:
 	@python3 tools/c23_metrics.py write
 	@python3 tools/c23_metrics.py show
+
+# benchmark/include_graph.json + docs/INCLUDE_GRAPH.md: direct include edges
+# per layer, from clang's preprocessor output (#341). Needs clang; CI's
+# static-analysis job runs `tools/include_graph.py check`.
+.PHONY: include-graph
+include-graph:
+	@python3 tools/include_graph.py write
+	@python3 tools/include_graph.py show
 
 help:
 	@printf '%s\n' \
@@ -639,6 +657,7 @@ help:
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
+	"         make include-graph                  (benchmark/include_graph.json, docs/INCLUDE_GRAPH.md)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
 	"         make release-state-check            geisten.net latest: version, ancestry, assets" \

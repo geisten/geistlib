@@ -3,8 +3,8 @@
 
 Each case is C source where a text search miscounts: a construct inside a
 comment or string literal, a line splice, a `default:` that belongs to
-_Generic or to an inner switch, a cast next to a call. Then the committed
-benchmark/c23_metrics.json has to match the tree, and two runs have to agree.
+_Generic or to an inner switch, a cast next to a call. Then the tree has to stay within
+the ceilings of benchmark/c23_metrics.json, and two runs have to agree.
 """
 import importlib.util
 import json
@@ -128,6 +128,16 @@ class Committed(unittest.TestCase):
     def test_committed_file_is_current(self):
         r = self.run_tool("check")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_ratchet_fails_only_on_growth(self):
+        totals = dict.fromkeys(metrics.GAPS, 5)
+        ceiling = {k: {"max": 5} for k in metrics.GAPS}
+        self.assertEqual(metrics.ratchet(ceiling, totals), ([], []))
+        ceiling["goto"]["max"] = 4
+        ceiling["void_ptr"]["max"] = 6
+        self.assertEqual(metrics.ratchet(ceiling, totals), (["goto"], ["void_ptr"]))
+        del ceiling["goto"]
+        self.assertEqual(metrics.ratchet(ceiling, totals)[0], ["goto"])
 
     def test_two_runs_agree(self):
         a = self.run_tool("show", "--json")
