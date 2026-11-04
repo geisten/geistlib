@@ -586,9 +586,9 @@ format-check:
 	@$(CLANG_FORMAT) --dry-run --Werror $(FORMAT_FILES) && \
 	echo "All $(words $(FORMAT_FILES)) files conform to .clang-format"
 
-# benchmark/c23_metrics.json: the C23 gaps of #333 per file (#341). CI runs
-# `tools/c23_metrics.py check`; a change that adds or removes one of them
-# commits the regenerated file.
+# benchmark/c23_metrics.json: a ceiling per C23 gap of #333 (#341). CI runs
+# `tools/c23_metrics.py check`; a change that adds one raises the ceiling and
+# commits the file, one that removes some may lower it.
 .PHONY: c23-metrics
 c23-metrics:
 	@python3 tools/c23_metrics.py write
