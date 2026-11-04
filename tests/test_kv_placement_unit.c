@@ -56,7 +56,7 @@ static int check_placement(const char           *backend,
                            struct geist_backend *be,
                            struct geist_model   *m,
                            enum geist_kv_mode    mode) {
-    struct transformer_arch_state   *st   = geist_model_internal_arch_meta(m);
+    struct transformer_arch_state   *st   = tf_state(geist_model_internal_arch_meta(m));
     const struct geist_session_opts  o    = {.kv_mode = mode, .top_p = 1.0f};
     struct transformer_arch_session *sess = transformer_session_alloc(st, &o);
     const char                      *name = mode_name(mode);

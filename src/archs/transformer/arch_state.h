@@ -1282,4 +1282,38 @@ void transformer_session_free(struct transformer_arch_state   *state,
  * session == nullptr to this. */
 struct transformer_arch_session *transformer_default_session(struct transformer_arch_state *state);
 
+/* The arch vtable's opaque handles (<geist_arch.h>, #347) are these two
+ * structs; these are the only casts between them. */
+struct geist_arch_state;
+struct geist_arch_session;
+
+static inline struct transformer_arch_state *tf_state(struct geist_arch_state *h) {
+    return (struct transformer_arch_state *) h;
+}
+
+static inline const struct transformer_arch_state *tf_cstate(const struct geist_arch_state *h) {
+    return (const struct transformer_arch_state *) h;
+}
+
+static inline struct geist_arch_state *tf_state_handle(struct transformer_arch_state *st) {
+    return (struct geist_arch_state *) st;
+}
+
+static inline const struct geist_arch_state *
+tf_cstate_handle(const struct transformer_arch_state *st) {
+    return (const struct geist_arch_state *) st;
+}
+
+static inline struct transformer_arch_session *tf_sess(struct geist_arch_session *h) {
+    return (struct transformer_arch_session *) h;
+}
+
+static inline const struct transformer_arch_session *tf_csess(const struct geist_arch_session *h) {
+    return (const struct transformer_arch_session *) h;
+}
+
+static inline struct geist_arch_session *tf_sess_handle(struct transformer_arch_session *sess) {
+    return (struct geist_arch_session *) sess;
+}
+
 #endif /* GEIST_INTERNAL_ARCH_TRANSFORMER_STATE_V2_H */

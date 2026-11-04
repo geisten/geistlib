@@ -158,7 +158,7 @@ static int run(const char *name, uint32_t n_ff, bool ones, float out[static VOCA
         geist_session_create(m, be, &OPTS, &s) != GEIST_OK || !logits_of(s, out)) {
         fails += geist_expect(false, "the llama fixture runs");
     } else if (n_ff != 0) {
-        const struct transformer_arch_session *a  = geist_session_internal_arch_session(s);
+        const struct transformer_arch_session *a  = tf_sess(geist_session_internal_arch_session(s));
         const struct transformer_arch_state   *st = a->model;
         bool                                   ok = st->n_rope_freq_factors == n_ff;
         for (size_t i = 0; ok && i < n_ff; i++)

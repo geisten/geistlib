@@ -122,7 +122,7 @@ static int compare_deltanet_state(const struct transformer_arch_session *a,
 }
 
 /* Helper: create a session and return its underlying transformer state.
- * arch_meta is opaque void*; we reach it via the model accessor.
+ * arch_meta is an opaque struct geist_arch_state *; we reach it via the model accessor.
  * Resets state because session_create does NOT reset between sessions
  * that share an arch_meta (one model = one arch state). */
 static struct transformer_arch_state *open_session(struct geist_session **out_sess) {
@@ -136,7 +136,7 @@ static struct transformer_arch_state *open_session(struct geist_session **out_se
         *out_sess = nullptr;
         return nullptr;
     }
-    return (struct transformer_arch_state *) geist_model_internal_arch_meta(model);
+    return tf_state(geist_model_internal_arch_meta(model));
 }
 
 int main(void) {
@@ -200,7 +200,7 @@ int main(void) {
             teardown();
             return GEIST_TEST_FAIL;
         }
-        struct transformer_arch_session *asess     = geist_session_internal_arch_session(sess);
+        struct transformer_arch_session *asess = tf_sess(geist_session_internal_arch_session(sess));
         const size_t                     kv_before = asess->kv_len;
         s = transformer_verify_forward(asess, K, ref_tokens, verify_out);
         if (s != GEIST_OK) {
@@ -262,7 +262,7 @@ int main(void) {
             teardown();
             return GEIST_TEST_FAIL;
         }
-        struct transformer_arch_session *asess     = geist_session_internal_arch_session(sess);
+        struct transformer_arch_session *asess = tf_sess(geist_session_internal_arch_session(sess));
         const size_t                     kv_before = asess->kv_len;
 
         geist_token_t scratch_out[K];
@@ -390,9 +390,9 @@ int main(void) {
                 }
 
                 struct transformer_arch_session *ref_asess =
-                        geist_session_internal_arch_session(ref_sess);
+                        tf_sess(geist_session_internal_arch_session(ref_sess));
                 struct transformer_arch_session *txn_asess =
-                        geist_session_internal_arch_session(txn_sess);
+                        tf_sess(geist_session_internal_arch_session(txn_sess));
                 const size_t  base = txn_asess->kv_len;
                 geist_token_t txn_out[K];
                 s = transformer_verify_forward(txn_asess, txn_k, ref_tokens, txn_out);

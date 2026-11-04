@@ -225,7 +225,7 @@ static enum geist_status run_audio(struct geist_model *m,
     struct geist_session            *s  = nullptr;
     enum geist_status                st = geist_session_create(m, g_be, &so, &s);
     struct transformer_arch_session *a =
-            st == GEIST_OK ? geist_session_internal_arch_session(s) : nullptr;
+            st == GEIST_OK ? tf_sess(geist_session_internal_arch_session(s)) : nullptr;
     if (a != nullptr)
         st = transformer_prefill_audio_batch(a, N_AUDIO, soft);
     *kv = a != nullptr ? a->kv_len : 0;

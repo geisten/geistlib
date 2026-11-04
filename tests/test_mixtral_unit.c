@@ -137,7 +137,7 @@ static int check_renormalised(void) {
         geist_session_create(m, be, &OPTS, &s) != GEIST_OK || !logits_after(s, N_PROMPT, norm)) {
         fails += geist_expect(false, "the mixtral fixture runs");
     } else {
-        struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(s));
         fails += geist_expect(a->model->config.moe_norm_topk, "mixtral renormalises the weights");
         fails += geist_expect(a->model->config.rope_interleaved, "the llama RoPE order stays");
         a->model->config.moe_norm_topk = false;

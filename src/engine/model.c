@@ -247,11 +247,11 @@ static char *find_tokenizer_path(const char *gguf_path) {
 [[nodiscard]] static enum geist_status model_assemble(const char                         *fn,
                                                       const char                         *path,
                                                       const struct geist_arch_descriptor *desc,
-                                                      void                  *arch_state,
-                                                      struct gguf_tokenizer *gguf_tok,
-                                                      struct model_meta     *meta,
-                                                      struct geist_backend  *be,
-                                                      struct geist_model   **out) {
+                                                      struct geist_arch_state *arch_state,
+                                                      struct gguf_tokenizer   *gguf_tok,
+                                                      struct model_meta       *meta,
+                                                      struct geist_backend    *be,
+                                                      struct geist_model     **out) {
     struct geist_model        *m = heap_alloc_aligned(sizeof(*m), alignof(struct geist_model));
     struct model_engine_state *eng =
             heap_alloc_aligned(sizeof(*eng), alignof(struct model_engine_state));
@@ -340,7 +340,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
      * backend buffers) returns void*, so a failure carries no status. Keep
      * a create-time message it set; the generic one below is a fallback. */
     geist_error_clear_create_time();
-    void *arch_state = desc->decoder_ops->state_create(be, path, opts);
+    struct geist_arch_state *arch_state = desc->decoder_ops->state_create(be, path, opts);
     if (arch_state == nullptr) {
         model_load_undo(gguf_tok, meta);
         if (!geist_have_create_error()) {
@@ -379,10 +379,10 @@ static char *find_tokenizer_path(const char *gguf_path) {
      * safetensors file (not part of the GGUF) + mel constants. Failure is
      * non-fatal — text-only sessions keep working, attach_audio reports
      * GEIST_E_NOT_FOUND. */
-    const size_t d_model     = desc->decoder_ops->hidden_dim != nullptr
-                                       ? desc->decoder_ops->hidden_dim(arch_state)
-                                       : 0;
-    void        *audio_state = nullptr;
+    const size_t                      d_model = desc->decoder_ops->hidden_dim != nullptr
+                                                        ? desc->decoder_ops->hidden_dim(arch_state)
+                                                        : 0;
+    struct geist_audio_encoder_state *audio_state = nullptr;
     if (!text_only && towers_match && desc->audio_encoder_ops != nullptr &&
         desc->audio_encoder_ops->state_create != nullptr) {
         audio_state = desc->audio_encoder_ops->state_create(be, aux_root);
@@ -405,7 +405,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
      * Looks for vision_tower.safetensors alongside the audio tower.
      * Failure is non-fatal — vision-less sessions keep working;
      * attach_image / attach_video will report GEIST_E_NOT_FOUND. */
-    void *vision_state = nullptr;
+    struct geist_vision_encoder_state *vision_state = nullptr;
     if (!text_only && towers_match && desc->vision_encoder_ops != nullptr &&
         desc->vision_encoder_ops->state_create != nullptr) {
         vision_state = desc->vision_encoder_ops->state_create(be, aux_root);
@@ -481,7 +481,8 @@ static char *find_tokenizer_path(const char *gguf_path) {
      * (tokenizer.bin / vision / audio safetensors) are searched: a memory blob
      * has no directory. The GGUF must carry its own tokenizer. */
     geist_error_clear_create_time();
-    void *arch_state = desc->decoder_ops->state_create_from_memory(be, data, size, opts);
+    struct geist_arch_state *arch_state =
+            desc->decoder_ops->state_create_from_memory(be, data, size, opts);
     if (arch_state == nullptr) {
         model_load_undo(gguf_tok, meta);
         if (!geist_have_create_error()) {
@@ -525,7 +526,7 @@ static char *find_tokenizer_path(const char *gguf_path) {
      * stays the caller's error. */
     const struct geist_arch_ops_decoder *ops = m->text_decoder.arch_ops;
     geist_backend_set_error(be, GEIST_OK, "%s", "");
-    void *trial = ops->session_alloc(m->text_decoder.arch_meta, opts);
+    struct geist_arch_session *trial = ops->session_alloc(m->text_decoder.arch_meta, opts);
     if (trial != nullptr) {
         ops->session_free(m->text_decoder.arch_meta, trial);
         return false;
@@ -893,7 +894,7 @@ struct gguf_tokenizer *geist_model_internal_gguf_tokenizer(struct geist_model *m
     return ((struct model_engine_state *) m->weights)->gguf_tok;
 }
 
-void *geist_model_internal_arch_meta(struct geist_model *m) {
+struct geist_arch_state *geist_model_internal_arch_meta(struct geist_model *m) {
     if (m == nullptr)
         return nullptr;
     return m->text_decoder.arch_meta;

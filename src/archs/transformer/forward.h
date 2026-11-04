@@ -112,14 +112,18 @@ struct transformer_decision_readout;
                                                          size_t                               n,
                                                          const geist_token_t                 *ids,
                                                          struct transformer_decision_readout *r);
-[[nodiscard]] bool              transformer_decision_supported(const void *state);
-[[nodiscard]] enum geist_status transformer_decision_create(void *session, size_t cap, void **out);
-void                            transformer_decision_destroy(void *r);
-[[nodiscard]] enum geist_status transformer_decision_prefill(size_t              *rows,
-                                                             size_t              *readback_bytes,
-                                                             uint64_t            *head_ns,
-                                                             void                *r,
-                                                             size_t               n_prompt,
+/* The decision-rows ops of the vtable, on its handles (<geist_arch.h>). */
+struct geist_arch_readout;
+[[nodiscard]] bool transformer_decision_supported(const struct geist_arch_state *state);
+[[nodiscard]] enum geist_status transformer_decision_create(struct geist_arch_session  *session,
+                                                            size_t                      cap,
+                                                            struct geist_arch_readout **out);
+void                            transformer_decision_destroy(struct geist_arch_readout *r);
+[[nodiscard]] enum geist_status transformer_decision_prefill(size_t   *rows,
+                                                             size_t   *readback_bytes,
+                                                             uint64_t *head_ns,
+                                                             struct geist_arch_readout *r,
+                                                             size_t                     n_prompt,
                                                              size_t               n_candidates,
                                                              const geist_token_t *prompt,
                                                              const geist_token_t *candidates,

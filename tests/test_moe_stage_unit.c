@@ -297,7 +297,7 @@ static bool run(const struct tf_buf *g, const float ref[static VOCAB], struct ou
     if (!ok)
         fprintf(stderr, "%s\n", geist_backend_errmsg(be));
     if (ok) {
-        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
         const struct transformer_moe_gpu    *mg = st->moe_gpu;
         ok                                      = mg != nullptr && st->moe_cpu != nullptr;
         if (ok)
@@ -350,7 +350,7 @@ static bool placed(const struct tf_buf *g,
         ids[i] = (geist_token_t) ((i * 37 + 5) % VOCAB);
     bool ok = geist_model_load_from_memory(g->b, g->n, be, &m) == GEIST_OK;
     if (ok) {
-        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
         const struct transformer_moe_gpu    *mg = st->moe_gpu;
         ok = mg != nullptr && mg->stage_w != nullptr && moe_slots(&st->config) == 8;
         for (size_t i = 0; ok && i < N_BIG; i++) {
