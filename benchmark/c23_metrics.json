@@ -73,7 +73,7 @@
     "src/backends/cpu_x86/kernel_pq2_0_avx512_vnni.c": 1,
     "src/backends/cpu_x86/kernel_q4_0_avx512_vnni.c": 1,
     "src/backends/cpu_x86/kernel_tq2_0_avx512_vnni.c": 1,
-    "src/backends/metal/pipelines.c": 8,
+    "src/backends/metal/pipelines.c": 9,
     "src/backends/vulkan/lifecycle.c": 2,
     "src/backends/vulkan/pipelines.c": 1,
     "src/backends/vulkan/vk_internal.h": 4,
@@ -85,7 +85,7 @@
     "src/formats/gguf/q3_K.c": 1,
     "src/io/gguf_reader.c": 1
    },
-   "total": 79,
+   "total": 80,
    "what": "function-like #define"
   },
   "define_object": {
@@ -455,7 +455,6 @@
     "src/backends/cpu_x86/workspace.c": 14,
     "src/backends/metal/lifecycle.c": 1,
     "src/backends/metal/ops.c": 1,
-    "src/backends/metal/pipelines.c": 1,
     "src/backends/vulkan/ops.c": 1,
     "src/base/cleanup.h": 1,
     "src/base/heap.h": 3,
@@ -472,7 +471,7 @@
     "src/io/gguf_reader.c": 5,
     "src/io/safetensors_reader.c": 4
    },
-   "total": 320,
+   "total": 319,
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
@@ -575,13 +574,13 @@
     "src/backends/cpu_x86/q8_kx4.c": 1,
     "src/backends/cpu_x86/workspace.c": 18,
     "src/backends/metal/lifecycle.c": 2,
-    "src/backends/metal/metal_internal.h": 409,
-    "src/backends/metal/metal_objc.h": 170,
-    "src/backends/metal/ops.c": 127,
-    "src/backends/metal/pipelines.c": 21,
-    "src/backends/metal/profiling.c": 14,
-    "src/backends/metal/resources.c": 29,
-    "src/backends/metal/sequence.c": 18,
+    "src/backends/metal/metal_internal.h": 13,
+    "src/backends/metal/metal_objc.h": 154,
+    "src/backends/metal/ops.c": 2,
+    "src/backends/metal/pipelines.c": 15,
+    "src/backends/metal/profiling.c": 11,
+    "src/backends/metal/resources.c": 17,
+    "src/backends/metal/sequence.c": 4,
     "src/backends/vulkan/lifecycle.c": 1,
     "src/backends/vulkan/ops.c": 6,
     "src/backends/vulkan/pipelines.c": 2,
@@ -631,7 +630,7 @@
     "src/io/safetensors_reader.h": 1,
     "src/quant/quant.h": 68
    },
-   "total": 1879,
+   "total": 1307,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {

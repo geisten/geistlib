@@ -138,7 +138,7 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
 
     const unsigned long options =
             host_visible ? METAL_RESOURCE_STORAGE_MODE_SHARED : METAL_RESOURCE_STORAGE_MODE_PRIVATE;
-    void *mtl_buffer = metal_msg_send_id_size_uint(
+    struct metal_buffer_h *mtl_buffer = metal_msg_send_id_size_uint(
             st, st->device, "newBufferWithLength:options:", bytes, options);
     if (mtl_buffer == nullptr) {
         geist_backend_free(be, buf);
@@ -200,7 +200,7 @@ void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer
 
 /* ---- Residency set (#530) --------------------------------------------- */
 
-static size_t metal_res_home(const void *buf, size_t mask) {
+static size_t metal_res_home(const struct metal_buffer_h *buf, size_t mask) {
     return (size_t) ((((uint64_t) (uintptr_t) buf >> 4) * 0x9e3779b97f4a7c15u) >> 40) & mask;
 }
 
@@ -231,7 +231,7 @@ static void *metal_residency_keep_alive(void *arg) {
             last = now;
         }
         if ((now - last) / 1000000000u < st->res_keep_s) {
-            void *pool = metal_pool_push(st);
+            struct metal_pool_h *pool = metal_pool_push(st);
             if (st->res_dirty) {
                 metal_msg_send_void0(st, st->residency_set, "commit");
                 st->res_dirty = false;
@@ -263,8 +263,8 @@ void metal_residency_create(struct metal_state *st, uint64_t keep_alive_s) {
         return;
     }
     metal_msg_send_void_ulong(st, desc, "setInitialCapacity:", 1024);
-    void *err = nullptr;
-    void *set = metal_msg_send_id_id_err(
+    void                         *err = nullptr;
+    struct metal_residency_set_h *set = metal_msg_send_id_id_err(
             st, st->device, "newResidencySetWithDescriptor:error:", desc, &err);
     metal_msg_send_void0(st, desc, "release");
     if (set == nullptr) {
@@ -302,7 +302,7 @@ void metal_residency_destroy(struct metal_state *st) {
     st->residency_set = nullptr;
 }
 
-void metal_residency_note(struct metal_state *st, void *mtl_buf) {
+void metal_residency_note(struct metal_state *st, struct metal_buffer_h *mtl_buf) {
     if (st == nullptr || st->residency_set == nullptr || mtl_buf == nullptr) {
         return;
     }
@@ -332,7 +332,7 @@ void metal_residency_note(struct metal_state *st, void *mtl_buf) {
     }
 }
 
-void metal_residency_forget(struct metal_state *st, void *mtl_buf) {
+void metal_residency_forget(struct metal_state *st, struct metal_buffer_h *mtl_buf) {
     if (st == nullptr || st->residency_set == nullptr || mtl_buf == nullptr) {
         return;
     }
@@ -373,12 +373,12 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
            (n_bytes % 4u) == 0;
 }
 
-[[nodiscard]] static enum geist_status metal_submit_copy(struct metal_state *st,
-                                                         void               *src,
-                                                         size_t              src_offset,
-                                                         void               *dst,
-                                                         size_t              dst_offset,
-                                                         size_t              n_bytes) {
+[[nodiscard]] static enum geist_status metal_submit_copy(struct metal_state    *st,
+                                                         struct metal_buffer_h *src,
+                                                         size_t                 src_offset,
+                                                         struct metal_buffer_h *dst,
+                                                         size_t                 dst_offset,
+                                                         size_t                 n_bytes) {
 
     if (st == nullptr || src == nullptr || dst == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -395,7 +395,7 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
      * per-command-buffer encoder limit. Needs 4-byte alignment; other copies
      * take the standalone blit below. */
     if (metal_copies_in_sequence(st, src_offset, dst_offset, n_bytes)) {
-        void *enc = metal_sequence_encoder(st);
+        struct metal_encoder_h *enc = metal_sequence_encoder(st);
         /* Bound at the copy's own offsets, not at 0: the batch's reference
          * set tells views of one MTLBuffer apart by bind offset (#528). */
         struct {
@@ -420,13 +420,13 @@ static bool metal_copies_in_sequence(const struct metal_state *st,
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    struct metal_cmdbuf_h *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
     if (cmd == nullptr) {
         geist_backend_set_error(
                 st->backend, GEIST_E_BACKEND, "metal: failed to create command buffer");
         return GEIST_E_BACKEND;
     }
-    void *blit = metal_msg_send_id0(st, cmd, "blitCommandEncoder");
+    struct metal_blit_h *blit = metal_msg_send_id0(st, cmd, "blitCommandEncoder");
     if (blit == nullptr) {
         geist_backend_set_error(
                 st->backend, GEIST_E_BACKEND, "metal: failed to create blit encoder");
@@ -552,12 +552,12 @@ metal_host_range_wrappable(const void *p, size_t n, uint8_t **base_out, size_t *
         geist_backend_set_error(be, GEIST_E_OOM, "metal: failed to allocate buffer handle");
         return GEIST_E_OOM;
     }
-    uint8_t             *base       = nullptr;
-    size_t               base_len   = 0;
-    size_t               base_off   = 0;
-    void                *mtl_buffer = nullptr;
-    struct geist_buffer *parent     = metal_buf_reg_find(st, host_ptr, &base_off);
-    const bool           view       = parent != nullptr && n_bytes <= parent->bytes - base_off;
+    uint8_t               *base       = nullptr;
+    size_t                 base_len   = 0;
+    size_t                 base_off   = 0;
+    struct metal_buffer_h *mtl_buffer = nullptr;
+    struct geist_buffer   *parent     = metal_buf_reg_find(st, host_ptr, &base_off);
+    const bool             view       = parent != nullptr && n_bytes <= parent->bytes - base_off;
     const bool wrappable = !view && metal_host_range_wrappable(host_ptr, n_bytes, &base, &base_len);
     /* A view allocates nothing; every new MTLBuffer is admitted against the
      * working-set budget (#531). */

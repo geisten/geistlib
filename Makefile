@@ -573,8 +573,13 @@ endif
 # Static analysis, no models and no GPU: the seeded defects must be found, and
 # the library must have no finding beyond scripts/static-baseline.txt (#342).
 CLANG_TIDY ?= clang-tidy
+# A handle of the wrong type must not compile (#347); part of check-static.
+.PHONY: check-handles
+check-handles:
+	@CC="$(CC)" CFLAGS="$(CFLAGS_STRICT)" sh scripts/check_handles.sh
+
 .PHONY: check-static
-check-static:
+check-static: check-handles
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
 
