@@ -63,7 +63,13 @@ enum geist_parallel_region : uint32_t {
 static_assert(sizeof(enum geist_parallel_region) == sizeof(uint32_t));
 
 /* Backends fill this in (statically) and reference it from their
- * descriptor. Engine dispatches through here. */
+ * descriptor. Engine dispatches through here.
+ *
+ * Required: destroy, buffer_create, buffer_destroy, buffer_create_aliased,
+ * buffer_upload, buffer_download, buffer_map, buffer_unmap. Every other slot
+ * is nullable and says what its absence means. The in-tree backends define
+ * the table with GEIST_BACKEND_VTBL (src/backends/common/backend_tables.h),
+ * which does not compile without a required slot. */
 struct geist_backend_vtbl {
     /* ---- Lifecycle ---- */
 
@@ -93,8 +99,8 @@ struct geist_backend_vtbl {
      * GEIST_MEMORY_ALIASED bit set; buffer_destroy releases only the
      * buffer-handle struct and never frees host_ptr. CPU backends return
      * host_ptr unchanged from buffer_map; GPU backends MAY return nullptr
-     * (caller must fall back). nullptr means the backend doesn't support
-     * aliasing — caller must use buffer_create + buffer_upload. */
+     * (caller must fall back). Required: the arch layer calls it without a
+     * null check (scratch slices, KV views, weight views). */
     enum geist_status (*buffer_create_aliased)(struct geist_backend  *be,
                                                void                  *host_ptr,
                                                size_t                 n_bytes,
@@ -190,7 +196,11 @@ struct geist_backend_vtbl {
 /* Primitive ops — the decomposed reference path.                          */
 /* ====================================================================== */
 
-/* Each op takes geist_tensor inputs/outputs whose .buffer was created via
+/* Required: rmsnorm, add, mul, gelu_tanh, silu, rope_apply, attention
+ * (GEIST_BACKEND_PRIMS in src/backends/common/backend_tables.h refuses a
+ * table without one); relu_squared and scale_f32 are nullable.
+ *
+ * Each op takes geist_tensor inputs/outputs whose .buffer was created via
  * this same backend. Return GEIST_OK on success; on error, set the backend
  * error slot via geist_backend_set_error.
  *
@@ -1146,8 +1156,9 @@ struct geist_backend_descriptor {
     /* Core table. Required. */
     const struct geist_backend_vtbl *vtbl;
 
-    /* Primitive ops. Required (individual slots may be nullptr where a
-     * documented host fallback exists). */
+    /* Primitive ops. Required (relu_squared and scale_f32 may be nullptr,
+     * see the table). name, vtbl and prims are the descriptor's required
+     * members (GEIST_BACKEND_DESCRIPTOR, backend_tables.h). */
     const struct geist_backend_primitives *prims;
 
     /* Fused fast paths. nullptr = backend has no fusions at all. */

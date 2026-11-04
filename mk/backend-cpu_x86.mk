@@ -6,6 +6,14 @@
 #
 # The default on Linux x86_64 (target-linux.mk: BACKENDS ?= cpu_x86
 # cpu_scalar). BACKENDS=cpu_scalar builds the portable reference alone.
+#
+# cpu_x86 borrows cpu_scalar's fused table and the kernels it has none of
+# its own for (backend.c), so BACKENDS=cpu_x86 alone compiles cpu_scalar's
+# units too, without registering that backend (make check-static builds
+# each CPU backend alone, #345).
+ifeq ($(filter cpu_scalar,$(BACKENDS)),)
+include mk/backend-cpu_scalar.mk
+endif
 
 BACKEND_SOURCES += \
     src/backends/cpu_x86/backend.c \

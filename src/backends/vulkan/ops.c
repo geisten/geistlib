@@ -3,7 +3,10 @@
  *
  * Layer: BACKEND (vulkan).
  */
+#define GEIST_INTERNAL_BACKEND_LAYER
+
 #include "vk_internal.h"
+#include "backend_tables.h"
 
 #include "checked.h"
 #include "hadamard.h" /* host fallback of hadamard_rotate */
@@ -3582,21 +3585,20 @@ vk_deltanet_mix_states(struct geist_backend                 *be,
 /* Descriptor                                                              */
 /* ====================================================================== */
 
-static const struct geist_backend_vtbl vk_vtbl = {
-        .create                = vk_create,
-        .destroy               = vk_destroy,
-        .buffer_create         = vk_buffer_create_api,
-        .buffer_destroy        = vk_buffer_destroy,
-        .buffer_create_aliased = vk_buffer_create_aliased,
-        .buffer_create_view    = vk_buffer_create_view,
-        .buffer_upload         = vk_buffer_upload,
-        .buffer_download       = vk_buffer_download,
-        .buffer_map            = vk_buffer_map,
-        .buffer_unmap          = vk_buffer_unmap,
-        .buffer_copy           = vk_buffer_copy,
-        .resolve_weight        = vk_resolve_weight,
-        .fast_host_bytes       = vk_fast_host_bytes,
-};
+static const struct geist_backend_vtbl vk_vtbl =
+        GEIST_BACKEND_VTBL(vk_destroy,
+                           vk_buffer_create_api,
+                           vk_buffer_destroy,
+                           vk_buffer_create_aliased,
+                           vk_buffer_upload,
+                           vk_buffer_download,
+                           vk_buffer_map,
+                           vk_buffer_unmap,
+                           .create             = vk_create,
+                           .buffer_create_view = vk_buffer_create_view,
+                           .buffer_copy        = vk_buffer_copy,
+                           .resolve_weight     = vk_resolve_weight,
+                           .fast_host_bytes    = vk_fast_host_bytes);
 
 /* Probe pairing for the fused table below: a yes means the bound entry
  * runs on the GPU and succeeds. Geometry comes from the same predicate the
@@ -3729,17 +3731,16 @@ vk_fb_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return vk_declined(be, vk_attn_qgate_split(be, joint, heads, head_dim, q, gate), VK_FB_QGATE);
 }
 
-static const struct geist_backend_primitives vk_prims = {
-        .rmsnorm      = vk_rmsnorm,
-        .add          = vk_add,
-        .mul          = vk_mul,
-        .gelu_tanh    = vk_gelu_tanh,
-        .silu         = vk_silu,
-        .relu_squared = vk_relu_squared,
-        .rope_apply   = vk_rope_apply,
-        .attention    = vk_attention,
-        .scale_f32    = vk_scale_f32,
-};
+static const struct geist_backend_primitives vk_prims =
+        GEIST_BACKEND_PRIMS(vk_rmsnorm,
+                            vk_add,
+                            vk_mul,
+                            vk_gelu_tanh,
+                            vk_silu,
+                            vk_rope_apply,
+                            vk_attention,
+                            .relu_squared = vk_relu_squared,
+                            .scale_f32    = vk_scale_f32);
 
 static const struct geist_backend_fused vk_fused = {
         .supported     = vk_fused_supported,
@@ -3774,11 +3775,11 @@ static const struct geist_backend_fused vk_fused = {
         .attention_sinks         = vk_attention_sinks,
 };
 
-const struct geist_backend_descriptor geist_backend_vulkan = {
-        .name        = "vulkan",
+const struct geist_backend_descriptor geist_backend_vulkan = GEIST_BACKEND_DESCRIPTOR(
+        "vulkan",
+        vk_vtbl,
+        vk_prims,
         .memory_info = vk_memory_info,
-        .vtbl        = &vk_vtbl,
-        .prims       = &vk_prims,
         .fused       = &vk_fused,
         .caps        = {.kv_f16_attention           = true,
                         .kv_f16_by_default          = true,
@@ -3795,5 +3796,4 @@ const struct geist_backend_descriptor geist_backend_vulkan = {
                   * 64 when it does not (vtbl->fast_host_bytes) */
                  .preferred_m_max   = 128,
                  .dn_subchunk       = true,
-                 .preferred_kv_mode = GEIST_KV_FP32},
-};
+                 .preferred_kv_mode = GEIST_KV_FP32});

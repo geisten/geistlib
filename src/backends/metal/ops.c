@@ -3,6 +3,7 @@
  */
 #include <geist_util.h>
 #include "metal_internal.h"
+#include "backend_tables.h"
 
 #include "checked.h"
 #include "hadamard.h"
@@ -4550,21 +4551,20 @@ metal_deltanet_mix_states(struct geist_backend                 *be,
 }
 
 /* Backend vtbl. */
-static const struct geist_backend_vtbl metal_vtbl = {
-        .create                = metal_create,
-        .destroy               = metal_destroy,
-        .buffer_create         = metal_buffer_create,
-        .buffer_destroy        = metal_buffer_destroy,
-        .buffer_create_aliased = metal_buffer_create_aliased,
-        .buffer_upload         = metal_buffer_upload,
-        .buffer_download       = metal_buffer_download,
-        .buffer_map            = metal_buffer_map,
-        .buffer_unmap          = metal_buffer_unmap,
-        .buffer_copy           = metal_buffer_copy,
-        .resolve_weight        = metal_resolve_weight,
-        .parallel_region_begin = metal_parallel_region_begin,
-        .parallel_region_end   = metal_parallel_region_end,
-};
+static const struct geist_backend_vtbl metal_vtbl =
+        GEIST_BACKEND_VTBL(metal_destroy,
+                           metal_buffer_create,
+                           metal_buffer_destroy,
+                           metal_buffer_create_aliased,
+                           metal_buffer_upload,
+                           metal_buffer_download,
+                           metal_buffer_map,
+                           metal_buffer_unmap,
+                           .create                = metal_create,
+                           .buffer_copy           = metal_buffer_copy,
+                           .resolve_weight        = metal_resolve_weight,
+                           .parallel_region_begin = metal_parallel_region_begin,
+                           .parallel_region_end   = metal_parallel_region_end);
 
 /* ---- Mixture-of-experts decode on the device (#201) -------------------- */
 
@@ -4940,17 +4940,16 @@ static bool metal_fused_supported(struct geist_backend *be, const struct geist_f
     return false;
 }
 
-static const struct geist_backend_primitives metal_prims = {
-        .rmsnorm      = metal_rmsnorm,
-        .add          = metal_add,
-        .mul          = metal_mul,
-        .gelu_tanh    = metal_gelu_tanh,
-        .silu         = metal_silu,
-        .relu_squared = metal_relu_squared,
-        .rope_apply   = metal_rope_apply,
-        .attention    = metal_attention,
-        .scale_f32    = metal_scale_f32,
-};
+static const struct geist_backend_primitives metal_prims =
+        GEIST_BACKEND_PRIMS(metal_rmsnorm,
+                            metal_add,
+                            metal_mul,
+                            metal_gelu_tanh,
+                            metal_silu,
+                            metal_rope_apply,
+                            metal_attention,
+                            .relu_squared = metal_relu_squared,
+                            .scale_f32    = metal_scale_f32);
 
 static const struct geist_backend_fused metal_fused = {
         .supported                    = metal_fused_supported,
@@ -5016,29 +5015,28 @@ static enum geist_status metal_memory_info(const struct geist_backend  *be,
     return GEIST_OK;
 }
 
-const struct geist_backend_descriptor geist_backend_metal = {
-        .name               = "metal",
-        .resources_snapshot = metal_resources_snapshot,
-        .memory_info        = metal_memory_info,
-        .vtbl               = &metal_vtbl,
-        .prims              = &metal_prims,
-        .fused              = &metal_fused,
-        .tunables           = metal_tunables,
-        .caps               = {.kv_f16_attention  = true,
-                               .kv_f16_by_default = true,
-                               .batched_submit    = true,
-                               /* Binding pages a buffer in whole (#529). */
-                               .lookup_tables_on_host = true,
-                               /* metal_linear_t switches on the resolver's dtypes. */
-                               .resolve_weight_complete = true,
-                               /* deltanet_mix encodes 64-token sub-chunks internally
-                                * (#322), so DN models keep preferred_m_max. */
-                 .dn_subchunk = true,
-                 /* 512 would double the m_max-scaled logits scratch
-                  * (m_max x VOCAB floats — 256 MB at vocab 262k) for no
-                  * prefill gain; DN models are capped at 64 in
-                  * arch_state anyway (O(C^2) chunk cost). */
-                 .preferred_m_max   = 256,
-                 .max_m             = 512, /* batched-submit pipeline bound */
-                 .preferred_kv_mode = GEIST_KV_FP32},
-};
+const struct geist_backend_descriptor geist_backend_metal =
+        GEIST_BACKEND_DESCRIPTOR("metal",
+                                 metal_vtbl,
+                                 metal_prims,
+                                 .resources_snapshot = metal_resources_snapshot,
+                                 .memory_info        = metal_memory_info,
+                                 .fused              = &metal_fused,
+                                 .tunables           = metal_tunables,
+                                 .caps = {.kv_f16_attention  = true,
+                                          .kv_f16_by_default = true,
+                                          .batched_submit    = true,
+                                          /* Binding pages a buffer in whole (#529). */
+                                          .lookup_tables_on_host = true,
+                                          /* metal_linear_t switches on the resolver's dtypes. */
+                                          .resolve_weight_complete = true,
+                                          /* deltanet_mix encodes 64-token sub-chunks internally
+                                           * (#322), so DN models keep preferred_m_max. */
+                                          .dn_subchunk = true,
+                                          /* 512 would double the m_max-scaled logits scratch
+                                           * (m_max x VOCAB floats — 256 MB at vocab 262k) for no
+                                           * prefill gain; DN models are capped at 64 in
+                                           * arch_state anyway (O(C^2) chunk cost). */
+                                          .preferred_m_max = 256,
+                                          .max_m = 512, /* batched-submit pipeline bound */
+                                          .preferred_kv_mode = GEIST_KV_FP32});

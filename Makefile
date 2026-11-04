@@ -600,8 +600,8 @@ check-static-tidy:
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
 
-# Family wiring (#345): the mistakes in tests/wiring/ fail to compile, and
-# each family builds and links alone.
+# Family and backend wiring (#345): the mistakes in tests/wiring/ fail to
+# compile, and each family and each CPU backend builds and links alone.
 .PHONY: check-static-wiring
 check-static-wiring:
 	@python3 scripts/check_wiring.py

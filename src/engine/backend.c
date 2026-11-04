@@ -53,13 +53,9 @@ static const struct geist_backend_descriptor *auto_cpu_descriptor(void) {
                                                    const struct geist_backend_opts       *opts,
                                                    const struct geist_allocator          *alloc,
                                                    struct geist_backend                 **out) {
-    if (desc->vtbl == nullptr || desc->vtbl->destroy == nullptr) {
-        geist_error_set_create_time(GEIST_E_INTERNAL,
-                                    "geist_backend_create",
-                                    "backend '%s' has incomplete vtable",
-                                    desc->name);
-        return GEIST_E_INTERNAL;
-    }
+    /* desc is a registry entry, defined with GEIST_BACKEND_DESCRIPTOR and
+     * GEIST_BACKEND_VTBL (backends/common/backend_tables.h): its vtbl and
+     * destroy are there, or it would not have compiled (#345). */
     /* The target flags let the compiler use their instruction-set features
      * anywhere in the library, so a host that lacks one would die with
      * SIGILL somewhere in a decode. Say so here instead. */
