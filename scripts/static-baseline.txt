@@ -2,7 +2,6 @@
 # count, file, check, message. Regenerate with --update.
 1	include/geist_backend.h	clang-analyzer-core.NullDereference	Access to field 'fused' results in a dereference of a null pointer (loaded from field 'desc')
 2	src/archs/audio_conformer/arch.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
-1	src/archs/audio_conformer/audio_encoder.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 1	src/archs/audio_conformer/audio_kernels.c	clang-analyzer-deadcode.DeadStores	Value stored to 'm' during its initialization is never read
 3	src/archs/audio_conformer/encoder_forward.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 2	src/archs/audio_conformer/encoder_forward.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
@@ -28,6 +27,7 @@
 18	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 1	src/archs/transformer/forward/layer.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
 16	src/archs/transformer/forward/layer.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
+2	src/archs/transformer/forward/layer_deltanet.c	bugprone-misplaced-widening-cast	either cast from 'size_t' (aka 'unsigned long') to 'int64_t' (aka 'long long') is ineffective, or there is loss of precision before the conversion
 10	src/archs/transformer/forward/layer_deltanet.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
 1	src/archs/transformer/forward/layer_deltanet.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '*' is a garbage value
 9	src/archs/transformer/forward/layer_ple.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long long') is implementation-defined
@@ -48,7 +48,6 @@
 1	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an integer value, but function will not report conversion errors; consider using 'strtol' instead
 2	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoul' instead
 1	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoull' instead
-1	src/archs/transformer/rotation.c	clang-analyzer-optin.core.EnumCastOutOfRange	The value '-1' provided to the cast expression is not in the valid range of values for 'transformer_mixer_kind'
 2	src/archs/transformer/scratch_plan.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
 1	src/archs/transformer/weight_load/layer_wiring.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
 4	src/archs/vision_siglip/vision_encoder.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'

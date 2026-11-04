@@ -11,7 +11,6 @@ src/archs/transformer/moe_gpu.c	clang-analyzer-core.CallAndMessage	the path need
 src/archs/transformer/moe_gpu.c	clang-analyzer-core.UndefinedBinaryOperatorResult	ex[] gets exactly rows entries; the opaque rows_gather call only lost rs for the analyzer
 src/archs/transformer/moe_gpu.c	clang-analyzer-deadcode.DeadStores	harmless dead store; delete rows = n_hot
 src/archs/transformer/moe_gpu.c	clang-analyzer-security.ArrayBound	layer < n_layers and e < n_exp bound the index by the size of count
-src/archs/transformer/rotation.c	clang-analyzer-optin.core.EnumCastOutOfRange	enum range UB is C++ only; MIXER_ANY is a sentinel compared here
 src/backends/common/gemma4_kernels.c	clang-analyzer-unix.cstring.NullArg	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
 src/backends/cpu_neon/attention_kv.h	clang-analyzer-core.UndefinedBinaryOperatorResult	nkv_supported requires an even head_dim before nkv_run; the analyzer cannot follow that function pointer
 src/backends/cpu_neon/kernels/q4_K.c	clang-analyzer-core.NullDereference	heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
