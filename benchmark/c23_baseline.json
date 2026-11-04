@@ -1,0 +1,1441 @@
+{
+ "schema": "geist.c23.baseline.v1",
+ "issue": "#341 / #333 Phase 0",
+ "commit": "6642260d55a1d5ee71c85548b55ae277e6146228",
+ "commit_note": "main on 2026-10-31, before the first #333 code change (a073758b, GEIST_CLEANUP, 2026-11-02)",
+ "text_bytes": {
+  "note": "tools/text_size.py measure; .text/.text.*/__text of the objects under build/<target>/release/{src,third_party} (= libgeist.a) and of the shared library",
+  "macos-arm64": {
+   "objects": 130,
+   "libgeist.a": 896972,
+   "layers": {
+    "src/archs/audio_conformer": 50928,
+    "src/archs/transformer": 230196,
+    "src/archs/vision_siglip": 17068,
+    "src/backends/common": 37876,
+    "src/backends/cpu_neon": 213364,
+    "src/backends/cpu_scalar": 7332,
+    "src/backends/metal": 100368,
+    "src/base": 7628,
+    "src/engine": 53888,
+    "src/formats/gguf": 19344,
+    "src/formats/ptqtp": 1132,
+    "src/io": 13044,
+    "third_party/stb": 144804
+   },
+   "shared": {
+    "libgeist.dylib": 896972
+   },
+   "toolchain": "Apple clang 21.0.0, make TARGET=mac-omp (cpu_neon cpu_scalar metal, Accelerate)"
+  },
+  "linux-arm64": {
+   "objects": 123,
+   "libgeist.a": 806000,
+   "layers": {
+    "src/archs/audio_conformer": 33824,
+    "src/archs/transformer": 239736,
+    "src/archs/vision_siglip": 13808,
+    "src/backends/common": 37284,
+    "src/backends/cpu_neon": 192952,
+    "src/backends/cpu_scalar": 6560,
+    "src/base": 10388,
+    "src/engine": 54760,
+    "src/formats/gguf": 13552,
+    "src/formats/ptqtp": 1384,
+    "src/io": 14092,
+    "third_party/stb": 187660
+   },
+   "shared": {
+    "libgeist.so": 807796
+   },
+   "toolchain": "gcc-14 14.2.0 (Debian 13 image geistlib-gcc14:arm64), make TARGET=linux (cpu_neon cpu_scalar, OpenBLAS)"
+  },
+  "linux-x86_64": {
+   "objects": 142,
+   "libgeist.a": 1630606,
+   "layers": {
+    "src/archs/audio_conformer": 41899,
+    "src/archs/transformer": 395525,
+    "src/archs/vision_siglip": 18499,
+    "src/backends/common": 55131,
+    "src/backends/cpu_scalar": 7893,
+    "src/backends/cpu_x86": 762912,
+    "src/base": 9852,
+    "src/engine": 64598,
+    "src/formats/gguf": 12492,
+    "src/formats/ptqtp": 1393,
+    "src/io": 14786,
+    "third_party/stb": 245626
+   },
+   "shared": {},
+   "toolchain": "x86_64-linux-gnu-gcc-14 14.2.0 (cross, geistlib-gcc14:x86cross), make TARGET=linux LINUX_ARCH=x86_64 GEMM_PROVIDER=native (cpu_x86 cpu_scalar); libgeist.so not linked in the cross build (its TLS relocations need -fPIC there)"
+  }
+ },
+ "clean_build": {
+  "note": "make clean, then make -j8 lib, on the M1 Max (10 cores) under with-mac-lock, 1-min load 10-15 (other agents' unit tests do not take the lock). cpu_s = user+sys of the build, less sensitive to load than real_s.",
+  "macos-arm64": {
+   "cmd": "make TARGET=mac-omp -j8 lib",
+   "real_s": [
+    4.23,
+    4.0,
+    4.01
+   ],
+   "cpu_s": [
+    17.8,
+    17.28,
+    17.26
+   ]
+  },
+  "linux-arm64": {
+   "cmd": "make TARGET=linux CC=gcc-14 -j8 lib (docker, 10 vCPU)",
+   "real_s": [
+    7.0,
+    7.0
+   ],
+   "cpu_s": [
+    30.05,
+    29.28
+   ]
+  }
+ },
+ "bench_matrix": {
+  "note": "newest geisten/bench-results run per cell whose geist binary is 6642260d (the Sunday 2026-11-01 weekly set and nightly runs), else the newest before 2026-11-02; frozen cross-engine protocol, medians of 4 alternating A/B cycles; pp = prefill tok/s at that prompt length, tg64 = decode tok/s at that depth; vs llama.cpp in percent",
+  "cells": {
+   "amd_9950x/bitnet-large-tq2": {
+    "date": "2026-11-01T00:38",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/bitnet-large-tq2/2026-11-01T003817Z_geist_llama_cpu_bitnet-large-tq2.jsonl",
+    "pp": {
+     "128": 2551.24,
+     "256": 2574.15,
+     "512": 2388.0,
+     "1024": 2146.54
+    },
+    "tg64": {
+     "128": 323.08,
+     "256": 305.8,
+     "512": 271.3,
+     "1024": 214.01
+    },
+    "pp_vs_llama_pct": {
+     "1024": 60.6,
+     "128": 86.8,
+     "256": 80.2,
+     "512": 70.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 49.7,
+     "128": 32.1,
+     "256": 43.7,
+     "512": 47.4
+    }
+   },
+   "amd_9950x/bonsai2-27b-pq2": {
+    "date": "2026-11-01T00:52",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/bonsai2-27b-pq2/2026-11-01T005229Z_geist_llama_cpu_bonsai2-27b-pq2.jsonl",
+    "pp": {
+     "128": 84.12,
+     "256": 83.4,
+     "512": 83.35,
+     "1024": 82.81
+    },
+    "tg64": {
+     "128": 9.6,
+     "256": 9.57,
+     "512": 9.56,
+     "1024": 9.53
+    },
+    "pp_vs_llama_pct": {
+     "1024": 55.1,
+     "128": 54.7,
+     "256": 52.9,
+     "512": 56.2
+    },
+    "tg_vs_llama_pct": {
+     "1024": 14.2,
+     "128": 13.9,
+     "256": 14.0,
+     "512": 14.3
+    }
+   },
+   "amd_9950x/gemma4-e2b-q4km": {
+    "date": "2026-11-01T01:40",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/gemma4-e2b-q4km/2026-11-01T014032Z_geist_llama_cpu_gemma4-e2b-q4km.jsonl",
+    "pp": {
+     "128": 943.41,
+     "256": 955.82,
+     "512": 952.26,
+     "1024": 932.51
+    },
+    "tg64": {
+     "128": 52.1,
+     "256": 51.89,
+     "512": 51.66,
+     "1024": 51.47
+    },
+    "pp_vs_llama_pct": {
+     "1024": 50.5,
+     "128": 57.8,
+     "256": 52.1,
+     "512": 49.8
+    },
+    "tg_vs_llama_pct": {
+     "1024": 18.9,
+     "128": 16.6,
+     "256": 18.0,
+     "512": 18.5
+    }
+   },
+   "amd_9950x/gemma4-e4b-q4km": {
+    "date": "2026-11-01T01:58",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/gemma4-e4b-q4km/2026-11-01T015808Z_geist_llama_cpu_gemma4-e4b-q4km.jsonl",
+    "pp": {
+     "128": 501.04,
+     "256": 498.56,
+     "512": 499.62,
+     "1024": 493.88
+    },
+    "tg64": {
+     "128": 26.31,
+     "256": 26.21,
+     "512": 26.1,
+     "1024": 26.04
+    },
+    "pp_vs_llama_pct": {
+     "1024": 50.1,
+     "128": 56.6,
+     "256": 51.6,
+     "512": 49.8
+    },
+    "tg_vs_llama_pct": {
+     "1024": 16.3,
+     "128": 14.5,
+     "256": 15.0,
+     "512": 15.9
+    }
+   },
+   "amd_9950x/llama32-3b-q4km": {
+    "date": "2026-11-01T02:21",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/llama32-3b-q4km/2026-11-01T022136Z_geist_llama_cpu_llama32-3b-q4km.jsonl",
+    "pp": {
+     "128": 740.46,
+     "256": 746.28,
+     "512": 735.36,
+     "1024": 708.73
+    },
+    "tg64": {
+     "128": 37.55,
+     "256": 37.52,
+     "512": 37.2,
+     "1024": 36.56
+    },
+    "pp_vs_llama_pct": {
+     "1024": 40.7,
+     "128": 47.2,
+     "256": 44.8,
+     "512": 41.6
+    },
+    "tg_vs_llama_pct": {
+     "1024": 9.7,
+     "128": 5.4,
+     "256": 6.7,
+     "512": 7.6
+    }
+   },
+   "amd_9950x/qwen3-0.6b-q8": {
+    "date": "2026-11-01T02:41",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/qwen3-0.6b-q8/2026-11-01T024110Z_geist_llama_cpu_qwen3-0.6b-q8.jsonl",
+    "pp": {
+     "128": 2120.44,
+     "256": 2109.78,
+     "512": 1995.7,
+     "1024": 1876.69
+    },
+    "tg64": {
+     "128": 117.35,
+     "256": 115.56,
+     "512": 111.53,
+     "1024": 105.68
+    },
+    "pp_vs_llama_pct": {
+     "1024": 21.8,
+     "128": 30.4,
+     "256": 26.3,
+     "512": 19.3
+    },
+    "tg_vs_llama_pct": {
+     "1024": 15.4,
+     "128": 10.3,
+     "256": 7.4,
+     "512": 9.2
+    }
+   },
+   "amd_9950x/qwen35-0.8b-q8": {
+    "date": "2026-11-01T02:55",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/qwen35-0.8b-q8/2026-11-01T025544Z_geist_llama_cpu_qwen35-0.8b-q8.jsonl",
+    "pp": {
+     "128": 1699.33,
+     "256": 1716.92,
+     "512": 1742.79,
+     "1024": 1740.29
+    },
+    "tg64": {
+     "128": 81.76,
+     "256": 81.96,
+     "512": 82.08,
+     "1024": 81.6
+    },
+    "pp_vs_llama_pct": {
+     "1024": 66.8,
+     "128": 71.5,
+     "256": 66.3,
+     "512": 68.7
+    },
+    "tg_vs_llama_pct": {
+     "1024": 16.9,
+     "128": 15.3,
+     "256": 15.9,
+     "512": 17.3
+    }
+   },
+   "amd_9950x/qwen35-4b-q4": {
+    "date": "2026-11-01T03:11",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/qwen35-4b-q4/2026-11-01T031100Z_geist_llama_cpu_qwen35-4b-q4.jsonl",
+    "pp": {
+     "128": 560.25,
+     "256": 557.02,
+     "512": 560.82,
+     "1024": 555.32
+    },
+    "tg64": {
+     "128": 26.26,
+     "256": 26.27,
+     "512": 26.24,
+     "1024": 26.16
+    },
+    "pp_vs_llama_pct": {
+     "1024": 77.2,
+     "128": 81.0,
+     "256": 75.9,
+     "512": 76.9
+    },
+    "tg_vs_llama_pct": {
+     "1024": 14.3,
+     "128": 11.5,
+     "256": 13.3,
+     "512": 12.6
+    }
+   },
+   "amd_9950x/qwen38-27b-q4": {
+    "date": "2026-11-01T03:34",
+    "commit": "6642260d5",
+    "archive": "runs/amd_9950x/qwen38-27b-q4/2026-11-01T033437Z_geist_llama_cpu_qwen38-27b-q4.jsonl",
+    "pp": {
+     "128": 98.56,
+     "256": 98.62,
+     "512": 97.53,
+     "1024": 97.16
+    },
+    "tg64": {
+     "128": 4.86,
+     "256": 4.85,
+     "512": 4.85,
+     "1024": 4.83
+    },
+    "pp_vs_llama_pct": {
+     "1024": 74.2,
+     "128": 77.1,
+     "256": 75.3,
+     "512": 75.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 8.6,
+     "128": 8.5,
+     "256": 8.6,
+     "512": 8.7
+    }
+   },
+   "apple_m1max/gemma4-e2b-q4km": {
+    "date": "2026-10-25T01:15",
+    "commit": "af6689407",
+    "archive": "runs/apple_m1max/gemma4-e2b-q4km/2026-10-25T011511Z_geist_llama_cpu_gemma4-e2b-q4km.jsonl",
+    "pp": {
+     "128": 344.61,
+     "256": 337.4,
+     "512": 325.43,
+     "1024": 303.02
+    },
+    "tg64": {
+     "128": 62.26,
+     "256": 59.77,
+     "512": 56.02,
+     "1024": 53.73
+    },
+    "pp_vs_llama_pct": {
+     "1024": 7.2,
+     "128": 13.1,
+     "256": 12.9,
+     "512": 7.9
+    },
+    "tg_vs_llama_pct": {
+     "1024": 13.7,
+     "128": 22.3,
+     "256": 20.4,
+     "512": 15.5
+    }
+   },
+   "apple_m1max/gemma4-e4b-q4km": {
+    "date": "2026-10-18T05:19",
+    "commit": "c993379b0",
+    "archive": "runs/apple_m1max/gemma4-e4b-q4km/2026-10-18T051934Z_geist_llama_cpu_gemma4-e4b-q4km.jsonl",
+    "pp": {
+     "128": 93.31,
+     "256": 90.33,
+     "512": 81.22,
+     "1024": 75.93
+    },
+    "tg64": {
+     "128": 26.44,
+     "256": 24.49,
+     "512": 21.08,
+     "1024": 19.08
+    },
+    "pp_vs_llama_pct": {
+     "1024": -47.6,
+     "128": -39.6,
+     "256": -41.6,
+     "512": -46.6
+    },
+    "tg_vs_llama_pct": {
+     "1024": -26.4,
+     "128": -2.2,
+     "256": -8.0,
+     "512": -19.7
+    }
+   },
+   "apple_m1max/qwen35-4b-q4": {
+    "date": "2026-10-25T04:05",
+    "commit": "af6689407",
+    "archive": "runs/apple_m1max/qwen35-4b-q4/2026-10-25T040538Z_geist_llama_cpu_qwen35-4b-q4.jsonl",
+    "pp": {
+     "128": 167.99,
+     "256": 167.15,
+     "512": 163.57,
+     "1024": 155.01
+    },
+    "tg64": {
+     "128": 36.48,
+     "256": 35.62,
+     "512": 33.75,
+     "1024": 30.07
+    },
+    "pp_vs_llama_pct": {
+     "1024": -15.6,
+     "128": -12.9,
+     "256": -12.1,
+     "512": -14.7
+    },
+    "tg_vs_llama_pct": {
+     "1024": -6.2,
+     "128": 10.8,
+     "256": 8.4,
+     "512": 4.3
+    }
+   },
+   "apple_m6_mini/bonsai2-27b-pq2": {
+    "date": "2026-11-01T00:38",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/bonsai2-27b-pq2/2026-11-01T003849Z_geist_llama_cpu_bonsai2-27b-pq2.jsonl",
+    "pp": {
+     "128": 33.5,
+     "256": 33.41,
+     "512": 33.24,
+     "1024": 32.78
+    },
+    "tg64": {
+     "128": 13.16,
+     "256": 13.06,
+     "512": 12.89,
+     "1024": 12.59
+    },
+    "pp_vs_llama_pct": {
+     "1024": 0.8,
+     "128": 54.7,
+     "256": 19.1,
+     "512": 1.8
+    },
+    "tg_vs_llama_pct": {
+     "1024": 1512.3,
+     "128": 1579.4,
+     "256": 1569.0,
+     "512": 1548.4
+    }
+   },
+   "apple_m6_mini/gemma4-e2b-q4km": {
+    "date": "2026-11-01T03:07",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/gemma4-e2b-q4km/2026-11-01T030708Z_geist_llama_cpu_gemma4-e2b-q4km.jsonl",
+    "pp": {
+     "128": 361.38,
+     "256": 357.63,
+     "512": 341.02,
+     "1024": 324.9
+    },
+    "tg64": {
+     "128": 71.51,
+     "256": 69.46,
+     "512": 65.97,
+     "1024": 63.47
+    },
+    "pp_vs_llama_pct": {
+     "1024": 24.6,
+     "128": 27.5,
+     "256": 27.5,
+     "512": 23.7
+    },
+    "tg_vs_llama_pct": {
+     "1024": 6.2,
+     "128": 8.9,
+     "256": 9.8,
+     "512": 6.7
+    }
+   },
+   "apple_m6_mini/gemma4-e4b-q4km": {
+    "date": "2026-11-01T03:44",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/gemma4-e4b-q4km/2026-11-01T034457Z_geist_llama_cpu_gemma4-e4b-q4km.jsonl",
+    "pp": {
+     "128": 178.65,
+     "256": 176.19,
+     "512": 171.97,
+     "1024": 167.32
+    },
+    "tg64": {
+     "128": 37.1,
+     "256": 36.56,
+     "512": 35.46,
+     "1024": 34.71
+    },
+    "pp_vs_llama_pct": {
+     "1024": 22.1,
+     "128": 25.3,
+     "256": 24.2,
+     "512": 21.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 8.5,
+     "128": 9.2,
+     "256": 10.3,
+     "512": 8.7
+    }
+   },
+   "apple_m6_mini/llama32-3b-q4km": {
+    "date": "2026-11-01T04:26",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/llama32-3b-q4km/2026-11-01T042641Z_geist_llama_cpu_llama32-3b-q4km.jsonl",
+    "pp": {
+     "128": 250.85,
+     "256": 245.97,
+     "512": 236.28,
+     "1024": 218.14
+    },
+    "tg64": {
+     "128": 57.89,
+     "256": 56.17,
+     "512": 53.12,
+     "1024": 47.34
+    },
+    "pp_vs_llama_pct": {
+     "1024": 8.0,
+     "128": 17.5,
+     "256": 15.5,
+     "512": 11.8
+    },
+    "tg_vs_llama_pct": {
+     "1024": 9.6,
+     "128": 2.4,
+     "256": 7.6,
+     "512": 8.4
+    }
+   },
+   "apple_m6_mini/qwen3-0.6b-q8": {
+    "date": "2026-11-01T05:02",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/qwen3-0.6b-q8/2026-11-01T050259Z_geist_llama_cpu_qwen3-0.6b-q8.jsonl",
+    "pp": {
+     "128": 1205.28,
+     "256": 1121.63,
+     "512": 967.4,
+     "1024": 758.99
+    },
+    "tg64": {
+     "128": 181.99,
+     "256": 166.24,
+     "512": 141.45,
+     "1024": 108.55
+    },
+    "pp_vs_llama_pct": {
+     "1024": -28.8,
+     "128": -14.3,
+     "256": -17.8,
+     "512": -22.9
+    },
+    "tg_vs_llama_pct": {
+     "1024": -0.6,
+     "128": -4.9,
+     "256": 1.6,
+     "512": -2.1
+    }
+   },
+   "apple_m6_mini/qwen35-0.8b-q8": {
+    "date": "2026-11-01T05:26",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/qwen35-0.8b-q8/2026-11-01T052611Z_geist_llama_cpu_qwen35-0.8b-q8.jsonl",
+    "pp": {
+     "128": 982.88,
+     "256": 980.12,
+     "512": 966.94,
+     "1024": 935.73
+    },
+    "tg64": {
+     "128": 140.25,
+     "256": 139.34,
+     "512": 137.37,
+     "1024": 132.63
+    },
+    "pp_vs_llama_pct": {
+     "1024": 7.7,
+     "128": 6.5,
+     "256": 8.2,
+     "512": 8.5
+    },
+    "tg_vs_llama_pct": {
+     "1024": 2.6,
+     "128": 4.4,
+     "256": 5.1,
+     "512": 4.6
+    }
+   },
+   "apple_m6_mini/qwen35-4b-q4": {
+    "date": "2026-11-01T05:47",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini/qwen35-4b-q4/2026-11-01T054731Z_geist_llama_cpu_qwen35-4b-q4.jsonl",
+    "pp": {
+     "128": 148.72,
+     "256": 148.2,
+     "512": 147.01,
+     "1024": 144.62
+    },
+    "tg64": {
+     "128": 44.15,
+     "256": 43.04,
+     "512": 40.83,
+     "1024": 36.45
+    },
+    "pp_vs_llama_pct": {
+     "1024": -12.1,
+     "128": -12.2,
+     "256": -12.9,
+     "512": -12.1
+    },
+    "tg_vs_llama_pct": {
+     "1024": -7.2,
+     "128": 5.5,
+     "256": 4.8,
+     "512": 0.9
+    }
+   },
+   "apple_m6_mini_metal/bonsai2-27b-pq2": {
+    "date": "2026-11-01T09:14",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/bonsai2-27b-pq2/2026-11-01T091432Z_geist_llama_gpu_bonsai2-27b-pq2.jsonl",
+    "pp": {
+     "128": 256.61,
+     "256": 259.94,
+     "512": 224.8,
+     "1024": 222.23
+    },
+    "tg64": {
+     "128": 19.05,
+     "256": 19.01,
+     "512": 18.97,
+     "1024": 18.83
+    },
+    "pp_vs_llama_pct": {
+     "1024": -4.5,
+     "128": 9.1,
+     "256": 9.6,
+     "512": -4.1
+    },
+    "tg_vs_llama_pct": {
+     "1024": 17.0,
+     "128": 17.3,
+     "256": 17.1,
+     "512": 17.3
+    }
+   },
+   "apple_m6_mini_metal/gemma4-e2b-q4km": {
+    "date": "2026-11-01T09:40",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/gemma4-e2b-q4km/2026-11-01T094000Z_geist_llama_gpu_gemma4-e2b-q4km.jsonl",
+    "pp": {
+     "128": 2629.58,
+     "256": 2718.14,
+     "512": 2699.33,
+     "1024": 2649.78
+    },
+    "tg64": {
+     "128": 90.41,
+     "256": 90.15,
+     "512": 89.42,
+     "1024": 88.91
+    },
+    "pp_vs_llama_pct": {
+     "1024": -4.7,
+     "128": 15.4,
+     "256": -5.7,
+     "512": -4.5
+    },
+    "tg_vs_llama_pct": {
+     "1024": 3.3,
+     "128": 3.1,
+     "256": 3.1,
+     "512": 2.8
+    }
+   },
+   "apple_m6_mini_metal/gemma4-e4b-q4km": {
+    "date": "2026-11-01T09:56",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/gemma4-e4b-q4km/2026-11-01T095639Z_geist_llama_gpu_gemma4-e4b-q4km.jsonl",
+    "pp": {
+     "128": 1279.64,
+     "256": 1358.84,
+     "512": 1356.42,
+     "1024": 1343.7
+    },
+    "tg64": {
+     "128": 46.15,
+     "256": 46.01,
+     "512": 45.66,
+     "1024": 45.47
+    },
+    "pp_vs_llama_pct": {
+     "1024": -3.4,
+     "128": -2.4,
+     "256": -4.3,
+     "512": -3.3
+    },
+    "tg_vs_llama_pct": {
+     "1024": 1.6,
+     "128": 1.4,
+     "256": 1.7,
+     "512": 1.3
+    }
+   },
+   "apple_m6_mini_metal/llama32-3b-q4km": {
+    "date": "2026-11-01T10:14",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/llama32-3b-q4km/2026-11-01T101445Z_geist_llama_gpu_llama32-3b-q4km.jsonl",
+    "pp": {
+     "128": 1979.85,
+     "256": 2076.67,
+     "512": 2067.16,
+     "1024": 2013.14
+    },
+    "tg64": {
+     "128": 70.42,
+     "256": 69.9,
+     "512": 69.0,
+     "1024": 67.13
+    },
+    "pp_vs_llama_pct": {
+     "1024": -3.9,
+     "128": -5.8,
+     "256": -6.6,
+     "512": -3.3
+    },
+    "tg_vs_llama_pct": {
+     "1024": -0.2,
+     "128": -0.0,
+     "256": -0.1,
+     "512": 0.3
+    }
+   },
+   "apple_m6_mini_metal/qwen3-0.6b-q8": {
+    "date": "2026-11-01T10:31",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/qwen3-0.6b-q8/2026-11-01T103146Z_geist_llama_gpu_qwen3-0.6b-q8.jsonl",
+    "pp": {
+     "128": 8113.59,
+     "256": 9597.54,
+     "512": 9336.08,
+     "1024": 8572.98
+    },
+    "tg64": {
+     "128": 205.83,
+     "256": 201.24,
+     "512": 193.67,
+     "1024": 179.59
+    },
+    "pp_vs_llama_pct": {
+     "1024": -8.6,
+     "128": -3.5,
+     "256": -7.2,
+     "512": -7.2
+    },
+    "tg_vs_llama_pct": {
+     "1024": 4.8,
+     "128": 2.7,
+     "256": 5.8,
+     "512": 5.7
+    }
+   },
+   "apple_m6_mini_metal/qwen35-0.8b-q8": {
+    "date": "2026-11-01T10:49",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/qwen35-0.8b-q8/2026-11-01T104921Z_geist_llama_gpu_qwen35-0.8b-q8.jsonl",
+    "pp": {
+     "128": 5986.34,
+     "256": 7034.9,
+     "512": 7181.78,
+     "1024": 7172.3
+    },
+    "tg64": {
+     "128": 154.23,
+     "256": 154.1,
+     "512": 153.45,
+     "1024": 152.37
+    },
+    "pp_vs_llama_pct": {
+     "1024": 13.1,
+     "128": 13.4,
+     "256": 9.3,
+     "512": 13.8
+    },
+    "tg_vs_llama_pct": {
+     "1024": 3.6,
+     "128": -1.7,
+     "256": 1.7,
+     "512": 1.4
+    }
+   },
+   "apple_m6_mini_metal/qwen35-4b-q4": {
+    "date": "2026-11-01T11:07",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/qwen35-4b-q4/2026-11-01T110710Z_geist_llama_gpu_qwen35-4b-q4.jsonl",
+    "pp": {
+     "128": 1383.75,
+     "256": 1519.15,
+     "512": 1533.42,
+     "1024": 1529.07
+    },
+    "tg64": {
+     "128": 49.64,
+     "256": 49.56,
+     "512": 49.4,
+     "1024": 49.02
+    },
+    "pp_vs_llama_pct": {
+     "1024": 7.2,
+     "128": 0.6,
+     "256": 3.6,
+     "512": 7.5
+    },
+    "tg_vs_llama_pct": {
+     "1024": 0.1,
+     "128": -0.4,
+     "256": 0.2,
+     "512": 0.4
+    }
+   },
+   "apple_m6_mini_metal/qwen38-27b-q4": {
+    "date": "2026-11-01T11:25",
+    "commit": "6642260d5",
+    "archive": "runs/apple_m6_mini_metal/qwen38-27b-q4/2026-11-01T112511Z_geist_llama_gpu_qwen38-27b-q4.jsonl",
+    "pp": {
+     "128": 251.19,
+     "256": 253.51,
+     "512": 219.92,
+     "1024": 218.1
+    },
+    "tg64": {
+     "128": 9.06,
+     "256": 9.05,
+     "512": 9.04,
+     "1024": 9.0
+    },
+    "pp_vs_llama_pct": {
+     "1024": -13.5,
+     "128": 1.1,
+     "256": -1.2,
+     "512": -12.8
+    },
+    "tg_vs_llama_pct": {
+     "1024": -1.4,
+     "128": -1.3,
+     "256": -1.4,
+     "512": -1.4
+    }
+   },
+   "nvidia_2080ti_vulkan/bitnet-large-tq2": {
+    "date": "2026-11-01T04:33",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/bitnet-large-tq2/2026-11-01T043305Z_geist_llama_gpu_bitnet-large-tq2.jsonl",
+    "pp": {
+     "128": 8556.72,
+     "256": 11004.13,
+     "512": 13267.17,
+     "1024": 11916.19
+    },
+    "tg64": {
+     "128": 349.25,
+     "256": 349.05,
+     "512": 340.94,
+     "1024": 323.2
+    },
+    "pp_vs_llama_pct": {
+     "1024": -9.9,
+     "128": 2.5,
+     "256": -14.8,
+     "512": -6.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": -8.9,
+     "128": -10.2,
+     "256": -8.6,
+     "512": -8.5
+    }
+   },
+   "nvidia_2080ti_vulkan/bonsai2-27b-pq2": {
+    "date": "2026-11-01T04:49",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/bonsai2-27b-pq2/2026-11-01T044936Z_geist_llama_gpu_bonsai2-27b-pq2.jsonl",
+    "pp": {
+     "128": 574.51,
+     "256": 590.1,
+     "512": 632.96,
+     "1024": 624.19
+    },
+    "tg64": {
+     "128": 40.53,
+     "256": 40.34,
+     "512": 39.99,
+     "1024": 39.63
+    },
+    "pp_vs_llama_pct": {
+     "1024": 15.1,
+     "128": 11.4,
+     "256": 10.1,
+     "512": 16.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 35.6,
+     "128": 39.4,
+     "256": 38.3,
+     "512": 37.7
+    }
+   },
+   "nvidia_2080ti_vulkan/gemma4-e2b-q4km": {
+    "date": "2026-11-01T05:13",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/gemma4-e2b-q4km/2026-11-01T051347Z_geist_llama_gpu_gemma4-e2b-q4km.jsonl",
+    "pp": {
+     "128": 2570.88,
+     "256": 4073.78,
+     "512": 5742.26,
+     "1024": 5582.97
+    },
+    "tg64": {
+     "128": 159.25,
+     "256": 158.52,
+     "512": 158.26,
+     "1024": 157.79
+    },
+    "pp_vs_llama_pct": {
+     "1024": 21.3,
+     "128": -32.6,
+     "256": -12.9,
+     "512": 11.6
+    },
+    "tg_vs_llama_pct": {
+     "1024": -3.6,
+     "128": -8.2,
+     "256": -4.8,
+     "512": -4.3
+    }
+   },
+   "nvidia_2080ti_vulkan/gemma4-e4b-q4km": {
+    "date": "2026-11-01T05:27",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/gemma4-e4b-q4km/2026-11-01T052751Z_geist_llama_gpu_gemma4-e4b-q4km.jsonl",
+    "pp": {
+     "128": 1560.12,
+     "256": 2555.17,
+     "512": 2944.15,
+     "1024": 2906.72
+    },
+    "tg64": {
+     "128": 97.87,
+     "256": 97.29,
+     "512": 96.85,
+     "1024": 96.5
+    },
+    "pp_vs_llama_pct": {
+     "1024": 1.8,
+     "128": -34.3,
+     "256": -15.9,
+     "512": -3.2
+    },
+    "tg_vs_llama_pct": {
+     "1024": -6.1,
+     "128": -6.2,
+     "256": -6.4,
+     "512": -6.2
+    }
+   },
+   "nvidia_2080ti_vulkan/llama32-3b-q4km": {
+    "date": "2026-11-01T05:42",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/llama32-3b-q4km/2026-11-01T054229Z_geist_llama_gpu_llama32-3b-q4km.jsonl",
+    "pp": {
+     "128": 2618.26,
+     "256": 4069.11,
+     "512": 4876.73,
+     "1024": 4680.42
+    },
+    "tg64": {
+     "128": 156.25,
+     "256": 154.5,
+     "512": 150.88,
+     "1024": 149.11
+    },
+    "pp_vs_llama_pct": {
+     "1024": 2.3,
+     "128": -30.5,
+     "256": -2.8,
+     "512": 2.9
+    },
+    "tg_vs_llama_pct": {
+     "1024": -16.4,
+     "128": -19.4,
+     "256": -16.1,
+     "512": -17.0
+    }
+   },
+   "nvidia_2080ti_vulkan/qwen3-0.6b-q8": {
+    "date": "2026-11-01T06:07",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/qwen3-0.6b-q8/2026-11-01T060742Z_geist_llama_gpu_qwen3-0.6b-q8.jsonl",
+    "pp": {
+     "128": 9472.01,
+     "256": 13997.1,
+     "512": 18379.58,
+     "1024": 16523.99
+    },
+    "tg64": {
+     "128": 328.19,
+     "256": 335.73,
+     "512": 323.36,
+     "1024": 312.84
+    },
+    "pp_vs_llama_pct": {
+     "1024": 8.0,
+     "128": -8.6,
+     "256": -16.8,
+     "512": 8.9
+    },
+    "tg_vs_llama_pct": {
+     "1024": -6.3,
+     "128": -15.8,
+     "256": -5.7,
+     "512": -5.7
+    }
+   },
+   "nvidia_2080ti_vulkan/qwen35-0.8b-q8": {
+    "date": "2026-11-01T06:22",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/qwen35-0.8b-q8/2026-11-01T062242Z_geist_llama_gpu_qwen35-0.8b-q8.jsonl",
+    "pp": {
+     "128": 8907.15,
+     "256": 12038.85,
+     "512": 15256.94,
+     "1024": 15002.56
+    },
+    "tg64": {
+     "128": 327.08,
+     "256": 328.41,
+     "512": 327.46,
+     "1024": 326.89
+    },
+    "pp_vs_llama_pct": {
+     "1024": 26.2,
+     "128": 18.5,
+     "256": 4.3,
+     "512": 25.2
+    },
+    "tg_vs_llama_pct": {
+     "1024": 14.8,
+     "128": 5.8,
+     "256": 14.8,
+     "512": 14.4
+    }
+   },
+   "nvidia_2080ti_vulkan/qwen35-4b-q4": {
+    "date": "2026-11-01T06:36",
+    "commit": "6642260d5",
+    "archive": "runs/nvidia_2080ti_vulkan/qwen35-4b-q4/2026-11-01T063616Z_geist_llama_gpu_qwen35-4b-q4.jsonl",
+    "pp": {
+     "128": 1986.73,
+     "256": 2991.62,
+     "512": 3495.13,
+     "1024": 3457.27
+    },
+    "tg64": {
+     "128": 122.77,
+     "256": 122.7,
+     "512": 122.38,
+     "1024": 121.35
+    },
+    "pp_vs_llama_pct": {
+     "1024": 4.1,
+     "128": -26.3,
+     "256": -11.3,
+     "512": 4.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": -0.6,
+     "128": -1.7,
+     "256": -1.4,
+     "512": -1.6
+    }
+   },
+   "pi5/bitnet-large-tq2": {
+    "date": "2026-11-01T00:39",
+    "commit": "6642260d5",
+    "archive": "runs/pi5/bitnet-large-tq2/2026-11-01T003942Z_geist_llama_cpu_bitnet-large-tq2.jsonl",
+    "pp": {
+     "128": 150.88,
+     "256": 143.9,
+     "512": 128.84,
+     "1024": 85.87
+    },
+    "tg64": {
+     "128": 41.63,
+     "256": 37.35,
+     "512": 30.69,
+     "1024": 21.81
+    },
+    "pp_vs_llama_pct": {
+     "1024": -3.2,
+     "128": 47.2,
+     "256": 44.9,
+     "512": 36.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 25.9,
+     "128": 7.7,
+     "256": 25.8,
+     "512": 25.6
+    }
+   },
+   "pi5/gemma4-e2b-q4km": {
+    "date": "2026-11-01T01:19",
+    "commit": "6642260d5",
+    "archive": "runs/pi5/gemma4-e2b-q4km/2026-11-01T011903Z_geist_llama_cpu_gemma4-e2b-q4km.jsonl",
+    "pp": {
+     "128": 28.91,
+     "256": 28.49,
+     "512": 27.62,
+     "1024": 26.52
+    },
+    "tg64": {
+     "128": 7.43,
+     "256": 7.3,
+     "512": 7.11,
+     "1024": 7.04
+    },
+    "pp_vs_llama_pct": {
+     "1024": -4.3,
+     "128": -3.3,
+     "256": -3.9,
+     "512": -3.7
+    },
+    "tg_vs_llama_pct": {
+     "1024": 11.8,
+     "128": 10.6,
+     "256": 12.4,
+     "512": 10.4
+    }
+   },
+   "pi5/llama32-3b-q4km": {
+    "date": "2026-11-01T02:39",
+    "commit": "6642260d5",
+    "archive": "runs/pi5/llama32-3b-q4km/2026-11-01T023930Z_geist_llama_cpu_llama32-3b-q4km.jsonl",
+    "pp": {
+     "128": 24.61,
+     "256": 24.14,
+     "512": 23.19,
+     "1024": 21.15
+    },
+    "tg64": {
+     "128": 5.82,
+     "256": 5.63,
+     "512": 5.29,
+     "1024": 4.7
+    },
+    "pp_vs_llama_pct": {
+     "1024": -19.5,
+     "128": -13.5,
+     "256": -14.8,
+     "512": -16.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 16.6,
+     "128": 8.8,
+     "256": 9.3,
+     "512": 8.1
+    }
+   },
+   "pi5/qwen3-0.6b-q8": {
+    "date": "2026-11-01T04:09",
+    "commit": "6642260d5",
+    "archive": "runs/pi5/qwen3-0.6b-q8/2026-11-01T040936Z_geist_llama_cpu_qwen3-0.6b-q8.jsonl",
+    "pp": {
+     "128": 210.0,
+     "256": 193.78,
+     "512": 157.88,
+     "1024": 107.69
+    },
+    "tg64": {
+     "128": 16.91,
+     "256": 15.98,
+     "512": 14.3,
+     "1024": 11.49
+    },
+    "pp_vs_llama_pct": {
+     "1024": -30.3,
+     "128": 0.7,
+     "256": -4.9,
+     "512": -14.6
+    },
+    "tg_vs_llama_pct": {
+     "1024": 17.9,
+     "128": -0.3,
+     "256": 4.1,
+     "512": 4.4
+    }
+   },
+   "pi5/qwen35-0.8b-q8": {
+    "date": "2026-11-01T04:48",
+    "commit": "6642260d5",
+    "archive": "runs/pi5/qwen35-0.8b-q8/2026-11-01T044852Z_geist_llama_cpu_qwen35-0.8b-q8.jsonl",
+    "pp": {
+     "128": 117.09,
+     "256": 110.16,
+     "512": 105.74,
+     "1024": 100.47
+    },
+    "tg64": {
+     "128": 13.49,
+     "256": 13.4,
+     "512": 13.31,
+     "1024": 12.98
+    },
+    "pp_vs_llama_pct": {
+     "1024": 6.7,
+     "128": -7.6,
+     "256": 7.4,
+     "512": 11.3
+    },
+    "tg_vs_llama_pct": {
+     "1024": 17.6,
+     "128": 15.6,
+     "256": 15.4,
+     "512": 16.6
+    }
+   },
+   "pi5/qwen35-4b-q4": {
+    "date": "2026-11-01T05:32",
+    "commit": "6642260d5",
+    "archive": "runs/pi5/qwen35-4b-q4/2026-11-01T053252Z_geist_llama_cpu_qwen35-4b-q4.jsonl",
+    "pp": {
+     "128": 17.8,
+     "256": 17.26,
+     "512": 16.92,
+     "1024": 16.38
+    },
+    "tg64": {
+     "128": 4.33,
+     "256": 4.31,
+     "512": 4.32,
+     "1024": 4.24
+    },
+    "pp_vs_llama_pct": {
+     "1024": -31.8,
+     "128": -34.9,
+     "256": -26.8,
+     "512": -25.0
+    },
+    "tg_vs_llama_pct": {
+     "1024": 29.4,
+     "128": 24.7,
+     "256": 25.6,
+     "512": 26.4
+    }
+   }
+  },
+  "not_measured": {
+   "apple_m1max (CPU)": "cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents)",
+   "apple_m1max_metal": "no run ever archived; run 2818's two nightly cells failed the same way"
+  }
+ },
+ "moe": {
+  "note": "moe-baseline.yml on geist-vulkan (Ryzen 9 9950X + RTX 2080 Ti) at 6642260d, 2 interleaved cycles, bench_perf_sweep --seq-lens 32,128,512,1024 --decode-n 64 --warmup 8 --repeats 3; medians; llama.cpp d81235049 llama-bench pp512/tg32; desktop not bench-locked (quiet input off), host load 13-16 of 32 threads",
+  "runs": {
+   "qwen3-30b-a3b-q4km": 2819,
+   "qwen36-35b-a3b-ud-q4kxl": 2820
+  },
+  "qwen3-30b-a3b-q4km": {
+   "geist-cpu": {
+    "pp32": 152.93,
+    "tg64@32": 36.5,
+    "rss_mb": 17537.95,
+    "pp128": 270.36,
+    "tg64@128": 36.27,
+    "pp512": 271.24,
+    "tg64@512": 35.2,
+    "pp1024": 259.19,
+    "tg64@1024": 33.93
+   },
+   "geist-hot": {
+    "pp32": 151.57,
+    "tg64@32": 46.79,
+    "rss_mb": 24973.04,
+    "pp128": 266.32,
+    "tg64@128": 43.85,
+    "pp512": 268.74,
+    "tg64@512": 34.43,
+    "pp1024": 257.12,
+    "tg64@1024": 35.61
+   },
+   "llama-cpu": {
+    "pp512": 254.47,
+    "tg32": 35.04
+   },
+   "host_load_at_cycle_start": [
+    15.06,
+    14.31,
+    14.44,
+    13.77,
+    15.66,
+    13.89
+   ]
+  },
+  "qwen36-35b-a3b-ud-q4kxl": {
+   "geist-cpu": {
+    "pp32": 163.56,
+    "tg64@32": 23.73,
+    "rss_mb": 20784.39,
+    "pp128": 206.47,
+    "tg64@128": 23.64,
+    "pp512": 209.46,
+    "tg64@512": 23.55,
+    "pp1024": 207.16,
+    "tg64@1024": 23.47
+   },
+   "geist-gpu": {
+    "pp32": 281.59,
+    "tg64@32": 75.96,
+    "rss_mb": 12664.74,
+    "pp128": 490.18,
+    "tg64@128": 75.81,
+    "pp512": 501.06,
+    "tg64@512": 75.88,
+    "pp1024": 501.86,
+    "tg64@1024": 75.89
+   },
+   "llama-cpu": {
+    "pp512": 219.05,
+    "tg32": 20.46
+   },
+   "host_load_at_cycle_start": [
+    13.66,
+    15.66,
+    13.75,
+    14.25,
+    15.93,
+    15.57
+   ]
+  }
+ },
+ "synth": {
+  "note": "gguf_artifacts/synth/llama32-1b-q4_k.gguf (tools/gen_synth_gguf.py), bench_perf_sweep --seq-lens 32,128,512,1024 --decode-n 64 --warmup 32 --repeats 5 on the M1 Max under with-mac-lock at 1-min load ~15: indicative only, repeat spread 3-30 % (prefill/decode best-to-worst)",
+  "apple_m1max_cpu_neon": {
+   "32": {
+    "prefill_tps": 640.859,
+    "decode_tps": 123.24,
+    "prefill_spread_pct": 11.4,
+    "decode_spread_pct": 6.8,
+    "rss_mb": 2113.33
+   },
+   "128": {
+    "prefill_tps": 645.197,
+    "decode_tps": 119.081,
+    "prefill_spread_pct": 11.4,
+    "decode_spread_pct": 15.0,
+    "rss_mb": 2113.34
+   },
+   "512": {
+    "prefill_tps": 591.214,
+    "decode_tps": 105.392,
+    "prefill_spread_pct": 7.0,
+    "decode_spread_pct": 30.5,
+    "rss_mb": 2113.34
+   },
+   "1024": {
+    "prefill_tps": 530.788,
+    "decode_tps": 97.332,
+    "prefill_spread_pct": 12.1,
+    "decode_spread_pct": 20.3,
+    "rss_mb": 2113.34
+   }
+  },
+  "apple_m1max_metal": {
+   "32": {
+    "prefill_tps": 1409.418,
+    "decode_tps": 248.11,
+    "prefill_spread_pct": 7.2,
+    "decode_spread_pct": 5.5,
+    "rss_mb": 249.86
+   },
+   "128": {
+    "prefill_tps": 2701.106,
+    "decode_tps": 241.831,
+    "prefill_spread_pct": 20.9,
+    "decode_spread_pct": 15.1,
+    "rss_mb": 249.86
+   },
+   "512": {
+    "prefill_tps": 2310.636,
+    "decode_tps": 217.575,
+    "prefill_spread_pct": 10.4,
+    "decode_spread_pct": 3.0,
+    "rss_mb": 250.8
+   },
+   "1024": {
+    "prefill_tps": 2361.063,
+    "decode_tps": 219.686,
+    "prefill_spread_pct": 14.2,
+    "decode_spread_pct": 3.4,
+    "rss_mb": 250.86
+   }
+  }
+ }
+}
