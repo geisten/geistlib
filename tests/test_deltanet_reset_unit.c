@@ -248,7 +248,7 @@ static int run_backend(const char *backend) {
     const struct geist_session_opts o = {.top_p = 1.0f, .m_max = 128, .max_seq_len = 512};
     if (geist_model_load_from_memory(g.b, g.n, be, &m) == GEIST_OK &&
         geist_session_create(m, be, &o, &fx.s) == GEIST_OK) {
-        fx.a = geist_session_internal_arch_session(fx.s);
+        fx.a = tf_sess(geist_session_internal_arch_session(fx.s));
         printf("%s: vocab %zu\n", backend, fx.vocab);
         fails = check_fixture(&fx);
     } else {

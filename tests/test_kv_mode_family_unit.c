@@ -39,7 +39,7 @@ static char kv_of(struct geist_model *m, struct geist_backend *be, enum geist_kv
             .top_p = 1.0f, .m_max = 8, .max_seq_len = 64, .kv_mode = mode};
     if (geist_session_create(m, be, &o, &s) != GEIST_OK)
         return '?';
-    const struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+    const struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(s));
     const char c = a->kv_f16_enabled           ? 'F'
                    : a->kv_int4_packed_enabled ? (a->kv_rot_enabled ? 'q' : 'Q')
                    : a->kv_int8_enabled        ? (a->kv_rot_enabled ? 'i' : 'I')

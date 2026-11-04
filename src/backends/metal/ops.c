@@ -20,12 +20,14 @@
 
 /* A standalone command buffer (*out_cmd) and its compute encoder; nullptr
  * when either fails. */
-static inline void *
-metal_standalone_begin(struct geist_backend *be, const char *what, void **out_cmd) {
-    struct metal_state *st  = be->state;
-    void               *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
-    void *enc = cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
-    *out_cmd  = cmd;
+static inline struct metal_encoder_h *metal_standalone_begin(struct geist_backend   *be,
+                                                             const char             *what,
+                                                             struct metal_cmdbuf_h **out_cmd) {
+    struct metal_state     *st  = be->state;
+    struct metal_cmdbuf_h  *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    struct metal_encoder_h *enc =
+            cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    *out_cmd = cmd;
     if (enc == nullptr && what != nullptr) {
         geist_backend_set_error(be,
                                 GEIST_E_BACKEND,
@@ -37,8 +39,10 @@ metal_standalone_begin(struct geist_backend *be, const char *what, void **out_cm
 }
 
 /* Ends, commits and waits for a standalone command buffer. */
-[[nodiscard]] static inline enum geist_status
-metal_standalone_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
+[[nodiscard]] static inline enum geist_status metal_standalone_end(struct geist_backend   *be,
+                                                                   struct metal_cmdbuf_h  *cmd,
+                                                                   struct metal_encoder_h *enc,
+                                                                   const char             *what) {
     struct metal_state *st = be->state;
     metal_msg_send_void0(st, enc, "endEncoding");
     metal_msg_send_void0(st, cmd, "commit");
@@ -61,8 +65,8 @@ metal_standalone_end(struct geist_backend *be, void *cmd, void *enc, const char 
 
 /* The op's encoder: the sequence's (*out_cmd = nullptr) or a standalone
  * one; nullptr when there is none. */
-[[gnu::always_inline]] static inline void *
-metal_op_begin(struct geist_backend *be, const char *what, void **out_cmd) {
+[[gnu::always_inline]] static inline struct metal_encoder_h *
+metal_op_begin(struct geist_backend *be, const char *what, struct metal_cmdbuf_h **out_cmd) {
     struct metal_state *st = be->state;
     if (!metal_seq_mine(st)) {
         return metal_standalone_begin(be, what, out_cmd);
@@ -81,7 +85,10 @@ metal_op_begin(struct geist_backend *be, const char *what, void **out_cmd) {
 /* Finishes metal_op_begin: the sequence now has work, or the standalone
  * buffer runs. */
 [[nodiscard, gnu::always_inline]] static inline enum geist_status
-metal_op_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
+metal_op_end(struct geist_backend   *be,
+             struct metal_cmdbuf_h  *cmd,
+             struct metal_encoder_h *enc,
+             const char             *what) {
     if (cmd == nullptr) {
         ((struct metal_state *) be->state)->sequence_has_work = true;
         return GEIST_OK;
@@ -98,7 +105,8 @@ metal_op_end(struct geist_backend *be, void *cmd, void *enc, const char *what) {
  * of 512 but not of 1024, where the n4 kernel leaves half its block groups
  * idle on the last stride, and enough rows to fill the GPU at 8 rows per
  * threadgroup (at 256 rows the n4 kernel's 64 threadgroups won). */
-static bool metal_q4k_half_rows(const void *pipeline, uint32_t n_in, uint32_t n_out) {
+static bool
+metal_q4k_half_rows(const struct metal_pipeline_h *pipeline, uint32_t n_in, uint32_t n_out) {
     const uint32_t nb = n_in / (uint32_t) Q4_K_BLOCK_ELEMS;
     return pipeline != nullptr && nb % 4u == 2u && n_out >= 1024u;
 }
@@ -116,8 +124,8 @@ static bool metal_mv_m8_env(void) {
 /* matvec_q4k_m8 / matvec_q6k_m8 (#316): the n4 matvec's grid (64 threads,
  * 4 outputs per threadgroup), every activation row in one dispatch. */
 static void metal_encode_mv_m8(struct metal_state            *st,
-                               void                          *enc,
-                               void                          *pipeline,
+                               struct metal_encoder_h        *enc,
+                               struct metal_pipeline_h       *pipeline,
                                const struct geist_tensor     *x,
                                const struct geist_tensor     *w,
                                const struct geist_tensor     *y,
@@ -137,8 +145,8 @@ static void metal_encode_mv_m8(struct metal_state            *st,
  * rows per threadgroup of 256 threads, bounds by the kernel's tensor
  * extents, so any rows >= 2 shape. */
 static void metal_encode_mm_tc(struct metal_state            *st,
-                               void                          *enc,
-                               void                          *pipe,
+                               struct metal_encoder_h        *enc,
+                               struct metal_pipeline_h       *pipe,
                                const struct geist_tensor     *x,
                                const struct geist_tensor     *w,
                                const struct geist_tensor     *y,
@@ -158,7 +166,7 @@ static void metal_encode_mm_tc(struct metal_state            *st,
 }
 
 static void metal_encode_q4k_linear(struct metal_state            *st,
-                                    void                          *enc,
+                                    struct metal_encoder_h        *enc,
                                     const struct geist_tensor     *x,
                                     const struct geist_tensor     *w,
                                     const struct geist_tensor     *y,
@@ -264,7 +272,7 @@ static void metal_encode_q4k_linear(struct metal_state            *st,
  * threads dequantizing. GEIST_METAL_Q6K_MM_FAST=0 keeps the old kernels.
  * False when the shape does not fit; nothing is encoded then. */
 static bool metal_encode_q6k_mm32(struct metal_state            *st,
-                                  void                          *enc,
+                                  struct metal_encoder_h        *enc,
                                   const struct geist_tensor     *x,
                                   const struct geist_tensor     *w,
                                   const struct geist_tensor     *y,
@@ -293,7 +301,7 @@ static bool metal_encode_q6k_mm32(struct metal_state            *st,
 }
 
 static void metal_encode_q6k_linear(struct metal_state            *st,
-                                    void                          *enc,
+                                    struct metal_encoder_h        *enc,
                                     const struct geist_tensor     *x,
                                     const struct geist_tensor     *w,
                                     const struct geist_tensor     *y,
@@ -385,16 +393,17 @@ static void metal_encode_q6k_linear(struct metal_state            *st,
 /* The pipelines and grid geometry for one quant dtype; a new format is
  * one case here. */
 struct metal_quant_pipes {
-    void    *n4;        /* decode GEMV (rows == 1) */
-    void    *mm;        /* bounded 64x32 simdgroup GEMM */
-    void    *mm_fast;   /* interior variant, nullable */
-    void    *tc;        /* tensor-API GEMM (#314), null unless tensor_mm */
-    void    *base;      /* naive single-row kernel, nullable */
-    void    *m8;        /* naive 8-row kernel, nullable */
-    void    *r2, *r3;   /* 2- and 3-row matvecs (#401), nullable */
-    uint32_t n4_tile;   /* output rows one n4 threadgroup covers */
-    bool     gemm_only; /* no naive kernels: n4 for rows==1, GEMM above */
-    bool     mm_fast64; /* mm_fast tiles 64 activation rows, not 32 */
+    struct metal_pipeline_h *n4;        /* decode GEMV (rows == 1) */
+    struct metal_pipeline_h *mm;        /* bounded 64x32 simdgroup GEMM */
+    struct metal_pipeline_h *mm_fast;   /* interior variant, nullable */
+    struct metal_pipeline_h *tc;        /* tensor-API GEMM (#314), null unless tensor_mm */
+    struct metal_pipeline_h *base;      /* naive single-row kernel, nullable */
+    struct metal_pipeline_h *m8;        /* naive 8-row kernel, nullable */
+    struct metal_pipeline_h *r2;        /* 2-row matvec (#401), nullable */
+    struct metal_pipeline_h *r3;        /* 3-row matvec (#401), nullable */
+    uint32_t                 n4_tile;   /* output rows one n4 threadgroup covers */
+    bool                     gemm_only; /* no naive kernels: n4 for rows==1, GEMM above */
+    bool                     mm_fast64; /* mm_fast tiles 64 activation rows, not 32 */
 };
 
 static struct metal_quant_pipes
@@ -570,7 +579,7 @@ static bool metal_pq2_m8_fits(const struct metal_state *st, const struct metal_q
  * rows x n_in f16 copy. The fast path's alignment (n_in % 32, offset and
  * stride % 8) makes every float4 whole. */
 static void metal_encode_pq2_x_f16(struct metal_state            *st,
-                                   void                          *enc,
+                                   struct metal_encoder_h        *enc,
                                    const struct geist_tensor     *x,
                                    const struct metal_q4k_params *params) {
     const struct {
@@ -587,7 +596,7 @@ static void metal_encode_pq2_x_f16(struct metal_state            *st,
 }
 
 static void metal_encode_generic_quant(struct metal_state            *st,
-                                       void                          *enc,
+                                       struct metal_encoder_h        *enc,
                                        const struct geist_tensor     *x,
                                        const struct geist_tensor     *w,
                                        const struct geist_tensor     *y,
@@ -686,8 +695,11 @@ static void metal_encode_generic_quant(struct metal_state            *st,
      * format has none, but m_tile_sg above takes every shape its GEMV
      * does not, so base stays null only when a pipeline failed to
      * build -- and then there is nothing to encode. */
-    void *const base = tiled ? p.m8 : p.base;
-    void *const pipe = n_tile4 ? p.n4 : m_tile_sg_fast ? p.mm_fast : m_tile_sg ? p.mm : base;
+    struct metal_pipeline_h *const base = tiled ? p.m8 : p.base;
+    struct metal_pipeline_h *const pipe = n_tile4          ? p.n4
+                                          : m_tile_sg_fast ? p.mm_fast
+                                          : m_tile_sg      ? p.mm
+                                                           : base;
     if (pipe == nullptr) {
         return;
     }
@@ -755,7 +767,7 @@ static void metal_encode_generic_quant(struct metal_state            *st,
  * family, else the one-row matvec), the other formats share one encoder
  * indexed by dtype (metal_quant_pipes_for). */
 static void metal_encode_quant_linear(struct metal_state            *st,
-                                      void                          *enc,
+                                      struct metal_encoder_h        *enc,
                                       const struct geist_tensor     *x,
                                       const struct geist_tensor     *w,
                                       const struct geist_tensor     *y,
@@ -822,7 +834,7 @@ static uint32_t metal_rows_threads(uint32_t rows, uint32_t cols) {
 }
 
 static void metal_encode_rmsnorm_rows(struct metal_state             *st,
-                                      void                           *enc,
+                                      struct metal_encoder_h         *enc,
                                       const struct geist_tensor      *x,
                                       const struct geist_tensor      *w,
                                       const struct geist_tensor      *y,
@@ -848,7 +860,7 @@ static void metal_encode_rmsnorm_rows(struct metal_state             *st,
 }
 
 static void metal_encode_rmsnorm_add_rows(struct metal_state                  *st,
-                                          void                                *enc,
+                                          struct metal_encoder_h              *enc,
                                           const struct geist_tensor           *res,
                                           const struct geist_tensor           *x,
                                           const struct geist_tensor           *w,
@@ -876,7 +888,7 @@ static void metal_encode_rmsnorm_add_rows(struct metal_state                  *s
 }
 
 static void metal_encode_rmsnorm_add_norm_rows(struct metal_state                   *st,
-                                               void                                 *enc,
+                                               struct metal_encoder_h               *enc,
                                                const struct geist_tensor            *res,
                                                const struct geist_tensor            *x,
                                                const struct geist_tensor            *w,
@@ -913,8 +925,8 @@ static void metal_encode_rmsnorm_add_norm_rows(struct metal_state               
 /* a (op) b per element: add_rows, mul_rows, gelu_mul_rows and
  * silu_mul_rows share the bindings and the grid. */
 static void metal_encode_binary_rows(struct metal_state                    *st,
-                                     void                                  *enc,
-                                     void                                  *pipeline,
+                                     struct metal_encoder_h                *enc,
+                                     struct metal_pipeline_h               *pipeline,
                                      enum metal_profile_stage               stage,
                                      const struct geist_tensor             *a,
                                      const struct geist_tensor             *b,
@@ -940,7 +952,7 @@ static void metal_encode_binary_rows(struct metal_state                    *st,
 }
 
 static void metal_encode_qgate_split(struct metal_state              *st,
-                                     void                            *enc,
+                                     struct metal_encoder_h          *enc,
                                      const struct geist_tensor       *joint,
                                      const struct geist_tensor       *q,
                                      const struct geist_tensor       *gate,
@@ -958,7 +970,7 @@ static void metal_encode_qgate_split(struct metal_state              *st,
 }
 
 static void metal_encode_sigmoid_mul(struct metal_state                    *st,
-                                     void                                  *enc,
+                                     struct metal_encoder_h                *enc,
                                      const struct geist_tensor             *x,
                                      const struct geist_tensor             *gate,
                                      const struct geist_tensor             *y,
@@ -978,8 +990,8 @@ static void metal_encode_sigmoid_mul(struct metal_state                    *st,
 /* One-input elementwise rows (scale_rows, gelu_rows, silu_rows,
  * relu2_rows): same buffers and params, the pipeline picks the function. */
 static void metal_encode_unary_rows(struct metal_state                   *st,
-                                    void                                 *enc,
-                                    void                                 *pipeline,
+                                    struct metal_encoder_h               *enc,
+                                    struct metal_pipeline_h              *pipeline,
                                     enum metal_profile_stage              stage,
                                     const struct geist_tensor            *x,
                                     const struct geist_tensor            *y,
@@ -999,7 +1011,7 @@ static void metal_encode_unary_rows(struct metal_state                   *st,
 }
 
 static void metal_encode_embed_lookup_scaled(struct metal_state              *st,
-                                             void                            *enc,
+                                             struct metal_encoder_h          *enc,
                                              const struct geist_tensor       *embed_table,
                                              const struct geist_tensor       *out,
                                              const struct metal_embed_params *params) {
@@ -1024,7 +1036,7 @@ static void metal_encode_embed_lookup_scaled(struct metal_state              *st
 }
 
 static void metal_encode_rope_rows(struct metal_state             *st,
-                                   void                           *enc,
+                                   struct metal_encoder_h         *enc,
                                    struct geist_tensor            *x,
                                    const struct geist_tensor      *cos,
                                    const struct geist_tensor      *sin,
@@ -1054,15 +1066,16 @@ static void metal_encode_rope_rows(struct metal_state             *st,
 }
 
 static void metal_encode_attention_rows(struct metal_state                  *st,
-                                        void                                *enc,
+                                        struct metal_encoder_h              *enc,
                                         const struct geist_tensor           *q,
                                         const struct geist_tensor           *k_cache,
                                         const struct geist_tensor           *v_cache,
                                         const struct geist_tensor           *y,
                                         const struct metal_attention_params *params) {
 
-    void *pipeline = k_cache->dtype == GEIST_DTYPE_F16 ? st->attention_rows_f16_pipeline
-                                                       : st->attention_rows_pipeline;
+    struct metal_pipeline_h *pipeline = k_cache->dtype == GEIST_DTYPE_F16
+                                                ? st->attention_rows_f16_pipeline
+                                                : st->attention_rows_pipeline;
     metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, k_cache->buffer->buffer, k_cache->buffer->base_off, 1);
@@ -1086,14 +1099,15 @@ static void metal_encode_attention_rows(struct metal_state                  *st,
 }
 
 static void metal_encode_f32_matmul(struct metal_state            *st,
-                                    void                          *enc,
+                                    struct metal_encoder_h        *enc,
                                     const struct geist_tensor     *x,
                                     const struct geist_tensor     *w,
                                     const struct geist_tensor     *y,
                                     const struct metal_f32_params *params) {
     /* F16/BF16 weights (#564) take the same two kernels with the weight
      * converted on load; the 64x32 GEMM stays F32-only. */
-    void *base_pipe = st->f32_matmul_pipeline, *sg_pipe = st->f32_matmul_sg_pipeline;
+    struct metal_pipeline_h *base_pipe = st->f32_matmul_pipeline,
+                            *sg_pipe   = st->f32_matmul_sg_pipeline;
     if (w->dtype == GEIST_DTYPE_F16) {
         base_pipe = st->f16w_matmul_pipeline;
         sg_pipe   = st->f16w_matmul_sg_pipeline;
@@ -1278,8 +1292,8 @@ static bool metal_tensor_is_half_matrix(const struct geist_tensor *t,
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, "F32 linear", &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "F32 linear", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1353,8 +1367,8 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1400,8 +1414,8 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1460,8 +1474,8 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1472,12 +1486,12 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
 /* The pipeline is passed as the address of its state field: it is read
  * only after metal_ensure(be, METAL_TAB_QUANT) built it. */
 [[nodiscard, gnu::always_inline]] static inline enum geist_status
-metal_binary_rows(struct geist_backend      *be,
-                  void *const               *pipeline,
-                  enum metal_profile_stage   stage,
-                  const struct geist_tensor *a,
-                  const struct geist_tensor *b,
-                  struct geist_tensor       *y) {
+metal_binary_rows(struct geist_backend           *be,
+                  struct metal_pipeline_h *const *pipeline,
+                  enum metal_profile_stage        stage,
+                  const struct geist_tensor      *a,
+                  const struct geist_tensor      *b,
+                  struct geist_tensor            *y) {
 
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -1507,8 +1521,8 @@ metal_binary_rows(struct geist_backend      *be,
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1577,8 +1591,8 @@ metal_binary_rows(struct geist_backend      *be,
                                                               .gate_row_stride  = (uint32_t) gs};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool   = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1591,7 +1605,7 @@ struct metal_hadamard_params {
 };
 
 static void metal_encode_hadamard(struct metal_state                 *st,
-                                  void                               *enc,
+                                  struct metal_encoder_h             *enc,
                                   const struct geist_hadamard_args   *a,
                                   const struct metal_hadamard_params *p,
                                   size_t                              rows) {
@@ -1692,8 +1706,8 @@ static bool metal_hadamard_geometry_ok(
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1732,8 +1746,8 @@ static bool metal_hadamard_geometry_ok(
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1744,12 +1758,12 @@ static bool metal_hadamard_geometry_ok(
 /* The pipeline is passed as the address of its state field, as in
  * metal_binary_rows. scale reaches scale_rows only; the others ignore it. */
 [[nodiscard, gnu::always_inline]] static inline enum geist_status
-metal_unary_rows(struct geist_backend      *be,
-                 void *const               *pipeline,
-                 enum metal_profile_stage   stage,
-                 const struct geist_tensor *x,
-                 float                      scale,
-                 struct geist_tensor       *y) {
+metal_unary_rows(struct geist_backend           *be,
+                 struct metal_pipeline_h *const *pipeline,
+                 enum metal_profile_stage        stage,
+                 const struct geist_tensor      *x,
+                 float                           scale,
+                 struct geist_tensor            *y) {
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -1777,8 +1791,8 @@ metal_unary_rows(struct geist_backend      *be,
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -1969,8 +1983,8 @@ metal_embedding_lookup_scaled(struct geist_backend      *be,
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, "embedding_lookup_scaled", &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "embedding_lookup_scaled", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2052,7 +2066,7 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     if (!metal_seq_mine(st)) {
         return GEIST_E_UNSUPPORTED; /* prefill runs sequenced; loop covers the rest */
     }
-    void *enc = metal_sequence_encoder(st);
+    struct metal_encoder_h *enc = metal_sequence_encoder(st);
     if (enc == nullptr) {
         geist_backend_set_error(
                 be, GEIST_E_BACKEND, "metal embedding_lookup_scaled_rows: no encoder");
@@ -2099,7 +2113,7 @@ metal_pq2_lowp_reserve(struct geist_backend *be, size_t rows, size_t ni, size_t 
 }
 
 static void metal_encode_pq2_lowp(struct metal_state            *st,
-                                  void                          *enc,
+                                  struct metal_encoder_h        *enc,
                                   const struct geist_tensor     *x,
                                   const struct geist_tensor     *w,
                                   const struct geist_tensor     *y,
@@ -2232,8 +2246,8 @@ static void metal_encode_pq2_lowp(struct metal_state            *st,
             .y_row_stride   = (uint32_t) y_row_stride,
     };
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, "quant linear", &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "quant linear", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2297,8 +2311,8 @@ static void metal_encode_pq2_lowp(struct metal_state            *st,
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, "rope_apply", &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "rope_apply", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2309,7 +2323,8 @@ static void metal_encode_pq2_lowp(struct metal_state            *st,
 /* The prefill flash kernel for a head_dim, or nullptr when none is
  * instantiated (head_dim not a multiple of 32, above 256 not of 64, or
  * above 512) or the attention tables are not built. */
-static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim) {
+static struct metal_pipeline_h *metal_flash_pipeline(const struct metal_state *st,
+                                                     size_t                    head_dim) {
     if (head_dim == 0u || head_dim % 32u != 0u || head_dim / 32u > METAL_FLASH_SLOTS) {
         return nullptr;
     }
@@ -2380,23 +2395,24 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     } ap = {(uint32_t) elems, (uint32_t) kv_out, (uint32_t) k_off, (uint32_t) v_off, 0u, 0u, 0u};
     struct {
         uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
-    } fp       = {(uint32_t) q_rows,
-                  (uint32_t) k_rows,
-                  (uint32_t) q_heads,
-                  (uint32_t) k_heads,
-                  (uint32_t) head_dim,
-                  (uint32_t) q_offset,
-                  (uint32_t) sliding_window,
-                  (uint32_t) q_off,
-                  kv_native_f16 ? (uint32_t) k_off : 0u,
-                  kv_native_f16 ? (uint32_t) v_off : 0u,
-                  (uint32_t) out_off};
-    void *kf16 = kv_native_f16 ? k->buffer->buffer : st->attn_kf16_buffer->buffer;
-    void *vf16 = kv_native_f16 ? value->buffer->buffer : st->attn_vf16_buffer->buffer;
+    } fp                        = {(uint32_t) q_rows,
+                                   (uint32_t) k_rows,
+                                   (uint32_t) q_heads,
+                                   (uint32_t) k_heads,
+                                   (uint32_t) head_dim,
+                                   (uint32_t) q_offset,
+                                   (uint32_t) sliding_window,
+                                   (uint32_t) q_off,
+                                   kv_native_f16 ? (uint32_t) k_off : 0u,
+                                   kv_native_f16 ? (uint32_t) v_off : 0u,
+                                   (uint32_t) out_off};
+    struct metal_buffer_h *kf16 = kv_native_f16 ? k->buffer->buffer : st->attn_kf16_buffer->buffer;
+    struct metal_buffer_h *vf16 =
+            kv_native_f16 ? value->buffer->buffer : st->attn_vf16_buffer->buffer;
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2420,10 +2436,10 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
     if (st->tensor_mm) {
         (void) metal_ensure(be, METAL_TAB_TENSOR); /* not fatal: drops tensor_mm */
     }
-    void        *tc      = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 8u
-                                   ? st->attention_flash_tc_pipeline[head_dim / 64u - 1u]
-                                   : nullptr;
-    const size_t tc_rows = head_dim >= 512u ? 16u : 32u;
+    struct metal_pipeline_h *tc = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 8u
+                                          ? st->attention_flash_tc_pipeline[head_dim / 64u - 1u]
+                                          : nullptr;
+    const size_t             tc_rows = head_dim >= 512u ? 16u : 32u;
     metal_msg_send_set_pipeline(st, enc, tc != nullptr ? tc : metal_flash_pipeline(st, head_dim));
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, kf16, 0, 1);
@@ -2445,13 +2461,13 @@ static void *metal_flash_pipeline(const struct metal_state *st, size_t head_dim)
 /* A split-KV decode kernel for head_dim, in slot head_dim/32 - 1: the
  * block kernels (decv) take any multiple of 32, the quad kernels (decq)
  * multiples of 128; nullptr where none is built. */
-static void *
+static struct metal_pipeline_h *
 metal_dec_pipeline(const struct metal_state *st, size_t head_dim, bool f16, bool quad) {
     if (head_dim == 0u || head_dim % (quad ? 128u : 32u) != 0u ||
         head_dim / 32u > METAL_FLASH_SLOTS) {
         return nullptr;
     }
-    void *const *slots =
+    struct metal_pipeline_h *const *slots =
             quad ? (f16 ? st->attention_decq_f16_pipeline : st->attention_decq_f32kv_pipeline)
                  : (f16 ? st->attention_decv_f16_pipeline : st->attention_decv_f32kv_pipeline);
     return slots[head_dim / 32u - 1u];
@@ -2493,8 +2509,9 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
     /* The 32-key-block kernel where one is built for this head_dim and the
      * offsets keep its float4/half4 loads aligned: one split per block it
      * touches, up to 32. The per-key kernels otherwise, 16 splits at most. */
-    void *block_pipeline = metal_dec_pipeline(st, head_dim, kv_native_f16, false);
-    void *quad_pipeline  = metal_dec_pipeline(st, head_dim, kv_native_f16, true);
+    struct metal_pipeline_h *block_pipeline =
+            metal_dec_pipeline(st, head_dim, kv_native_f16, false);
+    struct metal_pipeline_h *quad_pipeline = metal_dec_pipeline(st, head_dim, kv_native_f16, true);
 
     if ((q_off | k_off | v_off) % 4u != 0u) {
         block_pipeline = nullptr;
@@ -2547,8 +2564,8 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
     const size_t v_base = kv_native_f16 ? 0u : value->buffer->base_off;
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2556,14 +2573,15 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
 
     /* head_dim <= 256: 8-chunk lane unroll; 256 < hd <= 512 (gemma-3n
      * full-attention layers): the 16-chunk dec512 variant. */
-    const bool wide     = head_dim > 256u;
-    void      *pipeline = quad_pipeline != nullptr ? quad_pipeline
-                          : block_pipeline != nullptr
-                                  ? block_pipeline
-                                  : (kv_native_f16 ? (wide ? st->attention_dec512_f16_pipeline
-                                                           : st->attention_dec_f16_pipeline)
-                                                   : (wide ? st->attention_dec512_f32kv_pipeline
-                                                           : st->attention_dec_f32kv_pipeline));
+    const bool               wide = head_dim > 256u;
+    struct metal_pipeline_h *pipeline =
+            quad_pipeline != nullptr ? quad_pipeline
+            : block_pipeline != nullptr
+                    ? block_pipeline
+                    : (kv_native_f16 ? (wide ? st->attention_dec512_f16_pipeline
+                                             : st->attention_dec_f16_pipeline)
+                                     : (wide ? st->attention_dec512_f32kv_pipeline
+                                             : st->attention_dec_f32kv_pipeline));
     metal_msg_send_set_pipeline(st, enc, pipeline);
     metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, k->buffer->buffer, k_base, 1);
@@ -2667,8 +2685,8 @@ enum { METAL_DECQ_MAX_GROUPS = 256 };
             .y_row_stride       = (uint32_t) y0_stride,
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2795,10 +2813,11 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
     const bool          q4k = g.dtype == GEIST_DTYPE_Q4_K;
     /* The half-simdgroup layout wherever linear_t takes matvec_q4k_h, so
      * the SwiGLU kernel stays bit-identical to two linear_t and silu_mul. */
-    void *const h_pipeline = silu ? st->q4k_gate_up_silu_h_pipeline : st->q4k_gate_up_h_pipeline;
-    const bool  half_rows  = q4k && (!silu || st->q4k_h_pipeline != nullptr) &&
-                             metal_q4k_half_rows(h_pipeline, (uint32_t) d_in, (uint32_t) g.n_out);
-    void *const pipeline =
+    struct metal_pipeline_h *const h_pipeline =
+            silu ? st->q4k_gate_up_silu_h_pipeline : st->q4k_gate_up_h_pipeline;
+    const bool half_rows = q4k && (!silu || st->q4k_h_pipeline != nullptr) &&
+                           metal_q4k_half_rows(h_pipeline, (uint32_t) d_in, (uint32_t) g.n_out);
+    struct metal_pipeline_h *const pipeline =
             half_rows ? h_pipeline
             : q4k     ? (silu ? st->q4k_gate_up_silu_n4_pipeline : st->q4k_gate_up_n4_pipeline)
                       : (silu ? st->q80_gate_up_silu_n4_pipeline : st->q80_gate_up_n4_pipeline);
@@ -2820,8 +2839,8 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
             .y_row_stride       = (uint32_t) y_stride,
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -2860,11 +2879,11 @@ static bool metal_mv_weight_of(const struct geist_tensor *t, struct metal_mv_wei
 }
 
 /* The mv3 kernel for a q/k/v dtype triple; nullptr where none is built. */
-static void *metal_mv3_pipeline(const struct metal_state *st,
-                                enum geist_dtype          a,
-                                enum geist_dtype          b,
-                                enum geist_dtype          c,
-                                bool                      a_half) {
+static struct metal_pipeline_h *metal_mv3_pipeline(const struct metal_state *st,
+                                                   enum geist_dtype          a,
+                                                   enum geist_dtype          b,
+                                                   enum geist_dtype          c,
+                                                   bool                      a_half) {
     if (a == GEIST_DTYPE_Q4_K && b == GEIST_DTYPE_Q4_K && c == GEIST_DTYPE_Q4_K) {
         return a_half ? st->mv3_q4k_h_q4k_q4k_pipeline : st->mv3_q4k_q4k_q4k_pipeline;
     }
@@ -2954,7 +2973,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         const uint32_t tg_rows = i == 0 && a_half ? 8u : mw[i].tg_rows;
         groups[i]              = (uint32_t) ((mw[i].n_out + tg_rows - 1u) / tg_rows);
     }
-    void *const pipeline = metal_mv3_pipeline(st, mw[0].dtype, mw[1].dtype, mw[2].dtype, a_half);
+    struct metal_pipeline_h *const pipeline =
+            metal_mv3_pipeline(st, mw[0].dtype, mw[1].dtype, mw[2].dtype, a_half);
     if (pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
@@ -2964,8 +2984,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
         struct metal_q4k_params p0, p1, p2;
     } t3 = {groups[0], groups[0] + groups[1], p[0], p[1], p[2]};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3066,8 +3086,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state *st = be->state;
-    void               *kv_pipeline =
+    struct metal_state      *st = be->state;
+    struct metal_pipeline_h *kv_pipeline =
             cache_f16 ? st->kv_norm_append_rows_f16_pipeline : st->kv_norm_append_rows_pipeline;
     if (st->q_norm_rope_rows_pipeline == nullptr || (has_kv && kv_pipeline == nullptr)) {
         return GEIST_E_UNSUPPORTED;
@@ -3116,8 +3136,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
             eps};
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3217,8 +3237,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state *st = be->state;
-    void *const         pipeline =
+    struct metal_state            *st = be->state;
+    struct metal_pipeline_h *const pipeline =
             cache_f16 ? st->rope_append_rows_f16_pipeline : st->rope_append_rows_pipeline;
     if (pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
@@ -3252,8 +3272,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
     const struct geist_tensor *kw = k_norm_w != nullptr ? k_norm_w : q;
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3354,8 +3374,8 @@ static void *metal_mv3_pipeline(const struct metal_state *st,
                                                             (uint32_t) p_stride,
                                                             (uint32_t) g_stride};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3438,8 +3458,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         uint32_t n, xo, ng;
     } ap = {(uint32_t) n, (uint32_t) x_off, (uint32_t) ng};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3522,8 +3542,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
             (uint32_t) q_position};
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3669,8 +3689,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
 
-    void *cmd = nullptr;
-    void *enc = metal_op_begin(be, "attention", &cmd);
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "attention", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3729,8 +3749,8 @@ metal_attention_sinks(struct geist_backend *be, const struct geist_attention_sin
             .sinks_offset   = (uint32_t) ((size_t) sk->offset / sizeof(float)),
     };
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void *enc = metal_op_begin(be, "attention_sinks", &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "attention_sinks", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -3979,8 +3999,8 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     if (s != GEIST_OK)
         return s;
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, nullptr, &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     const enum geist_dtype         dtype = (enum geist_dtype) w->dtype;
@@ -4234,8 +4254,8 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
                                            .eps                = args->eps};
 
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void                                           *enc  = metal_op_begin(be, "DeltaNet", &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, "DeltaNet", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -4498,8 +4518,8 @@ metal_deltanet_mix_states(struct geist_backend                 *be,
                                            .delta_state_offset = (uint32_t) s_off0,
                                            .eps                = args->eps};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void                                           *cmd  = nullptr;
-    void *enc = metal_op_begin(be, "DeltaNet states", &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "DeltaNet states", &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
@@ -4591,7 +4611,8 @@ struct metal_moe_sum_params {
                                                             .lo   = (uint32_t) lo,
                                                             .wo   = (uint32_t) wo};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void *cmd = nullptr, *enc = metal_op_begin(be, "MoE route", &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, "MoE route", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, st->moe_topk_pipeline);
@@ -4610,7 +4631,7 @@ struct metal_moe_sum_params {
  * threadgroup of 64 threads covers. */
 static bool metal_moe_ids_pipe(const struct metal_state *st,
                                enum geist_dtype          dtype,
-                               void                    **pipe,
+                               struct metal_pipeline_h **pipe,
                                uint32_t                 *rows_per_group,
                                uint32_t                 *block) {
     switch (dtype) {
@@ -4691,8 +4712,8 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     enum geist_status      s     = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
-    void    *pipe = nullptr;
-    uint32_t rpg = 0, block = 0;
+    struct metal_pipeline_h *pipe = nullptr;
+    uint32_t                 rpg = 0, block = 0;
     if (!metal_moe_ids_pipe(st, dtype, &pipe, &rpg, &block) || pipe == nullptr)
         return GEIST_E_UNSUPPORTED;
     const size_t ni = (size_t) w0->n_in, no = (size_t) w0->n_out;
@@ -4722,7 +4743,8 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                             .per_slot = x_per_slot ? 1u : 0u,
                                                             .k        = (uint32_t) k};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void *cmd = nullptr, *enc = metal_op_begin(be, "MoE expert matvec", &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "MoE expert matvec", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, pipe);
@@ -4772,7 +4794,8 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                             .ao = (uint32_t) ao,
                                                             .oo = (uint32_t) oo};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
-    void *cmd = nullptr, *enc = metal_op_begin(be, "MoE weighted sum", &cmd);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "MoE weighted sum", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, st->moe_wsum_pipeline);
@@ -4799,8 +4822,8 @@ static bool metal_moe_device_supported(struct geist_backend            *be,
         return false;
     const struct geist_weight *ws[] = {q->gate_w, q->up_w, q->down_w};
     for (size_t i = 0; i < 3; i++) {
-        void    *pipe = nullptr;
-        uint32_t rpg = 0, block = 0;
+        struct metal_pipeline_h *pipe = nullptr;
+        uint32_t                 rpg = 0, block = 0;
         if (!metal_moe_ids_pipe(be->state, (enum geist_dtype) ws[i]->dtype, &pipe, &rpg, &block) ||
             pipe == nullptr || (size_t) ws[i]->n_in % block != 0u)
             return false;

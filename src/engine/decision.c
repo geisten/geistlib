@@ -44,7 +44,7 @@ struct geist_decision {
     const struct geist_backend          *backend;
     struct geist_session                *session;
     const struct geist_arch_ops_decoder *ops;
-    void                                *readout;
+    struct geist_arch_readout           *readout;
     enum geist_decision_mode             mode;
     size_t         max_prompt, max_candidates, vocab, seen_cap, seen_bytes, dense_readback_bytes;
     geist_token_t *seen;

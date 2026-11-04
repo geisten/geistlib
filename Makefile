@@ -570,6 +570,11 @@ $(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip inst
 endif
 endif
 
+# A handle of the wrong type must not compile (#347).
+.PHONY: check-handles
+check-handles:
+	@CC="$(CC)" CFLAGS="$(CFLAGS_STRICT)" sh scripts/check_handles.sh
+check-static: check-handles
 # Module boundaries (#344): tools/layers.json says which layer of src/ may use
 # which; tools/check_layers.py proves it from the compiler's include tree, the
 # objects' undefined symbols (nm), every internal header compiled alone and

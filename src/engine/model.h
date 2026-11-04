@@ -22,26 +22,30 @@
 struct geist_arch_ops_decoder;
 struct geist_arch_ops_encoder;
 struct geist_arch_ops_vision;
+struct geist_arch_state; /* the handles of <geist_arch.h> (#347) */
+struct geist_arch_session;
+struct geist_audio_encoder_state;
+struct geist_vision_encoder_state;
 
 /* Composite Model structure: text decoder + optional encoders + projectors. */
 struct geist_model {
     /* Required: the text decoder. */
     struct {
         const struct geist_arch_ops_decoder *arch_ops;
-        void                                *arch_meta;
+        struct geist_arch_state             *arch_meta;
     } text_decoder;
 
     /* Optional: audio encoder (Conformer for Gemma 4). nullptr if absent. */
     struct {
         const struct geist_arch_ops_encoder *arch_ops;
-        void                                *arch_meta;
+        struct geist_audio_encoder_state    *arch_meta;
     } audio_encoder;
 
     /* Optional: vision encoder (SigLIP-derived ViT for Gemma 4 vision).
      * nullptr if vision_tower.safetensors not found. */
     struct {
         const struct geist_arch_ops_vision *arch_ops;
-        void                               *arch_meta;
+        struct geist_vision_encoder_state  *arch_meta;
     } vision_encoder;
 
     /* Engine-side state (struct model_engine_state in model.c). */
@@ -85,11 +89,11 @@ struct gguf_tokenizer *geist_model_internal_gguf_tokenizer(struct geist_model *m
  * internal primitives like transformer_verify_forward that aren't
  * exposed in the public session API. Production code must not depend on
  * this — go through arch_ops vtable instead. */
-void *geist_model_internal_arch_meta(struct geist_model *m);
+struct geist_arch_state *geist_model_internal_arch_meta(struct geist_model *m);
 
 /* Engine-internal: the arch session this geist_session owns and
  * dispatches with. For tests that cross from the engine into the arch
  * layer. */
-void *geist_session_internal_arch_session(struct geist_session *s);
+struct geist_arch_session *geist_session_internal_arch_session(struct geist_session *s);
 
 #endif /* GEIST_INTERNAL_MODEL_H */

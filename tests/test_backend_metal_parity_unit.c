@@ -1215,7 +1215,7 @@ static void run_mv_m8_case(struct geist_backend *mt, int dtype, size_t n_in, siz
     const struct geist_backend_vtbl  *v    = mt->desc->vtbl;
     const struct geist_backend_fused *f    = geist_backend_fused_tbl(mt);
     struct metal_state               *st   = mt->state;
-    void **const                      pipe = dtype == GEIST_DTYPE_Q4_K   ? &st->q4k_m8_pipeline
+    struct metal_pipeline_h **const   pipe = dtype == GEIST_DTYPE_Q4_K   ? &st->q4k_m8_pipeline
                                              : dtype == GEIST_DTYPE_Q6_K ? &st->q6k_m8_pipeline
                                              : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_r3_pipeline
                                              : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_r3_pipeline
@@ -1225,18 +1225,18 @@ static void run_mv_m8_case(struct geist_backend *mt, int dtype, size_t n_in, siz
      * and must never reach the naive linear_* kernels, which made a 2-row
      * verify of the Q4_0 27B cost five decode steps: with those pipelines
      * unset, a row routed to them stays unwritten (NaN) and fails below. */
-    const bool   r23           = dtype != GEIST_DTYPE_Q4_K && dtype != GEIST_DTYPE_Q6_K;
-    void **const naive[2]      = {!r23                        ? nullptr
-                                  : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_pipeline
-                                  : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_pipeline
-                                  : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_pipeline
-                                                              : &st->q5k_pipeline,
-                                  !r23                        ? nullptr
-                                  : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_m8_pipeline
-                                  : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_m8_pipeline
-                                  : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_m8_pipeline
-                                                              : &st->q5k_m8_pipeline};
-    void        *naive_keep[2] = {nullptr, nullptr};
+    const bool                      r23 = dtype != GEIST_DTYPE_Q4_K && dtype != GEIST_DTYPE_Q6_K;
+    struct metal_pipeline_h **const naive[2] = {!r23                        ? nullptr
+                                                : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_pipeline
+                                                : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_pipeline
+                                                : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_pipeline
+                                                                            : &st->q5k_pipeline,
+                                                !r23                        ? nullptr
+                                                : dtype == GEIST_DTYPE_Q4_0 ? &st->q40_m8_pipeline
+                                                : dtype == GEIST_DTYPE_Q4_1 ? &st->q41_m8_pipeline
+                                                : dtype == GEIST_DTYPE_Q8_0 ? &st->q80_m8_pipeline
+                                                                            : &st->q5k_m8_pipeline};
+    struct metal_pipeline_h        *naive_keep[2] = {nullptr, nullptr};
     for (size_t i = 0; r23 && i < 2; i++) {
         naive_keep[i] = *naive[i];
         *naive[i]     = nullptr;
@@ -1263,7 +1263,7 @@ static void run_mv_m8_case(struct geist_backend *mt, int dtype, size_t n_in, siz
         xs[i] = x[i] = ((float) rng_u8() - 127.5f) * 0.0372529f;
     const struct geist_weight ww = {
             .n_in = (int32_t) n_in, .n_out = (int32_t) n_out, .dtype = dtype};
-    void *const keep = *pipe;
+    struct metal_pipeline_h *const keep = *pipe;
     /* got[0]: 8 rows one pass; got[1]: one n4 per row; got[2]: reversed
      * rows one pass; got[3]: the first `rows` rows one pass. */
     float *const one = got, *const per = got + ROWS * n_out, *const rev = got + 2 * ROWS * n_out,
@@ -1353,8 +1353,8 @@ static void run_q4k_half_case(struct geist_backend *mt, size_t n_in, size_t n_ou
         const struct geist_tensor tx = f32_row(bx, n_in);
         const struct geist_weight ww = {
                 .n_in = (int32_t) n_in, .n_out = (int32_t) n_out, .dtype = GEIST_DTYPE_Q4_K};
-        void *const       pipes[2] = {st->q4k_h_pipeline, st->q4k_gate_up_h_pipeline};
-        enum geist_status s        = GEIST_OK;
+        struct metal_pipeline_h *const pipes[2] = {st->q4k_h_pipeline, st->q4k_gate_up_h_pipeline};
+        enum geist_status              s        = GEIST_OK;
         /* i = 0: the half-simdgroup kernels; i = 1: the n4 ones. */
         for (size_t i = 0; i < 2 && s == GEIST_OK; i++) {
             if (i == 1) {
@@ -1642,11 +1642,12 @@ static void run_ple_rows_case(struct geist_backend *mt, size_t d_in, size_t hpl)
         }
         for (size_t i = 0; i < hpl; i++)
             ple[i] = ((float) rng_u8() - 127.5f) * 0.0377f;
-        struct geist_tensor tx = dense2(bx, 1, d_in), tgw = dense2(bgw, hpl, d_in);
-        struct geist_tensor tpl = dense2(bple, 1, hpl), tpw = dense2(bpw, d_in, hpl);
-        struct geist_tensor tr = dense2(bres, 1, d_in), ty = dense2(by, 1, d_in);
-        void *const         pipes[2] = {st->f32_ple_gate_sg_pipeline, st->f32_matvec_rows_pipeline};
-        enum geist_status   s        = GEIST_OK;
+        struct geist_tensor            tx = dense2(bx, 1, d_in), tgw = dense2(bgw, hpl, d_in);
+        struct geist_tensor            tpl = dense2(bple, 1, hpl), tpw = dense2(bpw, d_in, hpl);
+        struct geist_tensor            tr = dense2(bres, 1, d_in), ty = dense2(by, 1, d_in);
+        struct metal_pipeline_h *const pipes[2] = {st->f32_ple_gate_sg_pipeline,
+                                                   st->f32_matvec_rows_pipeline};
+        enum geist_status              s        = GEIST_OK;
         for (size_t i = 0; i < 2 && s == GEIST_OK; i++) {
             if (i == 1) { /* the threadgroup-per-row kernels */
                 st->f32_ple_gate_sg_pipeline = nullptr;

@@ -186,7 +186,7 @@ static int load_and_decode(const char          *name,
     }
     unsetenv("GEIST_WEIGHT_MMAP");
     if (m != nullptr) {
-        const struct transformer_arch_state *st = m->text_decoder.arch_meta;
+        const struct transformer_arch_state *st = tf_cstate(m->text_decoder.arch_meta);
         const struct geist_backend_vtbl     *v  = be->desc->vtbl;
         /* Host address of a view's first byte. */
 #define HOST_OF(view) ((const uint8_t *) v->buffer_map((view).buffer) + (view).offset)

@@ -138,7 +138,7 @@ static bool run(const struct mf_qwen35 *c,
                 geist_backend_name(be),
                 geist_last_create_error() ? geist_last_create_error() : geist_backend_errmsg(be));
     if (ok && n_hot != nullptr) {
-        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
         *n_hot                                  = st->moe_gpu != nullptr ? st->moe_gpu->n_hot : 0;
     }
     geist_session_destroy(s);
@@ -174,8 +174,8 @@ static int check_gate(void) {
         }
     }
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
-    struct transformer_arch_session *ad = geist_session_internal_arch_session(s[0]);
-    struct transformer_arch_session *am = geist_session_internal_arch_session(s[1]);
+    struct transformer_arch_session *ad = tf_sess(geist_session_internal_arch_session(s[0]));
+    struct transformer_arch_session *am = tf_sess(geist_session_internal_arch_session(s[1]));
     const float *pf = v->buffer_map(ad->scratch_ffn_out), *px = v->buffer_map(am->scratch_pre_ff),
                 *pa = v->buffer_map(am->moe_acc);
     if (pf == nullptr || px == nullptr || pa == nullptr) {

@@ -2,9 +2,13 @@
  * backend: typed objc_msgSend wrappers over the handles in metal_state.
  *
  * Included from metal_internal.h after struct metal_state is defined (the
- * wrappers read its objc handles); everything is static. */
+ * wrappers read its objc handles); everything is static. Included first,
+ * it pulls metal_internal.h in, which then skips its own include of this
+ * file, so it also compiles on its own (#344). */
 #ifndef GEIST_METAL_OBJC_H
 #define GEIST_METAL_OBJC_H
+
+#include "metal_internal.h"
 
 static inline void *metal_dlsym(void *handle, const char *name) {
     return handle != nullptr ? dlsym(handle, name) : nullptr;
@@ -18,7 +22,9 @@ static inline void *metal_objc_get_class(struct metal_state *st, const char *nam
     return get_class.fn(name);
 }
 
-static inline void *metal_create_default_device(struct metal_state *st) {
+/* The union members are the C signatures the runtime functions really have;
+ * a typed handle converts to and from their void * at the call. */
+static inline struct metal_device_h *metal_create_default_device(struct metal_state *st) {
     union {
         void *raw;
         void *(*fn)(void);
@@ -38,7 +44,7 @@ static inline void *metal_sel_register_name(struct metal_state *st, const char *
  * autoreleased command buffers and encoders are never drained (#527).
  * Pools are per thread and LIFO: popping one also pops every pool pushed
  * after it. */
-static inline void *metal_pool_push(struct metal_state *st) {
+static inline struct metal_pool_h *metal_pool_push(struct metal_state *st) {
     union {
         void *raw;
         void *(*fn)(void);
@@ -46,7 +52,7 @@ static inline void *metal_pool_push(struct metal_state *st) {
     return push.fn();
 }
 
-static inline void metal_pool_pop(struct metal_state *st, void *pool) {
+static inline void metal_pool_pop(struct metal_state *st, struct metal_pool_h *pool) {
     union {
         void *raw;
         void (*fn)(void *);
@@ -62,8 +68,8 @@ static inline void metal_pool_pop(struct metal_state *st, void *pool) {
  * Inside a command sequence it pushes nothing: the sequence's pool covers
  * the op, and a nested one would be popped from under it by a flush. */
 struct metal_pool {
-    struct metal_state *st;
-    void               *token;
+    struct metal_state  *st;
+    struct metal_pool_h *token;
 };
 
 /* Whether the calling thread has the backend's command sequence open
@@ -281,14 +287,14 @@ metal_msg_send_void0(struct metal_state *st, void *receiver, const char *selecto
     send.fn(receiver, sel);
 }
 
-static inline void metal_msg_send_copy_buffer(struct metal_state *st,
-                                              void               *receiver,
-                                              const char         *selector,
-                                              void               *src,
-                                              size_t              src_offset,
-                                              void               *dst,
-                                              size_t              dst_offset,
-                                              size_t              bytes) {
+static inline void metal_msg_send_copy_buffer(struct metal_state    *st,
+                                              struct metal_blit_h   *receiver,
+                                              const char            *selector,
+                                              struct metal_buffer_h *src,
+                                              size_t                 src_offset,
+                                              struct metal_buffer_h *dst,
+                                              size_t                 dst_offset,
+                                              size_t                 bytes) {
     void *sel = metal_sel_register_name(st, selector);
     union {
         void *raw;
@@ -298,14 +304,17 @@ static inline void metal_msg_send_copy_buffer(struct metal_state *st,
 }
 
 /* Defined in sequence.c. */
-void metal_seq_mark_buffer(struct metal_state *st, void *mtl_buf, size_t off);
+void metal_seq_mark_buffer(struct metal_state *st, struct metal_buffer_h *mtl_buf, size_t off);
 
 /* Defined in resources.c: the first bind of an MTLBuffer adds it to the
  * residency set (#530). */
-void metal_residency_note(struct metal_state *st, void *mtl_buf);
+void metal_residency_note(struct metal_state *st, struct metal_buffer_h *mtl_buf);
 
-static inline void metal_msg_send_set_buffer(
-        struct metal_state *st, void *receiver, void *buffer, size_t offset, size_t index) {
+static inline void metal_msg_send_set_buffer(struct metal_state     *st,
+                                             struct metal_encoder_h *receiver,
+                                             struct metal_buffer_h  *buffer,
+                                             size_t                  offset,
+                                             size_t                  index) {
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
     metal_seq_mark_buffer(st, buffer, offset);
     metal_residency_note(st, buffer);
@@ -316,8 +325,11 @@ static inline void metal_msg_send_set_buffer(
     send.fn(receiver, sel, buffer, offset, index);
 }
 
-static inline void metal_msg_send_set_bytes(
-        struct metal_state *st, void *receiver, const void *bytes, size_t length, size_t index) {
+static inline void metal_msg_send_set_bytes(struct metal_state     *st,
+                                            struct metal_encoder_h *receiver,
+                                            const void             *bytes,
+                                            size_t                  length,
+                                            size_t                  index) {
     void *sel = metal_sel_register_name(st, "setBytes:length:atIndex:");
     union {
         void *raw;
@@ -328,15 +340,16 @@ static inline void metal_msg_send_set_bytes(
 
 /* No dedup of identical re-binds: consecutive repeats are too rare to pay;
  * the per-op cost scales with op count, so fusion is the lever. */
-static inline void
-metal_msg_send_set_pipeline(struct metal_state *st, void *receiver, void *pipeline) {
+static inline void metal_msg_send_set_pipeline(struct metal_state      *st,
+                                               struct metal_encoder_h  *receiver,
+                                               struct metal_pipeline_h *pipeline) {
     (void) metal_msg_send_id_id(st, receiver, "setComputePipelineState:", pipeline);
 }
 
-static inline void metal_msg_send_set_threadgroup_memory(struct metal_state *st,
-                                                         void               *receiver,
-                                                         size_t              length,
-                                                         size_t              index) {
+static inline void metal_msg_send_set_threadgroup_memory(struct metal_state     *st,
+                                                         struct metal_encoder_h *receiver,
+                                                         size_t                  length,
+                                                         size_t                  index) {
     void *sel = metal_sel_register_name(st, "setThreadgroupMemoryLength:atIndex:");
     union {
         void *raw;
@@ -345,10 +358,10 @@ static inline void metal_msg_send_set_threadgroup_memory(struct metal_state *st,
     send.fn(receiver, sel, length, index);
 }
 
-static inline void metal_msg_send_dispatch(struct metal_state *st,
-                                           void               *receiver,
-                                           struct metal_size   groups,
-                                           struct metal_size   threads) {
+static inline void metal_msg_send_dispatch(struct metal_state     *st,
+                                           struct metal_encoder_h *receiver,
+                                           struct metal_size       groups,
+                                           struct metal_size       threads) {
     void *sel = metal_sel_register_name(st, "dispatchThreadgroups:threadsPerThreadgroup:");
     union {
         void *raw;
