@@ -124,7 +124,7 @@ struct mf_tensors {
     size_t            n, cap;
 };
 
-static inline void
+[[gnu::format(printf, 5, 6)]] static inline void
 mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, const char *fmt, ...) {
     if (ts->n == ts->cap) {
         ts->cap = ts->cap != 0 ? 2 * ts->cap : 32;
