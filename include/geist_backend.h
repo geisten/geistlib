@@ -1272,8 +1272,9 @@ geist_backend_fused_tbl(const struct geist_backend *be) {
     return be->desc->fused != nullptr ? be->desc->fused : &geist_backend_no_fused;
 }
 
-/* Helpers backends call to record an error. */
-void geist_backend_set_error(struct geist_backend *be,
+/* Helpers backends call to record an error. The format attribute checks
+ * every call's arguments against its format string (#343). */
+[[gnu::format(printf, 3, 4)]] void geist_backend_set_error(struct geist_backend *be,
                              enum geist_status     code,
                              const char           *fmt,
                              ...);

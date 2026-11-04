@@ -63,6 +63,44 @@ int f(int x) {
         "int twice(int x);\n"
         "int twice(int x) { return 4 * half(x); }\n",
     ),
+    "-Wformat=2": (
+        """
+#include <stdarg.h>
+#include <stdio.h>
+int say(char *buf, size_t n, const char *fmt, int x);
+int say(char *buf, size_t n, const char *fmt, int x) {
+    return snprintf(buf, n, fmt, x);
+}
+""",
+        """
+#include <stdarg.h>
+#include <stdio.h>
+[[gnu::format(printf, 3, 4)]] int say(char *buf, size_t n, const char *fmt, ...);
+int say(char *buf, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+""",
+    ),
+    # gcc follows the null through its optimizer, clang reports only a
+    # dereference of a literal null; the probe is one both reject.
+    "-Wnull-dereference": (
+        """
+int load(void);
+int load(void) {
+    return *(int *) 0;
+}
+""",
+        """
+int load(const int *p);
+int load(const int *p) {
+    return p != nullptr ? *p : 0;
+}
+""",
+    ),
 }
 
 
