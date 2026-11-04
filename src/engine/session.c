@@ -783,7 +783,7 @@ static size_t propose_drafts_ngram(const geist_token_t *history,
     return 1; /* no match — just the seed */
 }
 
-#define GEIST_SPEC_KMAX_HARDCAP 16
+constexpr int GEIST_SPEC_KMAX_HARDCAP = 16;
 
 /* Single-token fallback used whenever spec_step can't draft or verify
  * (missing arch primitives, no pending logits, empty drafter result).

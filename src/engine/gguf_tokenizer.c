@@ -147,8 +147,8 @@ static size_t   next_pow2(size_t n);
 static int32_t  vocab_lookup(const struct gguf_tokenizer *tok, const char *bytes, size_t len);
 
 /* SentencePiece space marker U+2581 (▁) in UTF-8. */
-static const char SPM_MARKER[3] = {(char) 0xE2, (char) 0x96, (char) 0x81};
-#define SPM_MARKER_LEN 3
+static const char SPM_MARKER[3]  = {(char) 0xE2, (char) 0x96, (char) 0x81};
+constexpr int     SPM_MARKER_LEN = 3;
 
 /* Sort the specials by length, longest first and stable among equals, so the
  * first match in the encoders' linear scan is the leftmost-longest one. */
@@ -806,8 +806,8 @@ void gguf_tokenizer_unload(struct gguf_tokenizer *tok) {
 
 /* ---- tokenizer.bin ------------------------------------------------------ */
 
-#define TOKENIZER_BIN_MAGIC 0x4B544D47u /* "GMTK" little-endian */
-#define TOKENIZER_BIN_VERSION 1u
+constexpr unsigned TOKENIZER_BIN_MAGIC   = 0x4B544D47u; /* "GMTK" little-endian */
+constexpr unsigned TOKENIZER_BIN_VERSION = 1u;
 
 static uint32_t rd_u32(const uint8_t *p) {
     uint32_t v;

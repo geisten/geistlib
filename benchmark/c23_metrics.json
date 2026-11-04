@@ -120,21 +120,14 @@
     "src/backends/metal/ops.c": 1,
     "src/backends/vulkan/shaders/vk_limits.h": 38,
     "src/base/checked.h": 1,
-    "src/base/error.h": 1,
-    "src/base/heap.c": 1,
-    "src/base/heap.h": 7,
     "src/base/omp_idle.c": 1,
     "src/base/par.c": 2,
     "src/engine/arch_registry.c": 1,
     "src/engine/decision.c": 2,
-    "src/engine/gguf_tokenizer.c": 5,
-    "src/engine/session.c": 1,
-    "src/io/gguf_reader.c": 1,
-    "src/io/gguf_reader.h": 1,
-    "src/io/safetensors_reader.h": 1,
+    "src/engine/gguf_tokenizer.c": 2,
     "src/quant/quant.h": 2
    },
-   "total": 167,
+   "total": 151,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
@@ -162,12 +155,10 @@
     "src/backends/metal/pipelines.c": 1,
     "src/backends/vulkan/ops.c": 4,
     "src/backends/vulkan/vk_internal.h": 2,
-    "src/engine/pair_merge.h": 1,
-    "src/engine/sampler.c": 1,
-    "src/io/gguf_reader.c": 2,
+    "src/io/gguf_reader.c": 1,
     "src/io/gguf_reader.h": 1
    },
-   "total": 46,
+   "total": 43,
    "what": "enum { ... } used as constants (no tag, no typedef)"
   },
   "enum_named": {
