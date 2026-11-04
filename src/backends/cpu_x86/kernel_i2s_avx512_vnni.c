@@ -17,6 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "par.h"
 
@@ -30,8 +31,8 @@ static void build_acts_perm(size_t n_blocks, const int8_t *xq, int8_t *perm) {
         const int8_t *xb  = xq + b * 256;
         int8_t       *dst = perm + b * 256;
         for (size_t g = 0; g < 4; g++) {
-            __builtin_memcpy(dst + g * 64, xb + g * 32, 32);
-            __builtin_memcpy(dst + g * 64 + 32, xb + 128 + g * 32, 32);
+            memcpy(dst + g * 64, xb + g * 32, 32);
+            memcpy(dst + g * 64 + 32, xb + 128 + g * 32, 32);
         }
     }
 }

@@ -17,6 +17,7 @@
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "par.h"
 
@@ -257,7 +258,7 @@ static void w8x8_groups(void *ctx, size_t g0, size_t g1) {
                     const int8_t *a = acts + (j0 + jj) * n_in + b * W8A8_BLOCK_ELEMS;
                     /* Broadcast each 4-element act stripe to all 8 lanes. */
                     int32_t a4[4];
-                    __builtin_memcpy(a4, a, 16);
+                    memcpy(a4, a, 16);
                     __m256i iacc = _mm256_dpbusd_epi32(
                             _mm256_setzero_si256(), w0, _mm256_set1_epi32(a4[0]));
                     iacc = _mm256_dpbusd_epi32(iacc, w1, _mm256_set1_epi32(a4[1]));
@@ -361,7 +362,7 @@ static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
                 for (size_t jj = 0; jj < jt; jj++) {
                     const int8_t *a = acts + (j0 + jj) * n_in + b * W8A8_BLOCK_ELEMS;
                     int32_t       a4[4];
-                    __builtin_memcpy(a4, a, 16);
+                    memcpy(a4, a, 16);
                     __m512i d = _mm512_dpbusd_epi32(
                             _mm512_setzero_si512(), w0, _mm512_set1_epi32(a4[0]));
                     d               = _mm512_dpbusd_epi32(d, w1, _mm512_set1_epi32(a4[1]));

@@ -22,7 +22,6 @@
   },
   "__builtin": {
    "files": {
-    "src/backends/common/gemma4_kernels.h": 1,
     "src/backends/cpu_neon/kernels/iq2_s.c": 4,
     "src/backends/cpu_neon/kernels/iq3_s.c": 4,
     "src/backends/cpu_neon/kernels/iq4_xs.c": 3,
@@ -35,17 +34,16 @@
     "src/backends/cpu_neon/kernels/q6_K.c": 5,
     "src/backends/cpu_neon/kernels/q8_0.c": 2,
     "src/backends/cpu_x86/attention_int8.c": 5,
-    "src/backends/cpu_x86/kernel_i2s.c": 9,
-    "src/backends/cpu_x86/kernel_i2s_avx512_vnni.c": 3,
+    "src/backends/cpu_x86/kernel_i2s.c": 7,
+    "src/backends/cpu_x86/kernel_i2s_avx512_vnni.c": 1,
     "src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c": 4,
-    "src/backends/cpu_x86/kernel_w8a8_avx512_vnni.c": 2,
     "src/backends/cpu_x86/linear_pq2_0.c": 2,
     "src/backends/cpu_x86/linear_util.h": 5,
     "src/base/checked.h": 3,
     "src/base/hw_probe.c": 7,
     "src/base/par.c": 1
    },
-   "total": 83,
+   "total": 76,
    "what": "__builtin_* calls and names"
   },
   "define_function": {

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """One spelling per concept (#348): the C23 form, once the tree has moved to it.
 
-Fails on `_Static_assert` and on an `__attribute__` that has an equivalent
+Fails on `_Static_assert`, on `__builtin_memcpy` and its kin (the standard
+name is the same builtin), and on an `__attribute__` that has an equivalent
 `[[...]]` or `alignas`, in code; a comment may name them. KEEP lists what has
 not moved yet, each with its reason.
 """
@@ -19,6 +20,8 @@ KEEP = {
 }
 ATTR = re.compile(r"__attribute__\s*\(\(\s*(\w+)")
 STATIC = re.compile(r"\b_Static_assert\b")
+# A builtin with a standard spelling the tree uses everywhere else.
+BUILTIN = re.compile(r"\b__builtin_(memcpy|memset|memmove|memcmp|strlen)\b")
 COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 
 
@@ -32,6 +35,8 @@ def problems(text):
         if m.group(1) not in KEEP:
             line = code.count("\n", 0, m.start()) + 1
             found.append((line, f"__attribute__(({m.group(1)})): use the [[...]] or alignas form"))
+    for m in BUILTIN.finditer(code):
+        found.append((code.count("\n", 0, m.start()) + 1, f"__builtin_{m.group(1)}: use {m.group(1)}"))
     return found
 
 
@@ -55,6 +60,8 @@ class Spelling(unittest.TestCase):
         self.assertEqual(len(problems("_Static_assert(1, \"x\");\n")), 1)
         self.assertEqual(len(problems("int a __attribute__((aligned(8)));\n")), 1)
         self.assertEqual(problems("/* _Static_assert __attribute__((packed)) */\n"), [])
+        self.assertEqual(len(problems("__builtin_memcpy(&f, &b, 4);\n")), 1)
+        self.assertEqual(problems("__builtin_prefetch(p);\n"), [])
         self.assertEqual(problems("__attribute__((target(\"avx2\"))) void f(void);\n"), [])
 
 

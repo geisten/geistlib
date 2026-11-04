@@ -12,12 +12,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* BF16 (uint16 storage) -> FP32. */
 static inline float bf16_to_fp32(uint16_t bf) {
     uint32_t bits = (uint32_t) bf << 16;
     float    f;
-    __builtin_memcpy(&f, &bits, 4);
+    memcpy(&f, &bits, 4);
     return f;
 }
 
