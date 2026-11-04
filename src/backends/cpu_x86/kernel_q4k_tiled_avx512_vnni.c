@@ -42,7 +42,9 @@
 
 /* NSUB_MAX: subblocks per K block, 16 for Q6_K (16 elements), 8 for Q4_K
  * (32 elements), which uses the first half of each row's slots. */
-enum { TILE = 256, MICRO = 16, NSUB_MAX = 16 };
+constexpr int TILE     = 256;
+constexpr int MICRO    = 16;
+constexpr int NSUB_MAX = 16;
 
 /* One thread's tiles. Rows past a window's edge hold stale or zero values;
  * the microkernel computes them and the store drops them. */
@@ -367,10 +369,10 @@ static void prep_band(bool                       q8_0,
                                                      int                    j0,
                                                      const struct act_view *av,
                                                      struct q4k_tiled_ws   *ws) {
-    enum { ROWS = 8 };
-    const int    nsub = TILE / sub, per16 = sub / 16, groups = sub / 4;
-    const __m512 a_d = _mm512_load_ps(&av->d[j0]);
-    __m512i      s1[ROWS], s2[ROWS];
+    constexpr int ROWS = 8;
+    const int     nsub = TILE / sub, per16 = sub / 16, groups = sub / 4;
+    const __m512  a_d = _mm512_load_ps(&av->d[j0]);
+    __m512i       s1[ROWS], s2[ROWS];
     for (int t = 0; t < ROWS; t++) {
         s1[t] = _mm512_setzero_si512();
         s2[t] = _mm512_setzero_si512();
@@ -449,8 +451,8 @@ static void prep_band(bool                       q8_0,
  * gives d dx P + m dx S (P = sum q x, S = sum x, both exact). */
 [[gnu::always_inline]] static inline void
 micro_8x16_f(bool q4_1, int i0, int j0, const struct act_view *av, struct q4k_tiled_ws *ws) {
-    enum { ROWS = 8 };
-    __m512 f[ROWS];
+    constexpr int ROWS = 8;
+    __m512        f[ROWS];
     for (int t = 0; t < ROWS; t++) {
         f[t] = _mm512_setzero_ps();
     }
@@ -686,7 +688,7 @@ static bool tiled_gemm_rows(enum tiled_format          format,
 /* Rows of activations per tiled_gemm_rows call: bounds the prepared
  * activations at 512 * 356 bytes per K block (12 MB at K = 17408). A
  * multiple of 256, so the windows inside a call stay as before. */
-enum { TILED_ROWS = 512 };
+constexpr int TILED_ROWS = 512;
 
 static bool tiled_gemm(enum tiled_format          format,
                        size_t                     M,

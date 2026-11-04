@@ -410,7 +410,7 @@ static bool attention_mqa_causal_kv_neon(const float *q,
  * (the hd256 shape where that row uses it), the same block max, rescale
  * and exponentials, and every output element takes the same fused
  * multiply-adds over the keys. The bytes do not change. */
-enum { ATTN_HEADS_MAX = 4 };
+constexpr int ATTN_HEADS_MAX = 4;
 
 /* qv[h] . kv for g heads, dot_f32_neon_256's or dot_f32_neon's shape per
  * head (head_dim a multiple of 16). */
@@ -624,12 +624,10 @@ static void attn_group_items(void *ctx, size_t i0, size_t i1) {
  * is ~9-11 % faster with it on the M1 Max, but cpu_neon's int8 decode
  * activations turn its rounding-sized difference into a quantization-sized
  * one, so greedy output departs from the default's at near-ties (#178). */
-enum {
-    ATTN_SPLIT_CHUNK        = 128,
-    ATTN_SPLIT_MAX_PARTS    = 16,
-    ATTN_SPLIT_MAX_ITEMS    = 16,
-    ATTN_SPLIT_MAX_HEAD_DIM = 512,
-};
+constexpr int ATTN_SPLIT_CHUNK        = 128;
+constexpr int ATTN_SPLIT_MAX_PARTS    = 16;
+constexpr int ATTN_SPLIT_MAX_ITEMS    = 16;
+constexpr int ATTN_SPLIT_MAX_HEAD_DIM = 512;
 
 /* The split is opt-in: GEIST_ATTN_SPLIT_DECODE=1 (docs/BACKENDS.md). Read
  * once. Off, decode attention is the unsplit kernel, bit for bit. */
@@ -1021,7 +1019,7 @@ static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
  * tokens are split across threads from QKV_PREP_PAR_ROWS on, where these
  * passes ran on the main thread (Gemma 4 E2B: 64 tokens x 8 q heads x 256
  * per prefill chunk). */
-enum { QKV_PREP_PAR_ROWS = 8 };
+constexpr int QKV_PREP_PAR_ROWS = 8;
 
 struct qkv_prep_job {
     float       *q, *k, *v;

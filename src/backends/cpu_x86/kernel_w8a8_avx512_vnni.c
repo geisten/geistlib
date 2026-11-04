@@ -17,6 +17,7 @@
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "par.h"
 
@@ -103,7 +104,7 @@ struct w8_gemm {
     float         *out;
 };
 
-#define W8A8_JT 4
+constexpr int W8A8_JT = 4;
 
 static void w8a8_gemm_rows(void *ctx, size_t r0, size_t r1) {
     const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
@@ -210,7 +211,7 @@ void w8a8_gemm_avx512_vnni(size_t        n_tokens,
  * one 8-wide fp32 FMA for all 8 rows. JT tokens kept live per group so the
  * 8-row weight stripe is reused across the token tile. See kernel_w8a8.h
  * for the interleaved layout. */
-#define W8X8_JT 4
+constexpr int W8X8_JT = 4;
 
 static void w8x8_groups(void *ctx, size_t g0, size_t g1) {
     const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
@@ -257,7 +258,7 @@ static void w8x8_groups(void *ctx, size_t g0, size_t g1) {
                     const int8_t *a = acts + (j0 + jj) * n_in + b * W8A8_BLOCK_ELEMS;
                     /* Broadcast each 4-element act stripe to all 8 lanes. */
                     int32_t a4[4];
-                    __builtin_memcpy(a4, a, 16);
+                    memcpy(a4, a, 16);
                     __m256i iacc = _mm256_dpbusd_epi32(
                             _mm256_setzero_si256(), w0, _mm256_set1_epi32(a4[0]));
                     iacc = _mm256_dpbusd_epi32(iacc, w1, _mm256_set1_epi32(a4[1]));
@@ -315,7 +316,7 @@ void w8x8_gemm(size_t        n_tokens,
 
 /* 512-bit / 16-row variant of w8x8_gemm: one VPDPBUSD lands 16 output rows
  * in the 16 int32 lanes. ~1.5× w8x8 on Zen 5's full-width AVX-512 datapath. */
-#define W8X16_JT 4
+constexpr int W8X16_JT = 4;
 
 static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
     const struct w8_gemm c               = *(const struct w8_gemm *) ctx;
@@ -361,7 +362,7 @@ static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
                 for (size_t jj = 0; jj < jt; jj++) {
                     const int8_t *a = acts + (j0 + jj) * n_in + b * W8A8_BLOCK_ELEMS;
                     int32_t       a4[4];
-                    __builtin_memcpy(a4, a, 16);
+                    memcpy(a4, a, 16);
                     __m512i d = _mm512_dpbusd_epi32(
                             _mm512_setzero_si512(), w0, _mm512_set1_epi32(a4[0]));
                     d               = _mm512_dpbusd_epi32(d, w1, _mm512_set1_epi32(a4[1]));

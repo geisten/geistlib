@@ -108,7 +108,7 @@ static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
 /* The tiled int8 GEMM (#18) on hosts with AVX-512 VNNI reads the GGUF
  * Q6_K bytes directly, so these weights need no W8A8 predecode (1.5 B/wt)
  * there. Elsewhere, the predecode and its GEMMs. */
-enum { TILED_MIN_ROWS = 16 };
+constexpr int TILED_MIN_ROWS = 16;
 
 static bool q6k_tiled_on(void) {
     static atomic_int on = -1;

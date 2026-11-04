@@ -12,12 +12,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 /* BF16 (uint16 storage) -> FP32. */
 static inline float bf16_to_fp32(uint16_t bf) {
     uint32_t bits = (uint32_t) bf << 16;
     float    f;
-    __builtin_memcpy(&f, &bits, 4);
+    memcpy(&f, &bits, 4);
     return f;
 }
 
@@ -110,7 +111,7 @@ void attention_mqa_causal(size_t      seq_len,
  * score this many positions at a time in a stack buffer and take the
  * softmax online across the blocks, so no buffer grows with the context
  * and nothing is allocated per call. */
-enum { ATTN_F32_BLOCK = 512 };
+constexpr int ATTN_F32_BLOCK = 512;
 
 /* No attention softmax takes exp of (score - running max) below this:
  * every kernel clamps the argument here and takes a rescale or merge factor

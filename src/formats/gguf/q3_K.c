@@ -54,6 +54,7 @@ void dequant_q3_K_row(size_t n_elems, const void *blocks, float out[static n_ele
         /* 8 quant-groups of 32 weights. qs shifts: 0,2,4,6 within each 32-byte
          * qs half. hmask shift = group index 0..7 across both halves. */
         int8x16_t q_l, q_h;
+/* A macro, not a function (#348): it works on the caller's locals. */
 #define DEQUANT_GROUP(G, QSL, QSH, HML, HMH, XOFF)                                \
     do {                                                                          \
         q3k_reconstruct_q32(QSL, QSH, HML, HMH, &q_l, &q_h);                      \

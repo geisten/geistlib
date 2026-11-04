@@ -55,6 +55,8 @@ static inline float tq2_0_block_dot_neon(const uint8_t *qs, const float *xb) {
  * one trit per byte (the SHIFT-th 2-bit slot), convert to fp32, and
  * fma against `xb + X_OFF` (16 activations). */
 /* SHIFT==0: skip vshrq (the intrinsic requires shift ≥ 1); just mask. */
+/* A macro, not a function (#348): vshrq_n_u8 takes a literal shift, and it adds into the caller's
+ * accumulators. */
 #define DO_PAIR(P, SHIFT, X_OFF)                                                                    \
     do {                                                                                            \
         uint8x16_t  _t  = ((SHIFT) == 0) ? vandq_u8((P), three)                                     \
@@ -132,6 +134,8 @@ static inline int32_t tq2_0_block_dot_q8a_neon_unbiased(const uint8_t *qs, const
     int32x4_t acc0 = vdupq_n_s32(0);
     int32x4_t acc1 = vdupq_n_s32(0);
 
+/* A macro, not a function (#348): vshrq_n_u8 takes a literal shift, and it adds into the caller's
+ * accumulators. */
 #define DO_DOT_PAIR(P, SHIFT, X_OFF_A, X_OFF_B)                                                   \
     do {                                                                                          \
         uint8x16_t _t = ((SHIFT) == 0) ? vandq_u8((P), three)                                     \
@@ -203,6 +207,7 @@ static inline void tq2_0_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
     const uint8x16_t three = vdupq_n_u8(3);
     int32x4_t        a0 = vdupq_n_s32(0), a1 = vdupq_n_s32(0);
     int32x4_t        a2 = vdupq_n_s32(0), a3 = vdupq_n_s32(0);
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define MT4_POS(S, XOFF)                                                \
     do {                                                                \
         const int8x16_t _w = (S);                                       \
@@ -253,6 +258,7 @@ static inline void tq2_0_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
     int32x4_t        a2 = vdupq_n_s32(0), a3 = vdupq_n_s32(0);
     int32x4_t        a4 = vdupq_n_s32(0), a5 = vdupq_n_s32(0);
     int32x4_t        a6 = vdupq_n_s32(0), a7 = vdupq_n_s32(0);
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define MT8_POS(S, XOFF)                                                  \
     do {                                                                  \
         const int8x16_t _w = (S);                                         \
@@ -540,7 +546,7 @@ static inline void q8a_mN_row(size_t r, const struct q8a_mN_ctx *c) {
  * across all NC rows — eliminating the per-row activation re-stream.
  * Bit-identical: same MT=4 dots, same per-token block-order float
  * accumulation; only the row/block loop nest is reordered. */
-#define TQ2_NC 32
+constexpr int TQ2_NC = 32;
 
 /* Panels [p0, p1) of cpu_neon_w_tq2_0_q8a_mN. */
 static void q8a_mN_panels(void *vctx, size_t p0, size_t p1) {
@@ -988,6 +994,7 @@ static inline void i2_s_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
     const uint8x16_t three = vdupq_n_u8(3);
     int32x4_t        a0 = vdupq_n_s32(0), a1 = vdupq_n_s32(0);
     int32x4_t        a2 = vdupq_n_s32(0), a3 = vdupq_n_s32(0);
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define I2S_MT4_POS(S, XOFF)                                            \
     do {                                                                \
         const int8x16_t _w = (S);                                       \
@@ -1025,6 +1032,7 @@ static inline void i2_s_block_dot_q8a_neon_unbiased_mt4(const uint8_t *qs,
 static inline void
 i2_s_block_dot_q8a_mt8_accum(const uint8_t *qs, const int8_t *const xb[8], int32x4_t acc[8]) {
     const uint8x16_t three = vdupq_n_u8(3);
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define I2S_MT8A(S, XOFF)                                                     \
     do {                                                                      \
         const int8x16_t _w = (S);                                             \

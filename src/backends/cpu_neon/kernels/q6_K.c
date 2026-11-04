@@ -766,6 +766,7 @@ static const int xoff_tab[16] = {
 /* Unpack a Q6_K block once into 16 int8x16 vectors (QREG) and their int32
  * scales (SREG); all m tokens then SDOT against it. Uses mask_lo4,
  * mask_lo2 and bias_32 from the caller. */
+/* A macro, not a function (#348): it fills the caller's register arrays. */
 #define Q6K_RECON_BLOCK(BLK, QREG, SREG)                                                           \
     do {                                                                                           \
         int g_ = 0;                                                                                \
@@ -1302,6 +1303,7 @@ static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
                     const int8_t *xb2    = x_q8 + (mt + 2) * n_in + xb_off;
                     const int8_t *xb3    = x_q8 + (mt + 3) * n_in + xb_off;
 
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define Q6K_STREAM4_ACC(NR, A0, A1, A2, A3)                  \
     do {                                                     \
         if ((NR) < valid_nr) {                               \

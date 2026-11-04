@@ -60,13 +60,21 @@
  * (in the x86-64-v3 floor) as it is loaded. Everything else is the same
  * code. */
 #if defined(AF_F16)
-typedef uint16_t af_kv_t;
-#define AF_LD8(p) _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) (p)))
-#define AF_LD1(p) _cvtsh_ss(*(p))
+typedef uint16_t                            af_kv_t;
+[[gnu::always_inline]] static inline __m256 af_ld8(const af_kv_t *p) {
+    return _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) p));
+}
+[[gnu::always_inline]] static inline float af_ld1(const af_kv_t *p) {
+    return _cvtsh_ss(*p);
+}
 #else
-typedef float af_kv_t;
-#define AF_LD8(p) _mm256_loadu_ps(p)
-#define AF_LD1(p) (*(p))
+typedef float                               af_kv_t;
+[[gnu::always_inline]] static inline __m256 af_ld8(const af_kv_t *p) {
+    return _mm256_loadu_ps(p);
+}
+[[gnu::always_inline]] static inline float af_ld1(const af_kv_t *p) {
+    return *p;
+}
 #endif
 
 /* Bytes of V rows per pass over the output dimensions: they stay in L1
@@ -99,14 +107,14 @@ af_dot8(size_t hd8, size_t head_dim, size_t row, const float *q, const af_kv_t *
     __m256 a0 = _mm256_setzero_ps(), a1 = a0, a2 = a0, a3 = a0, a4 = a0, a5 = a0, a6 = a0, a7 = a0;
     for (size_t i = 0; i < hd8; i += 8) {
         const __m256 qv = _mm256_loadu_ps(q + i);
-        a0              = _mm256_fmadd_ps(qv, AF_LD8(k0 + i), a0);
-        a1              = _mm256_fmadd_ps(qv, AF_LD8(k0 + row + i), a1);
-        a2              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 2 * row + i), a2);
-        a3              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 3 * row + i), a3);
-        a4              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 4 * row + i), a4);
-        a5              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 5 * row + i), a5);
-        a6              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 6 * row + i), a6);
-        a7              = _mm256_fmadd_ps(qv, AF_LD8(k0 + 7 * row + i), a7);
+        a0              = _mm256_fmadd_ps(qv, af_ld8(k0 + i), a0);
+        a1              = _mm256_fmadd_ps(qv, af_ld8(k0 + row + i), a1);
+        a2              = _mm256_fmadd_ps(qv, af_ld8(k0 + 2 * row + i), a2);
+        a3              = _mm256_fmadd_ps(qv, af_ld8(k0 + 3 * row + i), a3);
+        a4              = _mm256_fmadd_ps(qv, af_ld8(k0 + 4 * row + i), a4);
+        a5              = _mm256_fmadd_ps(qv, af_ld8(k0 + 5 * row + i), a5);
+        a6              = _mm256_fmadd_ps(qv, af_ld8(k0 + 6 * row + i), a6);
+        a7              = _mm256_fmadd_ps(qv, af_ld8(k0 + 7 * row + i), a7);
     }
     __m256 d = af_reduce8(a0, a1, a2, a3, a4, a5, a6, a7);
     if (hd8 < head_dim) {
@@ -114,7 +122,7 @@ af_dot8(size_t hd8, size_t head_dim, size_t row, const float *q, const af_kv_t *
         for (size_t p = 0; p < 8; p++) {
             float s = 0.0f;
             for (size_t i = hd8; i < head_dim; i++) {
-                s += q[i] * AF_LD1(k0 + p * row + i);
+                s += q[i] * af_ld1(k0 + p * row + i);
             }
             tail[p] = s;
         }
@@ -128,15 +136,15 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const a
     __m256 a0 = _mm256_setzero_ps(), a1 = a0;
     size_t i = 0;
     for (; i + 16 <= hd8; i += 16) {
-        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), AF_LD8(k + i), a0);
-        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i + 8), AF_LD8(k + i + 8), a1);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), af_ld8(k + i), a0);
+        a1 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i + 8), af_ld8(k + i + 8), a1);
     }
     for (; i < hd8; i += 8) {
-        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), AF_LD8(k + i), a0);
+        a0 = _mm256_fmadd_ps(_mm256_loadu_ps(q + i), af_ld8(k + i), a0);
     }
     float s = af_hsum(_mm256_add_ps(a0, a1));
     for (; i < head_dim; i++) {
-        s += q[i] * AF_LD1(k + i);
+        s += q[i] * af_ld1(k + i);
     }
     return s;
 }
@@ -170,7 +178,7 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const a
     }
     const af_kv_t *vr = v + c;
     for (size_t j = 0; j < n; j++, vr += row) {
-        const __m256 v0 = AF_LD8(vr), v1 = AF_LD8(vr + 8);
+        const __m256 v0 = af_ld8(vr), v1 = af_ld8(vr + 8);
         __m256       s = _mm256_broadcast_ss(&w[0][j]);
         l0             = _mm256_fmadd_ps(s, v0, l0);
         h0             = _mm256_fmadd_ps(s, v1, h0);
@@ -227,18 +235,18 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const a
     for (size_t j = 0; j < n; j++, vr += row) {
         const __m256 s0 = _mm256_broadcast_ss(&w[0][j]);
         const __m256 s1 = NH > 1 ? _mm256_broadcast_ss(&w[1][j]) : s0;
-        const __m256 v0 = AF_LD8(vr), v1 = AF_LD8(vr + 8);
-        const __m256 v2 = AF_LD8(vr + 16), v3 = AF_LD8(vr + 24);
+        const __m256 v0 = af_ld8(vr), v1 = af_ld8(vr + 8);
+        const __m256 v2 = af_ld8(vr + 16), v3 = af_ld8(vr + 24);
         x0 = _mm256_fmadd_ps(s0, v0, x0);
         x1 = _mm256_fmadd_ps(s0, v1, x1);
         x2 = _mm256_fmadd_ps(s0, v2, x2);
         x3 = _mm256_fmadd_ps(s0, v3, x3);
         if (NV == 8) {
             /* One head: dimensions 32..63 of it. */
-            x4 = _mm256_fmadd_ps(s0, AF_LD8(vr + 32), x4);
-            x5 = _mm256_fmadd_ps(s0, AF_LD8(vr + 40), x5);
-            x6 = _mm256_fmadd_ps(s0, AF_LD8(vr + 48), x6);
-            x7 = _mm256_fmadd_ps(s0, AF_LD8(vr + 56), x7);
+            x4 = _mm256_fmadd_ps(s0, af_ld8(vr + 32), x4);
+            x5 = _mm256_fmadd_ps(s0, af_ld8(vr + 40), x5);
+            x6 = _mm256_fmadd_ps(s0, af_ld8(vr + 48), x6);
+            x7 = _mm256_fmadd_ps(s0, af_ld8(vr + 56), x7);
         } else {
             /* Two heads: the same 32 dimensions of the second. */
             x4 = _mm256_fmadd_ps(s1, v0, x4);
@@ -380,7 +388,7 @@ static inline float af_dot1(size_t hd8, size_t head_dim, const float *q, const a
                 }
                 for (; c < head_dim; c++) {
                     for (size_t i = 0; i < nr; i++) {
-                        const float vf = AF_LD1(vr + i * row + c);
+                        const float vf = af_ld1(vr + i * row + c);
                         for (size_t g = 0; g < G; g++) {
                             acc[g][c] += w[g][i] * vf;
                         }

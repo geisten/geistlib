@@ -75,12 +75,12 @@ static void tl1_tq2_0_unpack_block(const uint8_t *qs, int8_t trits[256]) {
  *     bits 0..3 (low ):  K-pair B (or D) = K-pos (kbase+2, kbase+3)
  *     bits 4..7 (high):  K-pair A (or C) = K-pos (kbase+0, kbase+1)
  *   Where kbase = c*8 (= start of k_inner) and the second offset adds 4. */
-#define TL1_PACKED_PER_TILE ((size_t) (TL1_BM * TL1_BBK / 4))   /* 1024 */
-#define TL1_SCALES_PER_TILE ((size_t) (TL1_BM * sizeof(float))) /* 128 */
-#define TL1_TILE_BYTES (TL1_PACKED_PER_TILE + TL1_SCALES_PER_TILE)
-#define TL1_K_INNERS 16        /* K-windows per BBK tile (BBK / 8) */
-#define TL1_K_PER_INNER 8      /* K-positions per k_inner iter */
-#define TL1_KPAIRS_PER_INNER 4 /* = TL1_K_PER_INNER / 2 */
+constexpr size_t TL1_PACKED_PER_TILE  = TL1_BM * TL1_BBK / 4;   /* 1024 */
+constexpr size_t TL1_SCALES_PER_TILE  = TL1_BM * sizeof(float); /* 128 */
+constexpr size_t TL1_TILE_BYTES       = TL1_PACKED_PER_TILE + TL1_SCALES_PER_TILE;
+constexpr int    TL1_K_INNERS         = TL1_BBK / 8;         /* K-windows per BBK tile: 16 */
+constexpr int    TL1_K_PER_INNER      = 8;                   /* K-positions per k_inner iter */
+constexpr int    TL1_KPAIRS_PER_INNER = TL1_K_PER_INNER / 2; /* 4 */
 
 size_t tl1_pack_size_bytes(size_t n_in, size_t n_out) {
     if (n_in == 0 || n_out == 0)
@@ -246,6 +246,8 @@ static void tl1_row_tiles(void *ctx, size_t rt0, size_t rt1) {
                 const uint8_t   *c_base = packed + c * 64;
                 const uint8x16_t mask   = vdupq_n_u8(0x0F);
 
+/* A macro, not a function (#348): vshrq_n_u8 takes a literal shift, and it adds into the caller's
+ * accumulators. */
 #define TL1_ACC_PACKET(PKT_OFF, KP_A_HI, KP_A_LO, KP_B_HI, KP_B_LO, VC_LO, VC_HI)      \
     do {                                                                               \
         const uint8x16_t  _pkt = vld1q_u8((PKT_OFF));                                  \
@@ -280,6 +282,7 @@ static void tl1_row_tiles(void *ctx, size_t rt0, size_t rt1) {
 
             /* Widen int16x8 accumulators to int32, fold per-row scale,
              * accumulate into fp32 row sums. */
+/* A macro, not a function (#348): it adds into the caller's named accumulators. */
 #define TL1_FOLD(VC, ROW_BASE)                                             \
     do {                                                                   \
         const int32x4_t   _lo  = vmovl_s16(vget_low_s16((VC)));            \

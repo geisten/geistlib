@@ -26,6 +26,7 @@
 #include "par.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 /* --- Activation quant: per-row symmetric int8, scale = 127/max|x|. -------
  *
@@ -570,7 +571,7 @@ void i2s_t5_gemv_m1(size_t        n_out,
     int32_t      sum_a;
     const float  scale = tensor_scale * quantize_act_row(n_in, x, xq, &sum_a);
     if (cols_pad > n_in) {
-        __builtin_memset(xq + n_in, 0, cols_pad - n_in); /* pads contribute 0 */
+        memset(xq + n_in, 0, cols_pad - n_in); /* pads contribute 0 */
     }
     i2s_t5_gemv_m1_avx512_vnni(n_out, cols_pad, xq, sum_a, t5, scale, y);
 }
@@ -590,7 +591,7 @@ void i2s_t5_gemv_pair_m1(size_t        n_in,
     int32_t      sum_a;
     const float  inv = quantize_act_row(n_in, x, xq, &sum_a); /* shared activation quant */
     if (cols_pad > n_in) {
-        __builtin_memset(xq + n_in, 0, cols_pad - n_in);
+        memset(xq + n_in, 0, cols_pad - n_in);
     }
     i2s_t5_gemv_pair_m1_avx512_vnni(cols_pad,
                                     xq,

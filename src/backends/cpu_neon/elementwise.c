@@ -60,7 +60,7 @@ extern void vvtanhf(float *y, const float *x, const int *n);
  * prefill chunk is 64 tokens x the FFN width, and one thread took 8-9 % of
  * a Gemma 4 E2B prefill on the M1 Max. Each element gets the same
  * operations as before, whatever the split. y may alias x. */
-enum { GELU_BLOCK = 2048 };
+constexpr int GELU_BLOCK = 2048;
 
 struct gelu_job {
     const float *x, *z, *scale;
@@ -197,7 +197,8 @@ cpu_neon_gelu_tanh(struct geist_backend *be, const struct geist_tensor *x, struc
  * it saves. Every element gets silu_fp32_ooo's operations, and the product
  * multiplies the stored silu, as prims->silu then prims->mul do: the bits
  * are the same whatever the split. y may alias x. */
-enum { SILU_BLOCK = 4096, SILU_PAR_BLOCKS = 4 };
+constexpr int SILU_BLOCK      = 4096;
+constexpr int SILU_PAR_BLOCKS = 4;
 
 struct silu_job {
     const float *x, *z;
@@ -277,7 +278,8 @@ cpu_neon_silu(struct geist_backend *be, const struct geist_tensor *x, struct gei
  * chunk on the M1 Max; a decode token's row stays on the calling thread.
  * rmsnorm(x) * w goes through a row on the stack, so y may alias res or x;
  * RES_NORM_MAX_COLS bounds it, and the probe refuses wider rows. */
-enum { RES_NORM_MAX_COLS = 8192, RES_NORM_PAR_ROWS = 8 };
+constexpr int RES_NORM_MAX_COLS = 8192;
+constexpr int RES_NORM_PAR_ROWS = 8;
 
 struct res_norm_job {
     const float *res, *x, *w, *z_w;

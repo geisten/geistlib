@@ -182,6 +182,7 @@ static inline __m512 lanes0_8_ps(float lo, float hi) {
                                                     float         *y) {
     const size_t n_in   = nb * QK;
     const size_t row_by = nb * f.stride;
+/* A macro, not a function (#348): it spells the caller's locals into one call of tile(). */
 #define TILE(R, T, J, TT)   \
     tile(R,                 \
          T,                 \

@@ -505,7 +505,7 @@ static void rows_mN(void *ctx, size_t j0, size_t j1) {
  * the same int32 block sums as the register tiles below, but each weight K
  * block is unpacked once per 256-row activation window instead of once per
  * 4 tokens. */
-enum { Q4_0_TILED_MIN_ROWS = 16 };
+constexpr int Q4_0_TILED_MIN_ROWS = 16;
 
 /* M>1: the m rows quantized, then the GEMM, one geist_par_for each. With
  * vnni, the GEMM is the register tiles of kernel_q4_0_avx512_vnni.c, one

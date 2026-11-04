@@ -22,33 +22,33 @@
  * <Accelerate/Accelerate.h> umbrella (it drags in vImage and slows the build)
  * and OpenBLAS's <cblas.h>; both libraries export these C symbols with plain
  * int enum arguments, and GEIST_OP_N/T already equal CBLAS NoTrans/Trans. */
-enum { GEIST_CBLAS_ROW_MAJOR = 101 };
-extern void cblas_sgemm(int          order,
-                        int          transA,
-                        int          transB,
-                        int          M,
-                        int          N,
-                        int          K,
-                        float        alpha,
-                        const float *A,
-                        int          lda,
-                        const float *B,
-                        int          ldb,
-                        float        beta,
-                        float       *C,
-                        int          ldc);
-extern void cblas_sgemv(int          order,
-                        int          transA,
-                        int          M,
-                        int          N,
-                        float        alpha,
-                        const float *A,
-                        int          lda,
-                        const float *x,
-                        int          incx,
-                        float        beta,
-                        float       *y,
-                        int          incy);
+constexpr int GEIST_CBLAS_ROW_MAJOR = 101;
+extern void   cblas_sgemm(int          order,
+                          int          transA,
+                          int          transB,
+                          int          M,
+                          int          N,
+                          int          K,
+                          float        alpha,
+                          const float *A,
+                          int          lda,
+                          const float *B,
+                          int          ldb,
+                          float        beta,
+                          float       *C,
+                          int          ldc);
+extern void   cblas_sgemv(int          order,
+                          int          transA,
+                          int          M,
+                          int          N,
+                          float        alpha,
+                          const float *A,
+                          int          lda,
+                          const float *x,
+                          int          incx,
+                          float        beta,
+                          float       *y,
+                          int          incy);
 
 /* Pin OpenBLAS to 1 thread: only small, skinny dense matmuls come through
  * here (e.g. Gemma 4 PLE projections), where its per-call thread spawn/sync
@@ -142,7 +142,7 @@ static inline __m256i avx2_lane_mask(int n) {
  * 8-float accumulators per row against a contiguous row of B. MR is a
  * constant at every call, so the accumulators live in registers (6x16:
  * 12 accumulators, 2 B vectors, 1 broadcast of the 16 ymm registers). */
-#define AVX2_MR 6
+constexpr int                             AVX2_MR = 6;
 [[gnu::always_inline]] static inline void avx2_tile_bn(int          MR,
                                                        int          w,
                                                        int          transA,

@@ -137,7 +137,7 @@ struct metal_buf_reg_entry {
 };
 
 /* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 512. */
-enum { METAL_FLASH_SLOTS = 16 };
+constexpr int METAL_FLASH_SLOTS = 16;
 
 /* Typed handles to the Objective-C objects the backend holds (#347). The
  * structs are declared and never defined: each pointer is the object's `id`
@@ -718,20 +718,18 @@ struct geist_buffer {
     bool                   host_visible;
 };
 
-enum {
-    METAL_RESOURCE_STORAGE_MODE_SHARED  = 0u,
-    METAL_RESOURCE_STORAGE_MODE_PRIVATE = 2u << 4,
-    METAL_Q4K_THREADS_PER_ROW           = 256u,
-    METAL_Q4K_N4_THREADS                = 64u,
-    METAL_Q4K_NT4_DEFAULT_MAX_N_OUT     = 8192u,
-    METAL_Q4K_NT4_LARGE_MAX_N_OUT       = 262144u,
-    METAL_Q6K_NT4_MIN_N_OUT             = 1024u,
-    METAL_Q6K_NT4_MAX_N_OUT             = 8192u,
-    METAL_Q4K_M_TILE                    = 8u,
-    METAL_Q4K_M16_TILE                  = 16u,
-    METAL_ELEM_THREADS                  = 256u,
-    METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512u,
-};
+constexpr int METAL_RESOURCE_STORAGE_MODE_SHARED  = 0;
+constexpr int METAL_RESOURCE_STORAGE_MODE_PRIVATE = 2 << 4;
+constexpr int METAL_Q4K_THREADS_PER_ROW           = 256;
+constexpr int METAL_Q4K_N4_THREADS                = 64;
+constexpr int METAL_Q4K_NT4_DEFAULT_MAX_N_OUT     = 8192;
+constexpr int METAL_Q4K_NT4_LARGE_MAX_N_OUT       = 262144;
+constexpr int METAL_Q6K_NT4_MIN_N_OUT             = 1024;
+constexpr int METAL_Q6K_NT4_MAX_N_OUT             = 8192;
+constexpr int METAL_Q4K_M_TILE                    = 8;
+constexpr int METAL_Q4K_M16_TILE                  = 16;
+constexpr int METAL_ELEM_THREADS                  = 256;
+constexpr int METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512;
 
 /* The dtypes whose linear is metal_quant_linear: one validator
  * (metal_tensor_is_quant_matrix), one host path; only the encoder differs
@@ -1066,7 +1064,7 @@ struct metal_f32_ple_proj_norm_params {
 };
 
 /* Threadgroups of the decode argmax's first pass (argmax_f32_part). */
-enum { METAL_ARGMAX_PARTS = 128 };
+constexpr int METAL_ARGMAX_PARTS = 128;
 
 struct metal_argmax_params {
     uint32_t n;
