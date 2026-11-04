@@ -148,14 +148,13 @@ void pq2_0_amx_pack(size_t tn, size_t n_tok, const int8_t *xq, int32_t *bt) {
             __m512 v[16];
             for (size_t n = 0; n < 16; n++) {
                 const size_t t = tile * 16 + n;
-                v[n]           = t < n_tok ? _mm512_castsi512_ps(_mm512_loadu_si512(
-                                                     (const void *) (xq + t * QK + h * 64)))
-                                           : _mm512_setzero_ps();
+                v[n] = t < n_tok ? _mm512_castsi512_ps(_mm512_loadu_si512((xq + t * QK + h * 64)))
+                                 : _mm512_setzero_ps();
             }
             transpose16(v);
             int32_t *b = bt + (tile * 2 + h) * TILE_WORDS;
             for (size_t k = 0; k < 16; k++) {
-                _mm512_storeu_si512((void *) (b + k * 16), _mm512_castps_si512(v[k]));
+                _mm512_storeu_si512((b + k * 16), _mm512_castps_si512(v[k]));
             }
         }
     }
@@ -181,19 +180,18 @@ static inline void extract_a(size_t nr, size_t rb, const uint8_t *w, int8_t *a, 
         const __m512i c3 = _mm512_sub_epi8(_mm512_and_si512(_mm512_srli_epi16(v, 6), m3), one);
         /* row r: [level 0 | level 1] and [level 2 | level 3], row r + 1 the
          * high halves */
-        _mm512_store_si512((void *) (a + r * 64), _mm512_shuffle_i64x2(c0, c1, 0x44));
-        _mm512_store_si512((void *) (a + TILE_BYTES + r * 64), _mm512_shuffle_i64x2(c2, c3, 0x44));
+        _mm512_store_si512((a + r * 64), _mm512_shuffle_i64x2(c0, c1, 0x44));
+        _mm512_store_si512((a + TILE_BYTES + r * 64), _mm512_shuffle_i64x2(c2, c3, 0x44));
         d[r] = block_scale(b0);
         if (two) {
-            _mm512_store_si512((void *) (a + (r + 1) * 64), _mm512_shuffle_i64x2(c0, c1, 0xEE));
-            _mm512_store_si512((void *) (a + TILE_BYTES + (r + 1) * 64),
-                               _mm512_shuffle_i64x2(c2, c3, 0xEE));
+            _mm512_store_si512((a + (r + 1) * 64), _mm512_shuffle_i64x2(c0, c1, 0xEE));
+            _mm512_store_si512((a + TILE_BYTES + (r + 1) * 64), _mm512_shuffle_i64x2(c2, c3, 0xEE));
             d[r + 1] = block_scale(b0 + rb);
         }
     }
     for (r = nr; r < ROWS; r++) {
-        _mm512_store_si512((void *) (a + r * 64), _mm512_setzero_si512());
-        _mm512_store_si512((void *) (a + TILE_BYTES + r * 64), _mm512_setzero_si512());
+        _mm512_store_si512((a + r * 64), _mm512_setzero_si512());
+        _mm512_store_si512((a + TILE_BYTES + r * 64), _mm512_setzero_si512());
         d[r] = 0.0f;
     }
 }
@@ -226,7 +224,7 @@ static inline void tile_store(size_t s, int32_t *c) {
 /* acc[r][0 .. 15] += d[r] * C[r][0 .. 15] for one C tile. */
 static inline void post(const int32_t *c, const float *d, float *acc) {
     for (size_t r = 0; r < ROWS; r++) {
-        const __m512 p = _mm512_cvtepi32_ps(_mm512_load_si512((const void *) (c + r * 16)));
+        const __m512 p = _mm512_cvtepi32_ps(_mm512_load_si512((c + r * 16)));
         _mm512_store_ps(acc + r * 16,
                         _mm512_fmadd_ps(p, _mm512_set1_ps(d[r]), _mm512_load_ps(acc + r * 16)));
     }

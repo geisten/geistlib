@@ -353,10 +353,10 @@ static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
                 const uint8_t *wb   = qs_g + b * (W8A8_BLOCK_ELEMS * W8X16_NROWS);
                 const __m512   sc16 = _mm512_loadu_ps(sc_g + b * W8X16_NROWS);
                 const __m512   of16 = _mm512_loadu_ps(of_g + b * W8X16_NROWS);
-                const __m512i  w0   = _mm512_loadu_si512((const void *) (wb + 0));
-                const __m512i  w1   = _mm512_loadu_si512((const void *) (wb + 64));
-                const __m512i  w2   = _mm512_loadu_si512((const void *) (wb + 128));
-                const __m512i  w3   = _mm512_loadu_si512((const void *) (wb + 192));
+                const __m512i  w0   = _mm512_loadu_si512((wb + 0));
+                const __m512i  w1   = _mm512_loadu_si512((wb + 64));
+                const __m512i  w2   = _mm512_loadu_si512((wb + 128));
+                const __m512i  w3   = _mm512_loadu_si512((wb + 192));
 
                 for (size_t jj = 0; jj < jt; jj++) {
                     const int8_t *a = acts + (j0 + jj) * n_in + b * W8A8_BLOCK_ELEMS;
