@@ -485,11 +485,17 @@ $(BUILD_DIR)/tests/test_attention_int8_unit.o $(BUILD_DIR)/tests/test_x86_attent
 $(BUILD_DIR)/tests/test_sampler_penalties_unit.o: CFLAGS += -fno-finite-math-only
 $(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-contract=off
 
-# -Wconversion -Wsign-conversion, one directory at a time (#343): an implicit
+# -Wconversion -Wsign-conversion, per directory (#343): an implicit
 # conversion that can change a value or its sign is an error in these
-# directories. src/base and src/io had no site; src/engine had one, a real
-# bug (#427).
-$(BUILD_DIR)/src/base/%.o $(BUILD_DIR)/src/io/%.o $(BUILD_DIR)/src/engine/%.o: CFLAGS_STRICT += -Wconversion -Wsign-conversion
+# directories. src/engine had one site, a real bug (#427); the others had
+# none. Not in src/archs (146 sites), src/backends/{common,cpu_neon,cpu_x86}
+# (65), src/formats (10), src/quant (4) and tests/ (173): every site there is
+# index or geometry arithmetic on non-negative ints that only a cast would
+# silence, and none was a bug (numbers in #343).
+CONVERSION_DIRS := src/base src/io src/engine src/archs/vision_siglip \
+                   src/backends/cpu_scalar src/backends/metal src/backends/vulkan
+$(foreach d,$(CONVERSION_DIRS),$(BUILD_DIR)/$(d)/%.o): CFLAGS_STRICT += -Wconversion -Wsign-conversion
+$(BUILD_DIR)/tools/%.o: CFLAGS += -Wconversion -Wsign-conversion
 
 # Object compilation. -MMD -MP generates .d files for header tracking.
 # src/*.c uses CFLAGS_STRICT (adds -Wshadow -Wundef); tools/ and tests/ use

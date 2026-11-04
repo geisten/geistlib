@@ -106,7 +106,13 @@ int load(const int *p) {
 
 # Directories that build with -Wconversion -Wsign-conversion (#343), and the
 # probes: (rejected, accepted).
-CONVERSION_DIRS = ("src/base/", "src/io/", "src/engine/")
+CONVERSION_DIRS = (
+    "src/base/",
+    "src/io/",
+    "src/engine/",
+    "src/archs/vision_siglip/",
+    "src/backends/cpu_scalar/",
+)
 CONVERSION_CASES = {
     "-Wsign-conversion": (
         "unsigned f(int x);\nunsigned f(int x) { return x; }\n",
