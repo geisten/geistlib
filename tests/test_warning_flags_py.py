@@ -63,16 +63,76 @@ int f(int x) {
         "int twice(int x);\n"
         "int twice(int x) { return 4 * half(x); }\n",
     ),
+    "-Wformat=2": (
+        """
+#include <stdarg.h>
+#include <stdio.h>
+int say(char *buf, size_t n, const char *fmt, int x);
+int say(char *buf, size_t n, const char *fmt, int x) {
+    return snprintf(buf, n, fmt, x);
+}
+""",
+        """
+#include <stdarg.h>
+#include <stdio.h>
+[[gnu::format(printf, 3, 4)]] int say(char *buf, size_t n, const char *fmt, ...);
+int say(char *buf, size_t n, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, n, fmt, ap);
+    va_end(ap);
+    return r;
+}
+""",
+    ),
+    # gcc follows the null through its optimizer, clang reports only a
+    # dereference of a literal null; the probe is one both reject.
+    "-Wnull-dereference": (
+        """
+int load(void);
+int load(void) {
+    return *(int *) 0;
+}
+""",
+        """
+int load(const int *p);
+int load(const int *p) {
+    return p != nullptr ? *p : 0;
+}
+""",
+    ),
 }
 
 
-def library_flags():
-    """The compiler and flags of one library object, with -Werror."""
+# Directories that build with -Wconversion -Wsign-conversion (#343), and the
+# probes: (rejected, accepted).
+CONVERSION_DIRS = (
+    "src/base/",
+    "src/io/",
+    "src/engine/",
+    "src/archs/vision_siglip/",
+    "src/backends/cpu_scalar/",
+)
+CONVERSION_CASES = {
+    "-Wsign-conversion": (
+        "unsigned f(int x);\nunsigned f(int x) { return x; }\n",
+        "unsigned f(unsigned x);\nunsigned f(unsigned x) { return x; }\n",
+    ),
+    "-Wconversion": (
+        "short g(long x);\nshort g(long x) { return x; }\n",
+        "long g(short x);\nlong g(short x) { return x; }\n",
+    ),
+}
+
+
+def library_flags(prefix="src/"):
+    """The compiler and flags of one library object under prefix, with -Werror."""
     out = subprocess.run(
         ["make", "-n", "-B", "lib"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout
     for line in out.splitlines():
-        if " -c " in line and " -o " in line and SOURCE.search(line):
+        src = SOURCE.search(line)
+        if " -c " in line and " -o " in line and src and src.group(1).startswith(prefix):
             argv = shlex.split(line)
             keep = []
             skip = False
@@ -86,7 +146,7 @@ def library_flags():
                 else:
                     keep.append(a)
             return keep
-    raise AssertionError("make -n lib printed no compile command")
+    raise AssertionError(f"make -n lib printed no compile command under {prefix}")
 
 
 def compiles(flags, code):
@@ -120,6 +180,18 @@ class WarningFlags(unittest.TestCase):
                 self.assertIn(warning.split("=")[0].removeprefix("-W"), bad.stderr)
                 good = compiles(self.flags, accepted)
                 self.assertEqual(good.returncode, 0, good.stderr)
+
+    def test_conversion_per_directory(self):
+        for prefix in CONVERSION_DIRS:
+            flags = library_flags(prefix)
+            for warning, (rejected, accepted) in CONVERSION_CASES.items():
+                with self.subTest(dir=prefix, warning=warning):
+                    self.assertIn(warning, flags)
+                    bad = compiles(flags, rejected)
+                    self.assertNotEqual(bad.returncode, 0, f"{warning} let the probe through")
+                    self.assertIn(warning.removeprefix("-W"), bad.stderr)
+                    good = compiles(flags, accepted)
+                    self.assertEqual(good.returncode, 0, good.stderr)
 
 
 if __name__ == "__main__":
