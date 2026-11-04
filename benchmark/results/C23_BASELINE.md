@@ -99,6 +99,6 @@ gguf_artifacts/synth/llama32-1b-q4_k.gguf (tools/gen_synth_gguf.py), bench_perf_
 
 ## Gaps
 
-- M1 Max CPU at 6642260d and M1 Max Metal at all: the host was saturated by other agents' unit tests all night (0 % idle), so bench-matrix's quiet gate refused every cell. The next quiet nightly fills them, at a later main; the M6 columns cover Apple CPU and Metal at 6642260d.
+- M1 Max CPU at 6642260d and M1 Max Metal at all. First attempt (run 2818, 2026-11-04 night): the host was saturated by other agents' unit tests (0 % idle) and bench-matrix's quiet gate refused every cell. Second attempt (2026-11-04 evening, other agents idle): run 2990 failed the 80 % idle gate at 73-79 % idle (the workstation's browser, Spotlight); the four nightly cells run by hand under `with-mac-lock` with the idle gate at 70 % then failed the unchanged 5 % repeat-spread gate on all four tries each (spreads 8.8-49.7 %, corespotlightd/hybridsearchd/mobileassetd at 50-85 % CPU). Nothing was recorded; the spread gate is not relaxed. The M6 columns cover Apple CPU and Metal at 6642260d; the M1 Max needs a night with Spotlight idle.
 - The synthetic row is indicative (spread up to 30 %); per-PR A/B on the M6 (mac-ab.yml) is the gate for it.
 - Thread sweeps (`tools/bench_thread_sweep.py`), the batched decode path and `make bench-quality-small` were not run for Phase 0; the cross-engine protocol fixes the thread counts per host profile.
