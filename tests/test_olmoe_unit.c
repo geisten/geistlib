@@ -135,7 +135,7 @@ static int check_not_renormalised(void) {
         geist_session_create(m, be, &OPTS, &s) != GEIST_OK || !logits_after(s, N_PROMPT, plain)) {
         fails += geist_expect(false, "the olmoe fixture runs");
     } else {
-        struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(s));
         fails += geist_expect(!a->model->config.moe_norm_topk, "olmoe keeps the raw weights");
         a->model->config.moe_norm_topk = true;
         fails += geist_expect(logits_after(s, N_PROMPT, norm) && rel_l2(norm, plain) > 1e-2,

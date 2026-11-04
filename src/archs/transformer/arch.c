@@ -44,9 +44,9 @@ static void record_create_failure(struct geist_backend *be, enum geist_status s)
     }
 }
 
-static void *op_state_create(struct geist_backend            *be,
-                             const char                      *gguf_path,
-                             const struct geist_session_opts *opts) {
+static struct geist_arch_state *op_state_create(struct geist_backend            *be,
+                                                const char                      *gguf_path,
+                                                const struct geist_session_opts *opts) {
     if (be == nullptr || gguf_path == nullptr) {
         return nullptr;
     }
@@ -56,13 +56,13 @@ static void *op_state_create(struct geist_backend            *be,
         record_create_failure(be, s);
         return nullptr;
     }
-    return st;
+    return tf_state_handle(st);
 }
 
-static void *op_state_create_from_memory(struct geist_backend            *be,
-                                         const void                      *data,
-                                         size_t                           size,
-                                         const struct geist_session_opts *opts) {
+static struct geist_arch_state *op_state_create_from_memory(struct geist_backend            *be,
+                                                            const void                      *data,
+                                                            size_t                           size,
+                                                            const struct geist_session_opts *opts) {
     if (be == nullptr || data == nullptr) {
         return nullptr;
     }
@@ -72,11 +72,11 @@ static void *op_state_create_from_memory(struct geist_backend            *be,
         record_create_failure(be, s);
         return nullptr;
     }
-    return st;
+    return tf_state_handle(st);
 }
 
-static void op_state_destroy(void *arch_state) {
-    transformer_state_destroy(arch_state);
+static void op_state_destroy(struct geist_arch_state *arch_state) {
+    transformer_state_destroy(tf_state(arch_state));
 }
 
 /* Mutable view of the ZO-tuning gains. Fail-closed on two counts:
@@ -84,8 +84,8 @@ static void op_state_destroy(void *arch_state) {
  *   - backend runs the fused tensor path (GPU) → that path returns before
  *     the dispatcher applies gains, so handing out a writable array would
  *     silently produce ungained output. Refuse instead. */
-static enum geist_status op_gains(void *arch_state, float **out, size_t *n) {
-    struct transformer_arch_state *st = arch_state;
+static enum geist_status op_gains(struct geist_arch_state *arch_state, float **out, size_t *n) {
+    struct transformer_arch_state *st = tf_state(arch_state);
     if (st == nullptr || out == nullptr || n == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -127,26 +127,28 @@ static enum geist_status op_gains(void *arch_state, float **out, size_t *n) {
 }
 
 /* DRY sequence breakers (#695), resolved by the engine at session create. */
-static enum geist_status
-op_set_dry_breakers(void *session, size_t n_words, const geist_token_t *packed) {
-    struct transformer_arch_session *sess = session;
+static enum geist_status op_set_dry_breakers(struct geist_arch_session *session,
+                                             size_t                     n_words,
+                                             const geist_token_t       *packed) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
     return geist_sampler_penalties_set_breakers(&sess->pen, n_words, packed);
 }
 
-static void op_bind_cancel(void *session, bool (*requested)(void *ctx), void *ctx) {
-    struct transformer_arch_session *sess = session;
+static void
+op_bind_cancel(struct geist_arch_session *session, bool (*requested)(void *ctx), void *ctx) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess != nullptr) {
         sess->cancel_requested = requested;
         sess->cancel_ctx       = ctx;
     }
 }
 
-static void op_state_reset(void *session) {
+static void op_state_reset(struct geist_arch_session *session) {
     if (session != nullptr) {
-        transformer_session_reset(session);
+        transformer_session_reset(tf_sess(session));
     }
 }
 
@@ -154,8 +156,9 @@ static void op_state_reset(void *session) {
  * path. After the call, the session holds logits for the next position;
  * ops->decode_step will return the argmax of those logits on its first
  * invocation. */
-static enum geist_status op_prefill(void *session, size_t n, const geist_token_t ids[static n]) {
-    struct transformer_arch_session *sess = session;
+static enum geist_status
+op_prefill(struct geist_arch_session *session, size_t n, const geist_token_t ids[static n]) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -172,8 +175,9 @@ static enum geist_status op_prefill(void *session, size_t n, const geist_token_t
 /* Append `n` audio soft-tokens to the KV cache via the batched seq>1
  * path. Each soft-token is a HIDDEN-dim FP32 vector produced upstream
  * by the audio encoder. */
-static enum geist_status op_prefill_audio(void *session, size_t n, const float *soft_tokens) {
-    struct transformer_arch_session *sess = session;
+static enum geist_status
+op_prefill_audio(struct geist_arch_session *session, size_t n, const float *soft_tokens) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr || soft_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -190,8 +194,9 @@ static enum geist_status op_prefill_audio(void *session, size_t n, const float *
 /* Vision soft-tokens have the audio wire format (d_model fp32 per token):
  * copied into the residual stream, no embedding lookup, no scale. Shares
  * the audio prefill batch path. */
-static enum geist_status op_prefill_image(void *session, size_t n, const float *soft_tokens) {
-    struct transformer_arch_session *sess = session;
+static enum geist_status
+op_prefill_image(struct geist_arch_session *session, size_t n, const float *soft_tokens) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr || soft_tokens == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -209,8 +214,9 @@ static enum geist_status op_prefill_image(void *session, size_t n, const float *
  * prefix once, snapshots the resulting kv_len as the reset target.
  * Subsequent state_reset calls truncate kv_len back to the pinned length,
  * keeping the prefix's KV state across conversation turns. */
-static enum geist_status op_pin_prefix(void *session, size_t n, const geist_token_t *ids) {
-    struct transformer_arch_session *sess = session;
+static enum geist_status
+op_pin_prefix(struct geist_arch_session *session, size_t n, const geist_token_t *ids) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -228,8 +234,8 @@ static enum geist_status op_pin_prefix(void *session, size_t n, const geist_toke
  * (settle). The token after a prefill therefore costs no forward, and the
  * last one before a reset none at all, while callers see the tokens,
  * logits and kv_len they would if the forward ran here. */
-static enum geist_status op_decode_step(void *session, geist_token_t *out) {
-    struct transformer_arch_session *sess = session;
+static enum geist_status op_decode_step(struct geist_arch_session *session, geist_token_t *out) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr || out == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -258,8 +264,8 @@ static enum geist_status op_decode_step(void *session, geist_token_t *out) {
     return GEIST_OK;
 }
 
-static size_t op_decode_batch_max(const void *arch_state) {
-    return transformer_decode_batch_max(arch_state);
+static size_t op_decode_batch_max(const struct geist_arch_state *arch_state) {
+    return transformer_decode_batch_max(tf_cstate(arch_state));
 }
 
 /* Can decode_step run on this member, and can its forwards run in a batch?
@@ -281,8 +287,9 @@ static size_t op_decode_batch_max(const void *arch_state) {
     return sess->kv_len + need <= sess->max_seq_len ? GEIST_OK : GEIST_E_TOO_MANY_TOKENS;
 }
 
-static enum geist_status
-op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[static n]) {
+static enum geist_status op_decode_batch(size_t                           n,
+                                         struct geist_arch_session *const sessions[static n],
+                                         geist_token_t                    out[static n]) {
     for (size_t b = 0; b < n; b++) {
         out[b] = -1;
     }
@@ -292,7 +299,7 @@ op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[stat
     if (n == 1) {
         return op_decode_step(sessions[0], out); /* exactly decode_step */
     }
-    struct transformer_arch_session *first = sessions[0];
+    struct transformer_arch_session *first = tf_sess(sessions[0]);
     struct transformer_arch_state   *st    = first->model;
     if (n > transformer_decode_batch_max(st)) {
         return GEIST_E_UNSUPPORTED;
@@ -300,12 +307,12 @@ op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[stat
     struct transformer_arch_session *owe[TRANSFORMER_DECODE_BATCH_CAP];
     size_t                           n_owe = 0;
     for (size_t b = 0; b < n; b++) {
-        struct transformer_arch_session *sess = sessions[b];
+        struct transformer_arch_session *sess = tf_sess(sessions[b]);
         if (sess == nullptr) {
             return GEIST_E_INVALID_ARG;
         }
         for (size_t c = 0; c < b; c++) {
-            if (sessions[c] == sess) {
+            if (tf_sess(sessions[c]) == sess) {
                 return GEIST_E_INVALID_ARG;
             }
         }
@@ -333,7 +340,7 @@ op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[stat
      * length, the logits peek returns) is the same either way. */
     struct transformer_arch_session *all[TRANSFORMER_DECODE_BATCH_CAP];
     for (size_t b = 0; s == GEIST_OK && b < n; b++) {
-        all[b] = sessions[b];
+        all[b] = tf_sess(sessions[b]);
         transformer_recurrent_txn_commit(all[b]);
         out[b] = all[b]->next_token_pending;
     }
@@ -343,24 +350,24 @@ op_decode_batch(size_t n, void *const sessions[static n], geist_token_t out[stat
     if (s != GEIST_OK) {
         for (size_t b = 0; b < n; b++) {
             out[b] = -1;
-            transformer_session_reset(sessions[b]);
+            transformer_session_reset(tf_sess(sessions[b]));
         }
     }
     return s;
 }
 
-static size_t op_hidden_dim(const void *arch_state) {
-    const struct transformer_arch_state *st = arch_state;
+static size_t op_hidden_dim(const struct geist_arch_state *arch_state) {
+    const struct transformer_arch_state *st = tf_cstate(arch_state);
     return st != nullptr ? st->d_model : 0;
 }
 
-static bool op_supports_towers(const void *arch_state) {
-    const struct transformer_arch_state *st = arch_state;
+static bool op_supports_towers(const struct geist_arch_state *arch_state) {
+    const struct transformer_arch_state *st = tf_cstate(arch_state);
     return st != nullptr && st->family != nullptr && st->family->towers;
 }
 
-static geist_token_t op_peek_next_token(void *session) {
-    struct transformer_arch_session *sess = session;
+static geist_token_t op_peek_next_token(struct geist_arch_session *session) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (sess == nullptr || settle(sess) != GEIST_OK || !sess->logits_valid)
         return -1;
     return sess->next_token_pending;
@@ -370,8 +377,8 @@ static geist_token_t op_peek_next_token(void *session) {
  * size in *n_logits. nullptr (with *n_logits=0) if no logits are pending.
  * CPU-only: pointer aliases the backend buffer and is valid until the
  * next mutating call on the session. */
-static const float *op_peek_logits(size_t *n_logits, void *session) {
-    struct transformer_arch_session *sess = session;
+static const float *op_peek_logits(size_t *n_logits, struct geist_arch_session *session) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (n_logits == nullptr)
         return nullptr;
     if (sess == nullptr || settle(sess) != GEIST_OK || !sess->logits_valid ||
@@ -407,8 +414,8 @@ static const float *op_peek_logits(size_t *n_logits, void *session) {
  * prefill has produced one. The pointer aliases session scratch and is
  * valid until the next mutating call on the session — same contract as
  * op_peek_logits. */
-static const float *op_peek_embedding(size_t *n_dims, void *session) {
-    struct transformer_arch_session *sess = session;
+static const float *op_peek_embedding(size_t *n_dims, struct geist_arch_session *session) {
+    struct transformer_arch_session *sess = tf_sess(session);
     if (n_dims == nullptr) {
         return nullptr;
     }
@@ -426,67 +433,70 @@ static const float *op_peek_embedding(size_t *n_dims, void *session) {
     return p;
 }
 
-static enum geist_status op_verify_forward(void               *session,
-                                           size_t              k,
-                                           const geist_token_t ids[static k],
-                                           geist_token_t       out_tokens[static k]) {
-    const enum geist_status s = settle(session);
+static enum geist_status op_verify_forward(struct geist_arch_session *session,
+                                           size_t                     k,
+                                           const geist_token_t        ids[static k],
+                                           geist_token_t              out_tokens[static k]) {
+    const enum geist_status s = settle(tf_sess(session));
     if (s != GEIST_OK) {
         return s;
     }
-    return transformer_verify_forward(
-            (struct transformer_arch_session *) session, k, ids, out_tokens);
+    return transformer_verify_forward(tf_sess(session), k, ids, out_tokens);
 }
 
-static enum geist_status op_draft_tokens(
-        void *session, size_t k_max, geist_token_t seed, geist_token_t *out_tokens, size_t *n_out) {
-    const enum geist_status s = settle(session);
+static enum geist_status op_draft_tokens(struct geist_arch_session *session,
+                                         size_t                     k_max,
+                                         geist_token_t              seed,
+                                         geist_token_t             *out_tokens,
+                                         size_t                    *n_out) {
+    const enum geist_status s = settle(tf_sess(session));
     if (s != GEIST_OK) {
         return s;
     }
-    return transformer_mtp_draft(
-            (struct transformer_arch_session *) session, k_max, seed, out_tokens, n_out);
+    return transformer_mtp_draft(tf_sess(session), k_max, seed, out_tokens, n_out);
 }
 
-static enum geist_status op_kv_truncate(void *session, size_t new_len) {
-    const enum geist_status s = settle(session);
+static enum geist_status op_kv_truncate(struct geist_arch_session *session, size_t new_len) {
+    const enum geist_status s = settle(tf_sess(session));
     if (s != GEIST_OK) {
         return s;
     }
-    return transformer_kv_truncate((struct transformer_arch_session *) session, new_len);
+    return transformer_kv_truncate(tf_sess(session), new_len);
 }
 
 /* A token decode_step returned counts as filled whether or not its
  * forward has run yet (settle). */
-static size_t op_kv_len(const void *session) {
-    const struct transformer_arch_session *sess = session;
+static size_t op_kv_len(const struct geist_arch_session *session) {
+    const struct transformer_arch_session *sess = tf_csess(session);
     return sess != nullptr ? sess->kv_len + (sess->advance_deferred ? 1 : 0) : 0;
 }
 
 /* A deferred advance is part of the length, so settle it first. */
-static enum geist_status op_truncate(void *session, size_t n) {
-    const enum geist_status s = settle(session);
+static enum geist_status op_truncate(struct geist_arch_session *session, size_t n) {
+    const enum geist_status s = settle(tf_sess(session));
     if (s != GEIST_OK) {
         return s;
     }
-    return transformer_session_truncate((struct transformer_arch_session *) session, n);
+    return transformer_session_truncate(tf_sess(session), n);
 }
 
-static enum geist_status op_checkpoint(void *session) {
-    const enum geist_status s = settle(session);
+static enum geist_status op_checkpoint(struct geist_arch_session *session) {
+    const enum geist_status s = settle(tf_sess(session));
     if (s != GEIST_OK) {
         return s;
     }
-    return transformer_session_checkpoint((struct transformer_arch_session *) session);
+    return transformer_session_checkpoint(tf_sess(session));
 }
 
-static enum geist_status op_kv_bytes_per_token(size_t *out_bytes, const void *session) {
-    return transformer_kv_bytes_per_token(out_bytes, session);
+static enum geist_status op_kv_bytes_per_token(size_t                          *out_bytes,
+                                               const struct geist_arch_session *session) {
+    return transformer_kv_bytes_per_token(out_bytes, tf_csess(session));
 }
 
-static enum geist_status
-op_prefill_geometry(size_t *out_chunk, bool *out_kv_fp32, const void *session) {
-    const struct transformer_arch_session *sess = session;
+static enum geist_status op_prefill_geometry(size_t                          *out_chunk,
+                                             bool                            *out_kv_fp32,
+                                             const struct geist_arch_session *session) {
+    const struct transformer_arch_session *sess = tf_csess(session);
     if (out_chunk == nullptr || out_kv_fp32 == nullptr || sess == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
@@ -500,39 +510,44 @@ op_prefill_geometry(size_t *out_chunk, bool *out_kv_fp32, const void *session) {
 /* Snapshot / restore (snapshot.c). No settle: a decode_step whose
  * forward is still owed is part of the state the image records, so taking
  * one costs no forward pass. */
-static enum geist_status op_snapshot_size(size_t *out_bytes, const void *session) {
+static enum geist_status op_snapshot_size(size_t                          *out_bytes,
+                                          const struct geist_arch_session *session) {
     if (out_bytes == nullptr || session == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    return transformer_snapshot_size(out_bytes, session);
+    return transformer_snapshot_size(out_bytes, tf_csess(session));
 }
 
-static enum geist_status op_snapshot(size_t *out_bytes, size_t capacity, void *buf, void *session) {
+static enum geist_status
+op_snapshot(size_t *out_bytes, size_t capacity, void *buf, struct geist_arch_session *session) {
     if (out_bytes == nullptr || session == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    return transformer_snapshot_save(out_bytes, capacity, buf, session);
+    return transformer_snapshot_save(out_bytes, capacity, buf, tf_sess(session));
 }
 
-static enum geist_status op_restore(size_t n_bytes, const void *buf, void *session) {
+static enum geist_status
+op_restore(size_t n_bytes, const void *buf, struct geist_arch_session *session) {
     if (session == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
-    return transformer_snapshot_restore(n_bytes, buf, session);
+    return transformer_snapshot_restore(n_bytes, buf, tf_sess(session));
 }
 
 /* ---- Session lifecycle vtable hooks ------------------------------------ */
 
-static void *op_session_alloc(void *arch_state, const struct geist_session_opts *opts) {
-    return transformer_session_alloc(arch_state, opts);
+static struct geist_arch_session *op_session_alloc(struct geist_arch_state         *arch_state,
+                                                   const struct geist_session_opts *opts) {
+    return tf_sess_handle(transformer_session_alloc(tf_state(arch_state), opts));
 }
 
-static void op_session_free(void *arch_state, void *session) {
-    transformer_session_free(arch_state, session);
+static void op_session_free(struct geist_arch_state   *arch_state,
+                            struct geist_arch_session *session) {
+    transformer_session_free(tf_state(arch_state), tf_sess(session));
 }
 
-[[nodiscard]] static size_t op_logits_vocab_size(const void *arch_state) {
-    const struct transformer_arch_state *st = arch_state;
+[[nodiscard]] static size_t op_logits_vocab_size(const struct geist_arch_state *arch_state) {
+    const struct transformer_arch_state *st = tf_cstate(arch_state);
     if (st == nullptr || geist_pooling_is_embedding(st->config.pooling)) {
         return 0;
     }

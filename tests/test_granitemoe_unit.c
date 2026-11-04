@@ -266,7 +266,7 @@ static int check_literal_graph(void) {
     if (!load(&GEOM, "cpu_scalar", &l) || !logits_after(l.s, 1, 1, got)) {
         fails += geist_expect(false, "the granite fixture runs one token");
     } else {
-        struct transformer_arch_session *a = geist_session_internal_arch_session(l.s);
+        struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(l.s));
         literal_logits(a->model->gguf, &GEOM, 5, want);
         const double d = rel_l2(got, want);
         printf("cpu_scalar vs the literal graph: relative L2 %.3g\n", d);

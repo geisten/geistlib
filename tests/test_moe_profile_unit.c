@@ -387,7 +387,7 @@ static int check_model(void) {
         geist_session_prefill_tokens(s, N_PROMPT, ids) != GEIST_OK) {
         fails += geist_expect(false, "the qwen3moe fixture runs");
     } else {
-        const struct transformer_arch_state *st = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st = tf_state(geist_model_internal_arch_meta(m));
         fails += geist_expect(st->moe_prof != nullptr && !moe_profile_loaded(st->moe_prof),
                               "a first load has a profile, empty");
         uint64_t c[2 * 8], tok = 0, sum = 0;
@@ -408,7 +408,7 @@ static int check_model(void) {
     if (geist_model_load_from_memory(g.b, g.n, be, &m) != GEIST_OK) {
         fails += geist_expect(false, "the fixture loads again");
     } else {
-        const struct transformer_arch_state *st  = geist_model_internal_arch_meta(m);
+        const struct transformer_arch_state *st  = tf_state(geist_model_internal_arch_meta(m));
         uint64_t                             tok = 0, c[2 * 8];
         fails += geist_expect(moe_profile_loaded(st->moe_prof), "the next load reads the counts");
         moe_profile_counts(st->moe_prof, 2 * 8, c, &tok);
@@ -448,8 +448,9 @@ static int check_model(void) {
             geist_session_create(m, be, &OPTS, &s) != GEIST_OK) {
             fails += geist_expect(false, "the fixture loads with a GPU split backend");
         } else {
-            const struct transformer_arch_session *a  = geist_session_internal_arch_session(s);
-            bool                                   ok = true;
+            const struct transformer_arch_session *a =
+                    tf_sess(geist_session_internal_arch_session(s));
+            bool ok = true;
             for (size_t l = 0; l < 2; l++) {
                 for (size_t e = 0; e < 8; e++) {
                     const bool want = l == 0 ? (e == 3 || e == 5) : (e == 6 || e == 7);
@@ -504,7 +505,7 @@ static bool placed_load(size_t                n,
             memcpy(out, lg, VOCAB * sizeof(float));
     }
     if (ok) {
-        const struct transformer_arch_session *a = geist_session_internal_arch_session(s);
+        const struct transformer_arch_session *a = tf_sess(geist_session_internal_arch_session(s));
         for (size_t i = 0; i < 2 * 8; i++)
             hot[i] = moe_gpu_hot(a, i / 8, i % 8);
     } else {

@@ -69,7 +69,7 @@ struct geist_session_full {
     struct geist_backend *backend;
 
     /* Per-session arch state, from the arch's session_alloc. */
-    void *arch_session;
+    struct geist_arch_session *arch_session;
 
     /* geist_session_set_draft (#192): a small model's session that drafts
      * for decode_speculative; the caller owns it. */
@@ -117,7 +117,7 @@ static inline struct geist_session_full *as_full(struct geist_session *s) {
 
 /* The session handle passed to per-session vtable ops: the arch session
  * this geist_session owns. */
-static inline void *arch_sess(const struct geist_session_full *sf) {
+static inline struct geist_arch_session *arch_sess(const struct geist_session_full *sf) {
     return sf->arch_session;
 }
 
@@ -403,7 +403,7 @@ set_dry_breakers(struct geist_session_full                 *sf,
     return GEIST_OK;
 }
 
-void *geist_session_internal_arch_session(struct geist_session *s) {
+struct geist_arch_session *geist_session_internal_arch_session(struct geist_session *s) {
     return s != nullptr ? arch_sess(as_full(s)) : nullptr;
 }
 
@@ -418,7 +418,7 @@ void *geist_session_internal_arch_session(struct geist_session *s) {
 static void session_audio_stream_release(struct geist_session_full *sf) {
     if (sf->audio_streaming) {
         const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
-        void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+        struct geist_audio_encoder_state    *enc_st  = sf->model->audio_encoder.arch_meta;
         if (enc_ops != nullptr && enc_st != nullptr && enc_ops->stream_abort != nullptr) {
             enc_ops->stream_abort(enc_st);
         }
@@ -644,7 +644,7 @@ size_t geist_model_decode_batch_max(const struct geist_model *m) {
         return GEIST_E_UNSUPPORTED;
     }
     /* Bounded by decode_batch_max: no allocation on the decode path. */
-    void *arch[64];
+    struct geist_arch_session *arch[64];
     if (n > sizeof arch / sizeof arch[0]) {
         return GEIST_E_UNSUPPORTED;
     }
@@ -806,7 +806,7 @@ spec_fallback_single(struct geist_session *s, geist_token_t out_tokens[static 1]
  * decode_speculative and verify_drafts). */
 [[nodiscard]] static enum geist_status spec_verify(struct geist_session_full           *sf,
                                                    const struct geist_arch_ops_decoder *ops,
-                                                   void                                *st,
+                                                   struct geist_arch_session           *st,
                                                    size_t                               k,
                                                    const geist_token_t                 *drafts,
                                                    geist_token_t                       *out_tokens,
@@ -974,7 +974,7 @@ draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, 
 
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    void                                *st  = sf->arch_session;
+    struct geist_arch_session           *st  = sf->arch_session;
     if (ops == nullptr)
         return GEIST_E_INVALID_STATE;
 
@@ -1054,7 +1054,7 @@ draft_model_rollback(struct geist_session *d, size_t history_n, size_t guesses, 
     *n_out                                   = 0;
     struct geist_session_full           *sf  = as_full(s);
     const struct geist_arch_ops_decoder *ops = sf->model->text_decoder.arch_ops;
-    void                                *st  = sf->arch_session;
+    struct geist_arch_session           *st  = sf->arch_session;
     if (ops == nullptr)
         return GEIST_E_INVALID_STATE;
     const bool can_spec = ops->peek_next_token != nullptr && ops->verify_forward != nullptr &&
@@ -1135,7 +1135,9 @@ const char *geist_session_token_to_str(struct geist_session *s, geist_token_t t)
 inject_soft(struct geist_session_full *sf,
             size_t                     n_soft,
             float                     *soft,
-            enum geist_status (*prefill)(void *session, size_t n, const float *soft_tokens),
+            enum geist_status (*prefill)(struct geist_arch_session *session,
+                                         size_t                     n,
+                                         const float               *soft_tokens),
             const char *op,
             const char *empty) {
     if (n_soft == 0) {
@@ -1160,7 +1162,7 @@ inject_soft(struct geist_session_full *sf,
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
-    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    struct geist_audio_encoder_state    *enc_st  = sf->model->audio_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr) {
         return session_fail(sf,
@@ -1226,7 +1228,7 @@ inject_soft(struct geist_session_full *sf,
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
-    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    struct geist_audio_encoder_state    *enc_st  = sf->model->audio_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr || dec_ops == nullptr ||
         dec_ops->prefill_audio == nullptr) {
@@ -1275,7 +1277,7 @@ inject_soft(struct geist_session_full *sf,
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
-    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    struct geist_audio_encoder_state    *enc_st  = sf->model->audio_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (!sf->audio_streaming) {
         return GEIST_E_INVALID_STATE;
@@ -1305,7 +1307,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
-    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    struct geist_audio_encoder_state    *enc_st  = sf->model->audio_encoder.arch_meta;
     if (!sf->audio_streaming) {
         return GEIST_E_INVALID_STATE;
     }
@@ -1327,7 +1329,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_encoder *enc_ops = sf->model->audio_encoder.arch_ops;
-    void                                *enc_st  = sf->model->audio_encoder.arch_meta;
+    struct geist_audio_encoder_state    *enc_st  = sf->model->audio_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (!sf->audio_streaming) {
         return GEIST_E_INVALID_STATE;
@@ -1388,7 +1390,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_vision  *enc_ops = sf->model->vision_encoder.arch_ops;
-    void                                *enc_st  = sf->model->vision_encoder.arch_meta;
+    struct geist_vision_encoder_state   *enc_st  = sf->model->vision_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr) {
         return session_fail(sf,
@@ -1443,7 +1445,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
     }
     struct geist_session_full           *sf      = as_full(s);
     const struct geist_arch_ops_vision  *enc_ops = sf->model->vision_encoder.arch_ops;
-    void                                *enc_st  = sf->model->vision_encoder.arch_meta;
+    struct geist_vision_encoder_state   *enc_st  = sf->model->vision_encoder.arch_meta;
     const struct geist_arch_ops_decoder *dec_ops = sf->model->text_decoder.arch_ops;
     if (enc_ops == nullptr || enc_st == nullptr) {
         return session_fail(sf,
