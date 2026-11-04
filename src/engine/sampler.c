@@ -55,7 +55,14 @@ float geist_rng_next_unit(struct geist_rng *rng) {
  * logit, each waiting on the one before: 180 us over a 128k vocabulary.
  * The maximum of a block has no such chain, so the compiler vectorizes it;
  * the first block whose maximum beats every earlier block holds the first
- * occurrence, found by a scan of that block alone. */
+ * occurrence, found by a scan of that block alone.
+ *
+ * The block maximum is fmaxf, not `x > m ? x : m`: clang turns the select
+ * into a vector max only when it may assume no NaNs, and the macOS build
+ * keeps NaNs defined (-fno-finite-math-only), so the select stayed a scalar
+ * fcmp/fcsel chain there, ~0.19 ms per greedy token on Llama 3.2 3B (#414).
+ * fmaxf vectorizes on both compilers (fmaxnm / maxps). It skips a NaN,
+ * which the plain scan also never picks. */
 geist_token_t geist_sampler_argmax(size_t n_vocab, const float logits[static n_vocab]) {
     constexpr int BLOCK      = 256;
     float         best       = logits[0];
@@ -64,7 +71,7 @@ geist_token_t geist_sampler_argmax(size_t n_vocab, const float logits[static n_v
         const size_t n = n_vocab - b < BLOCK ? n_vocab - b : BLOCK;
         float        m = logits[b];
         for (size_t j = 1; j < n; j++) {
-            m = logits[b + j] > m ? logits[b + j] : m;
+            m = fmaxf(m, logits[b + j]);
         }
         if (m > best) {
             best       = m;
