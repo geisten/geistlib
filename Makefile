@@ -600,6 +600,12 @@ c23-metrics:
 	@python3 tools/c23_metrics.py write
 	@python3 tools/c23_metrics.py show
 
+# Which C23 features $(CC)/$(CXX) have: <stdbit.h>, counted_by, fixed enums
+# in a C++17 header, [[gnu::cleanup]], typeof, ... (#341). CI runs it on every
+# toolchain against tools/toolchain_probe.expect; docs/TOOLCHAIN_PROBE.md.
+.PHONY: toolchain-probe
+toolchain-probe:
+	@CC="$(CC)" CXX="$(CXX)" sh tools/toolchain_probe.sh
 # benchmark/include_graph.json + docs/INCLUDE_GRAPH.md: direct include edges
 # per layer, from clang's preprocessor output (#341). Needs clang; CI's
 # static-analysis job runs `tools/include_graph.py check`.
@@ -650,6 +656,7 @@ help:
 	"" \
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
+	"         make toolchain-probe                C23 features of CC/CXX (docs/TOOLCHAIN_PROBE.md)" \
 	"         make include-graph                  (benchmark/include_graph.json, docs/INCLUDE_GRAPH.md)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \

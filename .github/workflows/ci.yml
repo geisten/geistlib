@@ -210,6 +210,12 @@ jobs:
       - name: Public headers compile as C and C++
         run: make check-headers TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
+      # Which C23 features this toolchain has, against the committed verdicts
+      # (#341, docs/TOOLCHAIN_PROBE.md). A runner image that gains or loses one
+      # fails here until tools/toolchain_probe.expect and the document say so.
+      - name: Toolchain feature probe
+        run: CC="${{ matrix.cc }}" sh tools/toolchain_probe.sh --id "${{ matrix.name }}" --expect tools/toolchain_probe.expect
+
       # Contract enforcement, link half: an out-of-tree agent runtime links
       # these symbols across a release boundary, so a changed signature or a
       # removed symbol must fail here rather than in the consumer's build.
@@ -545,25 +551,31 @@ jobs:
         include:
           # Debian 13 and Alpine 3.21 are the two images the README claims to
           # have been verified in; they must build with the printed command.
+          # probe: the C23 feature probe of #341 (docs/TOOLCHAIN_PROBE.md),
+          # after the build, with the image's own compilers.
           - image: debian:13
             setup: apt-get update -qq && apt-get install -y -qq build-essential
             build: make lib
+            probe: sh tools/toolchain_probe.sh
           - image: alpine:3.21
             setup: apk add --no-cache build-base
             build: make lib
+            probe: sh tools/toolchain_probe.sh
           # Ubuntu 24.04 ships gcc 13, which predates -std=c23. The README prescribes
           # gcc-14 + CC=gcc-14; this asserts that recipe works.
           - image: ubuntu:24.04
             setup: apt-get update -qq && apt-get install -y -qq gcc-14 make
             build: make CC=gcc-14 lib
+            probe: apt-get install -y -qq g++-14 >/dev/null && CC=gcc-14 CXX=g++-14 sh tools/toolchain_probe.sh
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: ${{ matrix.build }} in a clean ${{ matrix.image }}
+      - name: ${{ matrix.build }} in a clean ${{ matrix.image }}, then the toolchain probe
         run: |
           docker run --rm -v "$PWD:/src" -w /src ${{ matrix.image }} sh -c '
             set -e
             ${{ matrix.setup }} >/dev/null
             ${{ matrix.build }}
+            ${{ matrix.probe }} --id ${{ matrix.image }} --expect tools/toolchain_probe.expect
           '
 
   build-test-musl:
