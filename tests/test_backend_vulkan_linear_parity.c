@@ -58,7 +58,9 @@ static const struct qfmt *qfmt_of(int dtype) {
             return &QF[i];
         }
     }
-    return nullptr;
+    /* Every caller names a dtype from QF; anything else is a broken test. */
+    fprintf(stderr, "qfmt_of: dtype %d is not in QF\n", dtype);
+    exit(99);
 }
 
 static uint32_t rng_state = 0x12345678u;

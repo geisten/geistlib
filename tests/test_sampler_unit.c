@@ -40,14 +40,15 @@ int main(void) {
     }
     /* ... against a plain scan: vocabularies of every size class, the
      * maximum at the start, the end, repeated far apart, all values equal,
-     * all negative. */
+     * all negative, signed-zero ties, masked (-inf) logits, and coarse
+     * values with ties everywhere (#414: the block maximum is fmaxf). */
     {
         static const size_t SIZES[] = {1, 2, 7, 255, 256, 257, 1000, 49152, 128256};
         uint64_t            s       = 0x9E3779B97F4A7C15ull;
         float              *l       = xmalloc(128256 * sizeof *l);
         for (size_t si = 0; si < sizeof SIZES / sizeof SIZES[0]; si++) {
             const size_t n = SIZES[si];
-            for (int variant = 0; variant < 7; variant++) {
+            for (int variant = 0; variant < 11; variant++) {
                 for (size_t i = 0; i < n; i++) {
                     s ^= s << 13;
                     s ^= s >> 7;
@@ -80,6 +81,29 @@ int main(void) {
                         if (i + 1 < n) {
                             l[i + 1] = 40.0f;
                         }
+                    }
+                    break;
+                case 7: /* the maximum is a zero: -0 first, +0 later */
+                    for (size_t i = 0; i < n; i++) {
+                        l[i] = -1.0f - fabsf(l[i]);
+                    }
+                    l[n / 3]     = -0.0f;
+                    l[n - 1]     = 0.0f;
+                    l[n * 2 / 3] = 0.0f;
+                    break;
+                case 8: /* masked: -inf except a few tied survivors */
+                    for (size_t i = 0; i < n; i++) {
+                        l[i] = l[i] > 9.9f ? 3.0f : -INFINITY;
+                    }
+                    break;
+                case 9: /* all masked */
+                    for (size_t i = 0; i < n; i++) {
+                        l[i] = -INFINITY;
+                    }
+                    break;
+                case 10: /* quarter steps: the maximum repeats many times */
+                    for (size_t i = 0; i < n; i++) {
+                        l[i] = floorf(l[i] * 0.4f) * 0.25f;
                     }
                     break;
                 default:
