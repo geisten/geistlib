@@ -41,7 +41,6 @@ constexpr size_t IMAGE_PIPELINE_MAX_DIM = (size_t) (INT_MAX / 3);
 
 constexpr int VISION_PATCH_SIZE  = 16;
 constexpr int VISION_POOL_KERNEL = 3;
-constexpr int VISION_MAX_PATCHES = VISION_PATCH_SIZE * VISION_PATCH_SIZE; /* sanity bound */
 
 /* Plan for one image. Filled by image_pipeline_plan(). Mirrors HF's
  * get_aspect_ratio_preserving_size — target dims are the largest that:

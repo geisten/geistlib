@@ -352,7 +352,7 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
     void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *dv = mg->device, *m = mg;
     void *stw = mg->stage_w;
     safe_free(&stw);
-    void *sw = (void *) mg->sel_w;
+    void *sw = mg->sel_w;
     safe_free(&sw);
     safe_free(&b);
     safe_free(&t);

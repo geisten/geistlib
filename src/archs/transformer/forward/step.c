@@ -736,33 +736,6 @@ enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
     return s;
 }
 
-enum geist_status transformer_advance_audio_token(struct transformer_arch_session *sess,
-                                                  const float                     *h_in_host) {
-    struct transformer_arch_state *st = sess->model;
-    if (st == nullptr || h_in_host == nullptr) {
-        return GEIST_E_INVALID_ARG;
-    }
-    transformer_recurrent_txn_commit(sess);
-    struct geist_backend            *be = st->backend;
-    const struct geist_backend_vtbl *v  = be->desc->vtbl;
-
-    /* Audio soft-tokens enter the residual stream directly (no embed
-     * lookup, no sqrt scale). Copy host bytes into scratch_h_a. */
-    {
-        const size_t bytes = (size_t) st->d_model * sizeof(float);
-        uint8_t     *dst   = (uint8_t *) v->buffer_map(sess->scratch_h_a);
-        if (dst == nullptr) {
-            return GEIST_E_BACKEND; /* the backend said why */
-        }
-        memcpy(dst, h_in_host, bytes);
-        v->buffer_unmap(sess->scratch_h_a);
-    }
-    transformer_hist_put(sess, sess->kv_len, 1, nullptr);
-    /* PLE token-identity is the pad token (0) per HF masked-scatter. */
-    geist_token_t out_unused;
-    return transformer_run_one_step(sess, 0, &out_unused);
-}
-
 void transformer_session_reset(struct transformer_arch_session *sess) {
     if (sess == nullptr) {
         return;

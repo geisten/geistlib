@@ -148,6 +148,13 @@ and commits the file, so the review sees the count move; a change that
 removes some passes as is and may lower the ceiling the same way.
 `python3 tools/c23_metrics.py show` has the per-file counts.
 
+`make check-layers` proves the layer table `tools/layers.json` (shown in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#dependency-rules)): include
+edges and symbol references across layers, internal headers that do not
+compile alone and portability `#if`s. A new violation fails; fix it, or, for
+a deliberate exception, change the table. `tools/layers_baseline.txt` holds
+the old ones and only shrinks: remove a line once its violation is fixed.
+
 ## Pull requests
 
 Development happens on `git.geisten.net/geisten/geistlib`; this GitHub
