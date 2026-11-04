@@ -570,11 +570,17 @@ $(error No clang-format $(CLANG_FORMAT_MAJOR).x found. Install it with 'pip inst
 endif
 endif
 
-# Static analysis, no models and no GPU: the seeded defects must be found, and
-# the library must have no finding beyond scripts/static-baseline.txt (#342).
-CLANG_TIDY ?= clang-tidy
+# make check-static: every static gate, no models and no GPU (#333 Phase 1).
+# A gate is its own target and adds itself here as one more prerequisite:
+#   check-static: check-static-<name>
 .PHONY: check-static
-check-static:
+check-static: check-static-tidy
+
+# clang-tidy: the seeded defects in tests/static/ must be found, and the
+# library must have no finding beyond scripts/static-baseline.txt (#342).
+CLANG_TIDY ?= clang-tidy
+.PHONY: check-static-tidy
+check-static-tidy:
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py --selftest
 	@CLANG_TIDY=$(CLANG_TIDY) python3 scripts/check_static.py
 
