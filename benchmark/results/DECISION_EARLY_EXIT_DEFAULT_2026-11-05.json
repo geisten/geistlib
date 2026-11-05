@@ -1,0 +1,713 @@
+{
+ "tracking_issue": "geistlib#286",
+ "date": "2026-11-05",
+ "plan": "early_exit_default_286 (declared d358ec3a, amendment 127451eb)",
+ "question_ids_sha256": "ac034b06a853a8f9609baa9692111edb6f211ce65a218d594b36f780da3b7da8",
+ "latency_question_ids_sha256": "0afb9f8a4dad53ea3f485f5d660fd75f357859dde820fa4c8addabedf0306717",
+ "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+ "binary_sha256": "35a600d64a5587d9d7617336cbdc7a89901b9f1a6c87677573318cd33a2aaa98",
+ "cases_sha256": "aeb39d5c8c53653bc40a874cf51a89c595cae3468f12cf501fac10c60094fd15",
+ "settings": {
+  "cap": 8192,
+  "batch": 8,
+  "pad": false,
+  "probe_interval": 128,
+  "tau": 0.8,
+  "margin_pp": 2
+ },
+ "primary": {
+  "n": 3500,
+  "gains": 170,
+  "losses": 108,
+  "direct_accuracy": 0.8457142857142858,
+  "baseline_accuracy": 0.828,
+  "difference_pp": 1.7714285714285714,
+  "interval_pp": [
+   0.26983856839318116,
+   3.268654987064669
+  ],
+  "noninferior": true,
+  "verdict": "PASS"
+ },
+ "secondary": {
+  "full_reasoning": {
+   "accuracy": 0.828,
+   "generated_tokens": 4784285,
+   "capped": 277
+  },
+  "early_exit": {
+   "accuracy": 0.8457142857142858,
+   "generated_tokens": 1163236,
+   "token_ratio": 0.24313685326020504,
+   "early_exits": 2186,
+   "exits_at_first_probe": 1320,
+   "still_capped": 15
+  },
+  "probes": {
+   "recorded": 38935,
+   "probe_ms_total": 5720443.386,
+   "after_prompt_and_up_to_exit_or_end": 8251
+  },
+  "capped_questions": {
+   "n": 277,
+   "exit": 262,
+   "exit_correct": 141
+  },
+  "gains": {
+   "n": 170,
+   "on_capped": 141
+  },
+  "losses": {
+   "n": 108,
+   "on_capped": 0,
+   "exit_at_first_probe": 73,
+   "exit_probability_below_0.9": 71
+  },
+  "finished_by_full_reasoning_post_hoc": {
+   "n": 3223,
+   "gains": 29,
+   "losses": 108,
+   "direct_accuracy": 0.8746509463233013,
+   "baseline_accuracy": 0.8991622711759231,
+   "difference_pp": -2.4511324852621783,
+   "interval_pp": [
+    -3.56424660339138,
+    -1.3294474603855275
+   ],
+   "noninferior": false
+  },
+  "exit_accuracy_by_position": {
+   "128": {
+    "n": 1320,
+    "early_exit": 0.8371212121212122,
+    "full_same_questions": 0.8575757575757575
+   },
+   "256": {
+    "n": 290,
+    "early_exit": 0.7206896551724138,
+    "full_same_questions": 0.6655172413793103
+   },
+   "384": {
+    "n": 154,
+    "early_exit": 0.7532467532467533,
+    "full_same_questions": 0.7337662337662337
+   },
+   "512": {
+    "n": 86,
+    "early_exit": 0.627906976744186,
+    "full_same_questions": 0.6744186046511628
+   }
+  },
+  "by_subject": {
+   "abstract_algebra": {
+    "n": 25,
+    "full": 22,
+    "early_exit": 21,
+    "gains": 1,
+    "losses": 2
+   },
+   "anatomy": {
+    "n": 34,
+    "full": 27,
+    "early_exit": 30,
+    "gains": 3,
+    "losses": 0
+   },
+   "astronomy": {
+    "n": 38,
+    "full": 36,
+    "early_exit": 36,
+    "gains": 1,
+    "losses": 1
+   },
+   "business_ethics": {
+    "n": 25,
+    "full": 22,
+    "early_exit": 21,
+    "gains": 1,
+    "losses": 2
+   },
+   "clinical_knowledge": {
+    "n": 64,
+    "full": 57,
+    "early_exit": 57,
+    "gains": 0,
+    "losses": 0
+   },
+   "college_biology": {
+    "n": 36,
+    "full": 34,
+    "early_exit": 34,
+    "gains": 0,
+    "losses": 0
+   },
+   "college_chemistry": {
+    "n": 25,
+    "full": 20,
+    "early_exit": 18,
+    "gains": 0,
+    "losses": 2
+   },
+   "college_computer_science": {
+    "n": 25,
+    "full": 22,
+    "early_exit": 23,
+    "gains": 1,
+    "losses": 0
+   },
+   "college_mathematics": {
+    "n": 25,
+    "full": 24,
+    "early_exit": 23,
+    "gains": 1,
+    "losses": 2
+   },
+   "college_medicine": {
+    "n": 22,
+    "full": 20,
+    "early_exit": 19,
+    "gains": 0,
+    "losses": 1
+   },
+   "college_physics": {
+    "n": 21,
+    "full": 20,
+    "early_exit": 19,
+    "gains": 0,
+    "losses": 1
+   },
+   "computer_security": {
+    "n": 25,
+    "full": 23,
+    "early_exit": 22,
+    "gains": 0,
+    "losses": 1
+   },
+   "conceptual_physics": {
+    "n": 59,
+    "full": 57,
+    "early_exit": 58,
+    "gains": 1,
+    "losses": 0
+   },
+   "econometrics": {
+    "n": 29,
+    "full": 18,
+    "early_exit": 20,
+    "gains": 2,
+    "losses": 0
+   },
+   "electrical_engineering": {
+    "n": 37,
+    "full": 33,
+    "early_exit": 30,
+    "gains": 0,
+    "losses": 3
+   },
+   "elementary_mathematics": {
+    "n": 95,
+    "full": 91,
+    "early_exit": 92,
+    "gains": 1,
+    "losses": 0
+   },
+   "formal_logic": {
+    "n": 32,
+    "full": 28,
+    "early_exit": 30,
+    "gains": 2,
+    "losses": 0
+   },
+   "global_facts": {
+    "n": 25,
+    "full": 16,
+    "early_exit": 16,
+    "gains": 0,
+    "losses": 0
+   },
+   "high_school_biology": {
+    "n": 78,
+    "full": 74,
+    "early_exit": 75,
+    "gains": 1,
+    "losses": 0
+   },
+   "high_school_chemistry": {
+    "n": 51,
+    "full": 51,
+    "early_exit": 49,
+    "gains": 0,
+    "losses": 2
+   },
+   "high_school_computer_science": {
+    "n": 25,
+    "full": 25,
+    "early_exit": 25,
+    "gains": 0,
+    "losses": 0
+   },
+   "high_school_european_history": {
+    "n": 42,
+    "full": 38,
+    "early_exit": 38,
+    "gains": 0,
+    "losses": 0
+   },
+   "high_school_geography": {
+    "n": 50,
+    "full": 44,
+    "early_exit": 45,
+    "gains": 2,
+    "losses": 1
+   },
+   "high_school_government_and_politics": {
+    "n": 49,
+    "full": 46,
+    "early_exit": 46,
+    "gains": 0,
+    "losses": 0
+   },
+   "high_school_macroeconomics": {
+    "n": 98,
+    "full": 89,
+    "early_exit": 89,
+    "gains": 1,
+    "losses": 1
+   },
+   "high_school_mathematics": {
+    "n": 68,
+    "full": 66,
+    "early_exit": 68,
+    "gains": 2,
+    "losses": 0
+   },
+   "high_school_microeconomics": {
+    "n": 60,
+    "full": 58,
+    "early_exit": 56,
+    "gains": 0,
+    "losses": 2
+   },
+   "high_school_physics": {
+    "n": 38,
+    "full": 36,
+    "early_exit": 31,
+    "gains": 0,
+    "losses": 5
+   },
+   "high_school_psychology": {
+    "n": 134,
+    "full": 125,
+    "early_exit": 128,
+    "gains": 4,
+    "losses": 1
+   },
+   "high_school_statistics": {
+    "n": 54,
+    "full": 50,
+    "early_exit": 46,
+    "gains": 2,
+    "losses": 6
+   },
+   "high_school_us_history": {
+    "n": 52,
+    "full": 47,
+    "early_exit": 49,
+    "gains": 3,
+    "losses": 1
+   },
+   "high_school_world_history": {
+    "n": 60,
+    "full": 56,
+    "early_exit": 55,
+    "gains": 0,
+    "losses": 1
+   },
+   "human_aging": {
+    "n": 56,
+    "full": 41,
+    "early_exit": 43,
+    "gains": 3,
+    "losses": 1
+   },
+   "human_sexuality": {
+    "n": 33,
+    "full": 29,
+    "early_exit": 30,
+    "gains": 1,
+    "losses": 0
+   },
+   "international_law": {
+    "n": 31,
+    "full": 28,
+    "early_exit": 29,
+    "gains": 1,
+    "losses": 0
+   },
+   "jurisprudence": {
+    "n": 27,
+    "full": 22,
+    "early_exit": 24,
+    "gains": 2,
+    "losses": 0
+   },
+   "logical_fallacies": {
+    "n": 41,
+    "full": 40,
+    "early_exit": 37,
+    "gains": 1,
+    "losses": 4
+   },
+   "machine_learning": {
+    "n": 28,
+    "full": 26,
+    "early_exit": 25,
+    "gains": 1,
+    "losses": 2
+   },
+   "management": {
+    "n": 26,
+    "full": 25,
+    "early_exit": 25,
+    "gains": 0,
+    "losses": 0
+   },
+   "marketing": {
+    "n": 59,
+    "full": 54,
+    "early_exit": 54,
+    "gains": 1,
+    "losses": 1
+   },
+   "medical_genetics": {
+    "n": 25,
+    "full": 24,
+    "early_exit": 24,
+    "gains": 0,
+    "losses": 0
+   },
+   "miscellaneous": {
+    "n": 197,
+    "full": 179,
+    "early_exit": 181,
+    "gains": 5,
+    "losses": 3
+   },
+   "moral_disputes": {
+    "n": 87,
+    "full": 59,
+    "early_exit": 69,
+    "gains": 11,
+    "losses": 1
+   },
+   "moral_scenarios": {
+    "n": 225,
+    "full": 147,
+    "early_exit": 119,
+    "gains": 8,
+    "losses": 36
+   },
+   "nutrition": {
+    "n": 77,
+    "full": 66,
+    "early_exit": 66,
+    "gains": 0,
+    "losses": 0
+   },
+   "philosophy": {
+    "n": 78,
+    "full": 57,
+    "early_exit": 60,
+    "gains": 3,
+    "losses": 0
+   },
+   "prehistory": {
+    "n": 81,
+    "full": 70,
+    "early_exit": 69,
+    "gains": 1,
+    "losses": 2
+   },
+   "professional_accounting": {
+    "n": 71,
+    "full": 59,
+    "early_exit": 60,
+    "gains": 3,
+    "losses": 2
+   },
+   "professional_law": {
+    "n": 386,
+    "full": 208,
+    "early_exit": 278,
+    "gains": 75,
+    "losses": 5
+   },
+   "professional_medicine": {
+    "n": 68,
+    "full": 58,
+    "early_exit": 64,
+    "gains": 7,
+    "losses": 1
+   },
+   "professional_psychology": {
+    "n": 153,
+    "full": 131,
+    "early_exit": 125,
+    "gains": 5,
+    "losses": 11
+   },
+   "public_relations": {
+    "n": 27,
+    "full": 20,
+    "early_exit": 21,
+    "gains": 1,
+    "losses": 0
+   },
+   "security_studies": {
+    "n": 62,
+    "full": 50,
+    "early_exit": 55,
+    "gains": 6,
+    "losses": 1
+   },
+   "sociology": {
+    "n": 51,
+    "full": 46,
+    "early_exit": 48,
+    "gains": 3,
+    "losses": 1
+   },
+   "us_foreign_policy": {
+    "n": 25,
+    "full": 23,
+    "early_exit": 22,
+    "gains": 0,
+    "losses": 1
+   },
+   "virology": {
+    "n": 42,
+    "full": 24,
+    "early_exit": 24,
+    "gains": 1,
+    "losses": 1
+   },
+   "world_religions": {
+    "n": 43,
+    "full": 37,
+    "early_exit": 39,
+    "gains": 2,
+    "losses": 0
+   }
+  }
+ },
+ "latency_check": {
+  "agreement": {
+   "answers": 300,
+   "answer_stop_and_position": 300,
+   "live_full_vs_main_run_answers_and_tokens": 300
+  },
+  "arms": {
+   "early_exit": {
+    "accuracy": 0.85,
+    "generated_tokens": 96607,
+    "capped": 1,
+    "early_exits": 194,
+    "latency_s": {
+     "p50": 39.491127999999996,
+     "p95": 285.49672925,
+     "mean": 79.02338814
+    },
+    "latency_without_probes_s": {
+     "p50": 39.297804,
+     "p95": 283.93862894999995
+    },
+    "throughput": {
+     "chunks": 5,
+     "cut_at_deadline": 0,
+     "run_wall_s": 3828.9780395030975,
+     "tokens_per_s_all_chunk_walls": 25.23049205383719,
+     "answers_per_hour": 282.0595962833352,
+     "complete_driver_runs": {
+      "runs": 5,
+      "tokens": 96607,
+      "decode_ms": 2443639.296,
+      "wall_ms": 3809955.0670000003,
+      "tokens_per_s_decode": 39.534067142452756
+     }
+    }
+   },
+   "full": {
+    "accuracy": 0.85,
+    "generated_tokens": 445366,
+    "capped": 27,
+    "early_exits": 0,
+    "latency_s": {
+     "p50": 37.940388999999996,
+     "p95": 1177.65480025,
+     "mean": 217.30499053
+    },
+    "latency_without_probes_s": {
+     "p50": 37.68396750000001,
+     "p95": 1168.12316085
+    },
+    "throughput": {
+     "chunks": 7,
+     "cut_at_deadline": 3,
+     "run_wall_s": 11141.771273136139,
+     "tokens_per_s_all_chunk_walls": 39.97263891728054,
+     "answers_per_hour": 96.93252298258733,
+     "complete_driver_runs": {
+      "runs": 4,
+      "tokens": 255047,
+      "decode_ms": 5181585.148,
+      "wall_ms": 6101683.232,
+      "tokens_per_s_decode": 49.2218100668371
+     }
+    }
+   },
+   "main_run_full_reference": {
+    "accuracy": 0.85,
+    "generated_tokens": 445366,
+    "capped": 27,
+    "early_exits": 0,
+    "latency_s": {
+     "p50": 42.113780999999925,
+     "p95": 1238.9160382,
+     "mean": 228.80920480666666
+    },
+    "latency_without_probes_s": {
+     "p50": 41.88034149999993,
+     "p95": 1228.77418
+    }
+   }
+  },
+  "live_paired": {
+   "n": 300,
+   "gains": 14,
+   "losses": 14,
+   "direct_accuracy": 0.85,
+   "baseline_accuracy": 0.85,
+   "difference_pp": 0.0,
+   "interval_pp": [
+    -5.825834551957972,
+    5.825834551957972
+   ],
+   "noninferior": false
+  }
+ },
+ "exploratory": {
+  "note": "chosen after seeing the test data; not usable for any selection",
+  "tau_sweep": [
+   {
+    "tau": 0.6,
+    "accuracy": 0.8051428571428572,
+    "gains": 168,
+    "losses": 248,
+    "interval_pp": [
+     -4.094271513760901,
+     -0.4718855762084542
+    ],
+    "token_ratio": 0.12316281325213695,
+    "early_exits": 2290
+   },
+   {
+    "tau": 0.7,
+    "accuracy": 0.83,
+    "gains": 171,
+    "losses": 164,
+    "interval_pp": [
+     -1.4470872291369106,
+     1.846612799347422
+    ],
+    "token_ratio": 0.16705568334662338,
+    "early_exits": 2247
+   },
+   {
+    "tau": 0.8,
+    "accuracy": 0.8457142857142858,
+    "gains": 170,
+    "losses": 108,
+    "interval_pp": [
+     0.26983856839318116,
+     3.268654987064669
+    ],
+    "token_ratio": 0.24313685326020504,
+    "early_exits": 2186
+   },
+   {
+    "tau": 0.9,
+    "accuracy": 0.8568571428571429,
+    "gains": 151,
+    "losses": 50,
+    "interval_pp": [
+     1.6318135930190416,
+     4.131653497223214
+    ],
+    "token_ratio": 0.36138566159833707,
+    "early_exits": 2078
+   },
+   {
+    "tau": 0.95,
+    "accuracy": 0.8574285714285714,
+    "gains": 128,
+    "losses": 25,
+    "interval_pp": [
+     1.8763570667198162,
+     3.9997665171043266
+    ],
+    "token_ratio": 0.48587615495314346,
+    "early_exits": 1959
+   },
+   {
+    "tau": 0.99,
+    "accuracy": 0.8474285714285714,
+    "gains": 73,
+    "losses": 5,
+    "interval_pp": [
+     1.216736207791031,
+     2.6559929031437264
+    ],
+    "token_ratio": 0.7269299383293428,
+    "early_exits": 1549
+   }
+  ],
+  "cap_truncation": [
+   {
+    "cap": 2048,
+    "full_accuracy": 0.758,
+    "early_exit_accuracy": 0.8311428571428572,
+    "gains": 320,
+    "losses": 64,
+    "interval_pp": [
+     5.676086596478712,
+     8.934839483639356
+    ],
+    "token_ratio": 0.4280047261934247
+   },
+   {
+    "cap": 4096,
+    "full_accuracy": 0.7962857142857143,
+    "early_exit_accuracy": 0.8411428571428572,
+    "gains": 245,
+    "losses": 88,
+    "interval_pp": [
+     2.890783761355868,
+     6.069806638824665
+    ],
+    "token_ratio": 0.32204724527825346
+   },
+   {
+    "cap": 8192,
+    "full_accuracy": 0.828,
+    "early_exit_accuracy": 0.8457142857142858,
+    "gains": 170,
+    "losses": 108,
+    "interval_pp": [
+     0.26983856839318116,
+     3.268654987064669
+    ],
+    "token_ratio": 0.24313685326020504
+   }
+  ]
+ }
+}
