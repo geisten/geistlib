@@ -15,6 +15,9 @@
 
 #include <geist.h>
 
+#include <limits.h>
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -374,6 +377,13 @@ struct geist_arch_ops_encoder {
 /* ====================================================================== */
 /* Vision encoder arch_ops vtable.                                         */
 /* ====================================================================== */
+
+/* Largest image height or width a vision entry point accepts. Not a policy
+ * number: the resizer takes int dimensions and an int row stride of
+ * width * 3, so a larger value is not representable on the way in. The
+ * engine checks it at the public entry; the vision tower defines its own
+ * bound from this one. */
+#define GEIST_IMAGE_MAX_DIM ((size_t) (INT_MAX / 3))
 
 /* Parallel to geist_arch_ops_encoder but with image/video signatures that
  * don't fit the PCM-shaped surface. Encoder runs are session-independent;
