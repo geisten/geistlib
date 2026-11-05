@@ -4159,6 +4159,15 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
  * call to 64 rows (#192). */
 constexpr int METAL_DN_DECODE_ROWS = 8;
 
+/* Whether `pipe` can run `threads` threads per threadgroup. The limit
+ * depends on the compiled kernel's register use; a dispatch over it is
+ * dropped without an error (#266: dn_dec_v_rows sits at exactly 512, the
+ * 4 x 128 threads that head_v 128 needs). */
+static bool
+metal_pipeline_fits(struct metal_state *st, struct metal_pipeline_h *pipe, unsigned long threads) {
+    return metal_msg_send_ulong0(st, pipe, "maxTotalThreadsPerThreadgroup") >= threads;
+}
+
 [[nodiscard]] static enum geist_status
 metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_args *args) {
     if (be == nullptr || be->state == nullptr || args == nullptr || args->qkv == nullptr ||
@@ -4340,8 +4349,11 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_msg_send_dispatch(st, enc, g_ch, t128);
         }
     } else if (args->seq <= METAL_DN_DECODE_ROWS && st->dn_dec_v_pipeline != nullptr &&
-               (args->seq == 1 || st->dn_dec_v_rows_pipeline != nullptr) &&
-               4u * args->head_v <= 1024u && args->head_k <= 128u) {
+               (args->seq == 1 || st->dn_dec_v_rows_pipeline != nullptr) && args->head_k <= 128u &&
+               metal_pipeline_fits(st,
+                                   args->seq == 1 ? st->dn_dec_v_pipeline
+                                                  : st->dn_dec_v_rows_pipeline,
+                                   4u * args->head_v)) {
         /* Decode: q/k prep per k-head (once per row), then the state update
          * spread over v-heads x 4 row groups; a few rows (speculative
          * verify, #192) run their state updates in one dn_dec_v_rows, S
@@ -4423,7 +4435,7 @@ metal_deltanet_mix_states(struct geist_backend                 *be,
     struct metal_state *st = be->state;
     if (n < 1 || n > MAX_STATES || args->seq != n || args->n_k_heads == 0 || args->n_v_heads == 0 ||
         args->n_v_heads % args->n_k_heads != 0 || args->head_k == 0 || args->head_k > 128 ||
-        args->head_v == 0 || 4u * args->head_v > 1024u || args->conv_kernel < 2 ||
+        args->head_v == 0 || args->head_v > 256 || args->conv_kernel < 2 ||
         st->dn_dec_qk_b_pipeline == nullptr || st->dn_dec_v_b_pipeline == nullptr) {
         return GEIST_E_UNSUPPORTED;
     }
@@ -4498,7 +4510,8 @@ metal_deltanet_mix_states(struct geist_backend                 *be,
     if (status != GEIST_OK) {
         return status;
     }
-    if (st->dn_dec_qk_b_pipeline == nullptr || st->dn_dec_v_b_pipeline == nullptr) {
+    if (st->dn_dec_qk_b_pipeline == nullptr || st->dn_dec_v_b_pipeline == nullptr ||
+        !metal_pipeline_fits(st, st->dn_dec_v_b_pipeline, 4u * args->head_v)) {
         return GEIST_E_UNSUPPORTED;
     }
     struct metal_deltanet_params params = {.seq                = (uint32_t) n,
