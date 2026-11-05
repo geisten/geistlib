@@ -511,8 +511,12 @@ struct metal_state {
     struct metal_pipeline_h *moe_mv_q6k_pipeline;
     struct metal_function_h *moe_mv_q80_function;
     struct metal_pipeline_h *moe_mv_q80_pipeline;
+    struct metal_function_h *moe_mv_mx4_function;
+    struct metal_pipeline_h *moe_mv_mx4_pipeline;
     struct metal_function_h *moe_mv_f32_function;
     struct metal_pipeline_h *moe_mv_f32_pipeline;
+    struct metal_function_h *moe_glu_function;
+    struct metal_pipeline_h *moe_glu_pipeline;
     struct metal_function_h *moe_wsum_function;
     struct metal_pipeline_h *moe_wsum_pipeline;
     struct metal_buffer_h   *argmax_result_buffer;

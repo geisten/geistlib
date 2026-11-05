@@ -4571,29 +4571,54 @@ static const struct geist_backend_vtbl metal_vtbl =
 
 /* The shaders' parameter blocks (metal_moe_source). */
 struct metal_moe_route_params {
-    uint32_t n, k, norm, flag, ls, lo, io, wo;
+    uint32_t n, k, norm, flag, ls, lo, io, wo, gate, hb, bo;
 };
 struct metal_moe_ids_params {
     uint32_t estride, per_slot, k, io;
 };
+struct metal_moe_glu_params {
+    uint32_t n, act, hx, hz, hi, xo, zo, yo, xbo, zbo, io;
+    float    alpha, limit;
+};
 struct metal_moe_sum_params {
-    uint32_t d, k, yo, wo, ao, oo;
+    uint32_t d, k, yo, wo, ao, oo, hb, bo, io;
 };
 
-[[nodiscard]] static enum geist_status metal_moe_route(struct geist_backend      *be,
-                                                       size_t                     m,
-                                                       size_t                     n,
-                                                       size_t                     k,
-                                                       bool                       norm,
-                                                       const struct geist_tensor *logits,
-                                                       struct geist_buffer       *ids,
-                                                       size_t                     flag_offset,
-                                                       struct geist_tensor       *w) {
-    if (be == nullptr || be->state == nullptr || logits == nullptr || ids == nullptr ||
-        w == nullptr)
+/* An optional F32 bias of at least `n` floats: its float offset, or false
+ * when it is not one (nullptr is fine: *has false). */
+static bool metal_bias_of(const struct geist_tensor *b, size_t n, bool *has, size_t *off) {
+    *has = false;
+    *off = 0;
+    if (b == nullptr)
+        return true;
+    size_t r = 0, c = 0, o = 0, st = 0, len = 0;
+    if (metal_tensor_is_f32_matrix(b, &r, &c, &o, &st)) {
+        if (st != c || ckd_mul(&len, r, c))
+            return false;
+    } else if (!metal_tensor_is_f32_vector(b, &len, &o)) {
+        return false;
+    }
+    *has = true;
+    *off = o;
+    return len >= n && o <= UINT32_MAX;
+}
+
+[[nodiscard]] static enum geist_status metal_moe_route(struct geist_backend              *be,
+                                                       const struct geist_moe_route_args *a,
+                                                       const struct geist_tensor         *logits,
+                                                       struct geist_buffer               *ids,
+                                                       size_t               flag_offset,
+                                                       struct geist_tensor *w) {
+    if (be == nullptr || be->state == nullptr || a == nullptr || logits == nullptr ||
+        ids == nullptr || w == nullptr)
         return GEIST_E_INVALID_ARG;
-    size_t lr = 0, lc = 0, lo = 0, ls = 0, wn = 0, wo = 0, nk = 0, need = 0;
-    if (!metal_tensor_is_f32_matrix(logits, &lr, &lc, &lo, &ls) ||
+    const size_t m = a->m, n = a->n, k = a->k;
+    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX && a->gating != GEIST_MOE_ROUTE_SOFTMAX_WEIGHT)
+        return GEIST_E_UNSUPPORTED;
+    size_t lr = 0, lc = 0, lo = 0, ls = 0, wn = 0, wo = 0, nk = 0, need = 0, bo = 0;
+    bool   hb = false;
+    if (!metal_bias_of(a->bias, n, &hb, &bo) ||
+        !metal_tensor_is_f32_matrix(logits, &lr, &lc, &lo, &ls) ||
         !metal_tensor_is_f32_vector(w, &wn, &wo) || m == 0 || k == 0 || k > n || lr < m || lc < n ||
         ckd_mul(&nk, m, k) || wn < nk || ids->owner != be->state || flag_offset % 4u != 0u ||
         ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes ||
@@ -4603,14 +4628,18 @@ struct metal_moe_sum_params {
     enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
     if (s != GEIST_OK)
         return s;
-    struct metal_state                             *st   = be->state;
-    const struct metal_moe_route_params             q    = {.n    = (uint32_t) n,
-                                                            .k    = (uint32_t) k,
-                                                            .norm = norm ? 1u : 0u,
-                                                            .flag = (uint32_t) (flag_offset / 4u),
-                                                            .ls   = (uint32_t) ls,
-                                                            .lo   = (uint32_t) lo,
-                                                            .wo   = (uint32_t) wo};
+    struct metal_state                 *st = be->state;
+    const struct metal_moe_route_params q  = {
+            .n    = (uint32_t) n,
+            .k    = (uint32_t) k,
+            .norm = a->norm ? 1u : 0u,
+            .flag = (uint32_t) (flag_offset / 4u),
+            .ls   = (uint32_t) ls,
+            .lo   = (uint32_t) lo,
+            .wo   = (uint32_t) wo,
+            .gate = a->gating == GEIST_MOE_ROUTE_SOFTMAX_WEIGHT ? 1u : 0u,
+            .hb   = hb ? 1u : 0u,
+            .bo   = (uint32_t) bo};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     struct metal_cmdbuf_h                          *cmd  = nullptr;
     struct metal_encoder_h                         *enc  = metal_op_begin(be, "MoE route", &cmd);
@@ -4621,6 +4650,9 @@ struct metal_moe_sum_params {
     metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 1);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, &q, sizeof q, 3);
+    /* No bias: the logits stand in for the unread binding. */
+    const struct geist_tensor *bt = hb ? a->bias : logits;
+    metal_msg_send_set_buffer(st, enc, bt->buffer->buffer, bt->buffer->base_off, 4);
     metal_msg_send_dispatch(st,
                             enc,
                             (struct metal_size) {.width = m, .height = 1, .depth = 1},
@@ -4648,6 +4680,9 @@ static bool metal_moe_ids_pipe(const struct metal_state *st,
     case GEIST_DTYPE_F32:
         *pipe = st->moe_mv_f32_pipeline, *rows_per_group = 2u, *block = 1u;
         return true;
+    case GEIST_DTYPE_MXFP4:
+        *pipe = st->moe_mv_mx4_pipeline, *rows_per_group = 8u, *block = 32u;
+        return true;
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_I8:
@@ -4668,7 +4703,6 @@ static bool metal_moe_ids_pipe(const struct metal_state *st,
     case GEIST_DTYPE_CUSTOM:
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_Q5_0:
-    case GEIST_DTYPE_MXFP4:
     case GEIST_DTYPE_COUNT:
         break;
     }
@@ -4686,6 +4720,11 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         const bool ok = metal_tensor_is_f32_matrix(t, &r, &c, &o, &st) && st == c;
         *off_bytes    = o * sizeof(float);
         return ok && r == rows && c == cols;
+    }
+    if (dtype == GEIST_DTYPE_MXFP4) { /* no metal_mv_weight_of case: a GEMM-only dtype */
+        size_t r = 0, c = 0;
+        return metal_tensor_is_quant_matrix(t, dtype, &r, &c, off_bytes) && r == rows &&
+               c == cols && *off_bytes <= UINT32_MAX;
     }
     struct metal_mv_weight mw;
     if (!metal_mv_weight_of(t, &mw) || mw.dtype != dtype) {
@@ -4770,13 +4809,22 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                               const struct geist_tensor *w,
                                                               const struct geist_tensor *y,
                                                               const struct geist_tensor *add,
+                                                              const struct geist_tensor *bias,
+                                                              const struct geist_buffer *ids,
                                                               struct geist_tensor       *out) {
     if (be == nullptr || be->state == nullptr || w == nullptr || y == nullptr || add == nullptr ||
         out == nullptr)
         return GEIST_E_INVALID_ARG;
     size_t wn = 0, wo = 0, yr = 0, yc = 0, yo = 0, ys = 0, ar = 0, ac = 0, ao = 0, as = 0, orr = 0,
-           oc = 0, oo = 0, os = 0, nk = 0;
-    if (ckd_mul(&nk, m, k) || !metal_tensor_is_f32_vector(w, &wn, &wo) ||
+           oc = 0, oo = 0, os = 0, nk = 0, bo = 0, need = 0;
+    bool   hb = false;
+    /* The bias rows ids[s] name are below the experts there are, which only
+     * the caller knows: here one row at least, d wide. */
+    if (ckd_mul(&nk, m, k) || !metal_bias_of(bias, d, &hb, &bo) ||
+        (hb && (ids == nullptr || ids->owner != be->state || ckd_mul(&need, nk, sizeof(uint32_t)) ||
+                need > ids->bytes)))
+        return GEIST_E_INVALID_ARG;
+    if (!metal_tensor_is_f32_vector(w, &wn, &wo) ||
         !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) ||
         !metal_tensor_is_f32_matrix(add, &ar, &ac, &ao, &as) ||
         !metal_tensor_is_f32_matrix(out, &orr, &oc, &oo, &os) || wn < nk || yr < nk || yc != d ||
@@ -4793,7 +4841,9 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                             .yo = (uint32_t) yo,
                                                             .wo = (uint32_t) wo,
                                                             .ao = (uint32_t) ao,
-                                                            .oo = (uint32_t) oo};
+                                                            .oo = (uint32_t) oo,
+                                                            .hb = hb ? 1u : 0u,
+                                                            .bo = (uint32_t) bo};
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     struct metal_cmdbuf_h                          *cmd  = nullptr;
     struct metal_encoder_h *enc = metal_op_begin(be, "MoE weighted sum", &cmd);
@@ -4805,12 +4855,88 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     metal_msg_send_set_buffer(st, enc, add->buffer->buffer, add->buffer->base_off, 2);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &q, sizeof q, 4);
+    /* No bias: y stands in for the unread bindings. */
+    if (hb) {
+        metal_msg_send_set_buffer(st, enc, bias->buffer->buffer, bias->buffer->base_off, 5);
+        metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 6);
+    } else {
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 5);
+        metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 6);
+    }
     metal_msg_send_dispatch(
             st,
             enc,
             (struct metal_size) {.width = (d + 255u) / 256u, .height = m, .depth = 1},
             (struct metal_size) {.width = 256, .height = 1, .depth = 1});
     return metal_op_end(be, cmd, enc, "MoE weighted sum");
+}
+
+/* fused->glu (#373): the expert FFN's activation with its biases, one
+ * thread per element; rows and bias rows dense. */
+[[nodiscard]] static enum geist_status metal_glu(struct geist_backend        *be,
+                                                 const struct geist_glu_args *a,
+                                                 const struct geist_tensor   *x,
+                                                 const struct geist_tensor   *z,
+                                                 struct geist_tensor         *y) {
+    if (be == nullptr || be->state == nullptr || a == nullptr || x == nullptr || z == nullptr ||
+        y == nullptr)
+        return GEIST_E_INVALID_ARG;
+    if (a->act != GEIST_GLU_SILU && a->act != GEIST_GLU_SWIGLU_OAI)
+        return GEIST_E_UNSUPPORTED;
+    size_t xr = 0, xc = 0, xo = 0, xs = 0, zr = 0, zc = 0, zo = 0, zs = 0, yr = 0, yc = 0, yo = 0,
+           ys = 0, xbo = 0, zbo = 0, need = 0;
+    bool   hx = false, hz = false;
+    if (!metal_tensor_is_f32_matrix(x, &xr, &xc, &xo, &xs) ||
+        !metal_tensor_is_f32_matrix(z, &zr, &zc, &zo, &zs) ||
+        !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) || xr != zr || xr != yr || xc != zc ||
+        xc != yc || xs != xc || zs != zc || ys != yc || xc > UINT32_MAX || xr > UINT32_MAX ||
+        xo > UINT32_MAX || zo > UINT32_MAX || yo > UINT32_MAX ||
+        !metal_bias_of(a->x_bias, xc, &hx, &xbo) || !metal_bias_of(a->z_bias, xc, &hz, &zbo) ||
+        (a->ids != nullptr && (a->ids->owner != be->state || ckd_mul(&need, xr, sizeof(uint32_t)) ||
+                               need > a->ids->bytes)))
+        return GEIST_E_INVALID_ARG;
+    if (xr == 0)
+        return GEIST_OK;
+    enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
+    if (s != GEIST_OK)
+        return s;
+    struct metal_state                             *st   = be->state;
+    const struct metal_moe_glu_params               q    = {.n     = (uint32_t) xc,
+                                                            .act   = a->act == GEIST_GLU_SWIGLU_OAI,
+                                                            .hx    = hx ? 1u : 0u,
+                                                            .hz    = hz ? 1u : 0u,
+                                                            .hi    = a->ids != nullptr ? 1u : 0u,
+                                                            .xo    = (uint32_t) xo,
+                                                            .zo    = (uint32_t) zo,
+                                                            .yo    = (uint32_t) yo,
+                                                            .xbo   = (uint32_t) xbo,
+                                                            .zbo   = (uint32_t) zbo,
+                                                            .alpha = a->alpha,
+                                                            .limit = a->limit};
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h                         *enc  = metal_op_begin(be, "MoE GLU", &cmd);
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    /* Unread bindings (no bias, no ids) take x's buffer. */
+    const struct geist_tensor *xb = hx ? a->x_bias : x, *zb = hz ? a->z_bias : x;
+    metal_msg_send_set_pipeline(st, enc, st->moe_glu_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, z->buffer->buffer, z->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 3);
+    metal_msg_send_set_buffer(st, enc, xb->buffer->buffer, xb->buffer->base_off, 4);
+    metal_msg_send_set_buffer(st, enc, zb->buffer->buffer, zb->buffer->base_off, 5);
+    if (a->ids != nullptr)
+        metal_msg_send_set_buffer(st, enc, a->ids->buffer, a->ids->base_off, 6);
+    else
+        metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 6);
+    metal_msg_send_dispatch(
+            st,
+            enc,
+            (struct metal_size) {.width = (xc + 255u) / 256u, .height = xr, .depth = 1},
+            (struct metal_size) {.width = 256, .height = 1, .depth = 1});
+    return metal_op_end(be, cmd, enc, "MoE GLU");
 }
 
 /* GEIST_FUSED_MOE_DEVICE: the three experts' dtypes have an id-indexed
@@ -4956,6 +5082,7 @@ static const struct geist_backend_fused metal_fused = {
         .supported                    = metal_fused_supported,
         .gelu_tanh_mul                = metal_gelu_tanh_mul,
         .silu_mul                     = metal_silu_mul,
+        .glu                          = metal_glu,
         .linear_t                     = metal_linear_t,
         .linear_t_pair                = metal_linear_t_pair,
         .linear_t_triple              = metal_linear_t_triple,
