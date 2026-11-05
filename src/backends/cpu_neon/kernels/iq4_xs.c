@@ -16,15 +16,12 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
 
 static const int8_t kvalues_iq4nl_k[16] = {
         -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113};
-#endif
 
 /* One call's operands, for the range bodies below. */
 struct iq4_rows_job {
@@ -35,7 +32,6 @@ struct iq4_rows_job {
     float        *y;
 };
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq4xs_decode_w4a8_pre. */
 static void iq4xs_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq4_rows_job   *job              = ctx;
@@ -78,7 +74,6 @@ static void iq4xs_decode_rows(void *ctx, size_t n0, size_t n1) {
         y[n] = acc;
     }
 }
-#endif
 
 void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
@@ -86,7 +81,6 @@ void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_iq4xs,
                                   float        y[static n_out]) {
-#if defined(__ARM_NEON)
     const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
     const size_t                 n_blocks_per_row = n_in / IQ4_XS_BLOCK_ELEMS;
 
@@ -97,18 +91,8 @@ void linear_iq4xs_decode_w4a8_pre(size_t       n_in,
                                .n_blocks_per_row = n_blocks_per_row,
                                .y                = y};
     geist_par_for(n_out, iq4xs_decode_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_iq4xs;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq4xs_decode_w4a8_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq4xs_w4a8_prefill_pre. */
 static void iq4xs_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq4_rows_job   *job              = ctx;
@@ -160,7 +144,6 @@ static void iq4xs_prefill_rows(void *ctx, size_t n0, size_t n1) {
         }
     }
 }
-#endif
 
 /* IQ4_XS int8 mN prefill (see #321). Row-major sweep with a 4-token
  * register tile: each 136-byte block is LUT-decoded once and dotted
@@ -174,7 +157,6 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                    const float  *x_scales,
                                    const void   *w_iq4xs,
                                    float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0)
         return;
     const struct block_iq4_xs_t *w                = (const struct block_iq4_xs_t *) w_iq4xs;
@@ -189,19 +171,8 @@ void linear_iq4xs_w4a8_prefill_pre(size_t        m,
                                .n_blocks_per_row = n_blocks_per_row,
                                .y                = y};
     geist_par_for(n_out, iq4xs_prefill_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) w_iq4xs;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq4xs_w4a8_prefill_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq4nl_decode_w4a8_pre. */
 static void iq4nl_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq4_rows_job   *job              = ctx;
@@ -228,7 +199,6 @@ static void iq4nl_decode_rows(void *ctx, size_t n0, size_t n1) {
         y[n] = acc;
     }
 }
-#endif
 
 void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
@@ -236,7 +206,6 @@ void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_iq4nl,
                                   float        y[static n_out]) {
-#if defined(__ARM_NEON)
     const struct block_iq4_nl_t *w                = (const struct block_iq4_nl_t *) w_iq4nl;
     const size_t                 n_blocks_per_row = n_in / IQ4_NL_BLOCK_ELEMS;
 
@@ -246,13 +215,4 @@ void linear_iq4nl_decode_w4a8_pre(size_t       n_in,
                                .n_blocks_per_row = n_blocks_per_row,
                                .y                = y};
     geist_par_for(n_out, iq4nl_decode_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_iq4nl;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq4nl_decode_w4a8_pre: NEON required\n");
-#endif
 }

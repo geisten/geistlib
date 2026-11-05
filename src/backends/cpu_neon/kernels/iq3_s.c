@@ -12,18 +12,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdio.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 /* Decode one 32-element IQ3_S sub-block (grid lookup + signs) to int8. */
 static inline void iq3s_subblock_to_int8(int8_t         out[32],
                                          const uint8_t *qs_lo,  /* 8 bytes */
                                          const uint8_t *sign_b, /* 4 bytes */
                                          uint8_t        qh) {
-#if defined(__ARM_NEON)
     const uint8x8_t kmask_v = vld1_u8(kmask_iq2xs);
     for (int l = 0; l < 4; l++) {
         const uint32_t idx1 = (uint32_t) qs_lo[2 * l + 0] | ((uint32_t) (qh << (8 - 2 * l)) & 256);
@@ -38,21 +34,6 @@ static inline void iq3s_subblock_to_int8(int8_t         out[32],
         const int8x8_t  signed_v = vbsl_s8(neg_msk, vneg_s8(grid_v), grid_v);
         vst1_s8(out + l * 8, signed_v);
     }
-#else
-    for (int l = 0; l < 4; l++) {
-        const uint32_t idx1  = (uint32_t) qs_lo[2 * l + 0] | ((uint32_t) (qh << (8 - 2 * l)) & 256);
-        const uint32_t idx2  = (uint32_t) qs_lo[2 * l + 1] | ((uint32_t) (qh << (7 - 2 * l)) & 256);
-        const uint8_t *grid1 = (const uint8_t *) (iq3s_grid + idx1);
-        const uint8_t *grid2 = (const uint8_t *) (iq3s_grid + idx2);
-        const uint8_t  sig   = sign_b[l];
-        for (int j = 0; j < 4; j++) {
-            const int8_t v1    = (int8_t) grid1[j];
-            const int8_t v2    = (int8_t) grid2[j];
-            out[l * 8 + j + 0] = (sig & kmask_iq2xs[j + 0]) ? (int8_t) -v1 : v1;
-            out[l * 8 + j + 4] = (sig & kmask_iq2xs[j + 4]) ? (int8_t) -v2 : v2;
-        }
-    }
-#endif
 }
 
 /* One call's operands, for the range bodies below. */
@@ -64,7 +45,6 @@ struct iq3s_rows_job {
     float        *y;
 };
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq3s_decode_w3a8_pre. */
 static void iq3s_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq3s_rows_job *job              = ctx;
@@ -129,7 +109,6 @@ static void iq3s_decode_rows(void *ctx, size_t n0, size_t n1) {
         y[n] = acc;
     }
 }
-#endif
 
 void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                                  size_t       n_out,
@@ -137,7 +116,6 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_iq3s,
                                  float        y[static n_out]) {
-#if defined(__ARM_NEON)
     const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
     const size_t                n_blocks_per_row = n_in / IQ3_S_BLOCK_ELEMS;
 
@@ -148,18 +126,8 @@ void linear_iq3s_decode_w3a8_pre(size_t       n_in,
                                 .n_blocks_per_row = n_blocks_per_row,
                                 .y                = y};
     geist_par_for(n_out, iq3s_decode_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_iq3s;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq3s_decode_w3a8_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq3s_w3a8_prefill_pre. */
 static void iq3s_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq3s_rows_job *job              = ctx;
@@ -234,7 +202,6 @@ static void iq3s_prefill_rows(void *ctx, size_t n0, size_t n1) {
             y[i * n_out + n] = accs[i];
     }
 }
-#endif
 
 void linear_iq3s_w3a8_prefill_pre(size_t        m,
                                   size_t        n_in,
@@ -243,7 +210,6 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
                                   const float  *x_scales,
                                   const void   *w_iq3s,
                                   float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     const struct block_iq3_s_t *w                = (const struct block_iq3_s_t *) w_iq3s;
@@ -258,14 +224,4 @@ void linear_iq3s_w3a8_prefill_pre(size_t        m,
                                 .n_blocks_per_row = n_blocks_per_row,
                                 .y                = y};
     geist_par_for(n_out, iq3s_prefill_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) w_iq3s;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq3s_w3a8_prefill_pre: NEON required\n");
-#endif
 }

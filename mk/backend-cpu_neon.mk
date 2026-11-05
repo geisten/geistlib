@@ -2,9 +2,9 @@
 #
 # Enabled via `make BACKENDS="... cpu_neon"` (the default on ARM targets).
 # Registered at runtime in src/engine/backend_registry.c under
-# GEIST_BACKEND_CPU_NEON. The intrinsic-heavy TUs self-disable behind
-# `#ifdef __ARM_NEON`, so the backend stays harmless (compiles to empty) when
-# this is enabled on a non-ARM target via the cross-build matrix.
+# GEIST_BACKEND_CPU_NEON. arm64 only: the sources use NEON intrinsics
+# unguarded (target-linux.mk, target-pi5.mk and target-mac.mk enable it only
+# there); on x86 use cpu_x86.
 
 BACKEND_SOURCES += \
     src/backends/cpu_neon/attention_int4.c \

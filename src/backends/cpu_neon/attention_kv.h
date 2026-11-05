@@ -3,7 +3,7 @@
  * argument checks shared by attention_int8.c and attention_int4.c.
  *
  * Layer: BACKEND (cpu_neon). Included only by those two files, under
- * __ARM_NEON && __ARM_FEATURE_DOTPROD.
+ * __ARM_FEATURE_DOTPROD.
  *
  * The two caches differ only in how a V row reaches the int8 sums: the
  * INT8 cache is read in place, the INT4 one unpacked into a stack row

@@ -42,7 +42,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
 #include <arm_neon.h>
 
 /* Σ (code_i) * xq_i over one 128-element block, codes still biased by +1. */
@@ -835,4 +835,4 @@ void cpu_neon_w_pq2_0_x8_pair_mN(size_t                     m,
     pq2_0_x8_gemm_permuted(st, m, nin, n1, W1, xp, x, w1, y1);
 }
 
-#endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */
+#endif /* __ARM_FEATURE_DOTPROD */

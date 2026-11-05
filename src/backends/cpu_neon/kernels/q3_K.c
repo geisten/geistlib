@@ -12,13 +12,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdio.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
-#if defined(__ARM_NEON)
 /* Rebuild 32 weights, dot them with xb_g32 and add the scaled dots to acc. */
 static inline int32x4_t q3k_w3a8_acc32(int32x4_t     acc,
                                        uint8x16_t    qs_shifted_lo,
@@ -43,7 +39,6 @@ static inline int32x4_t q3k_w3a8_acc32(int32x4_t     acc,
     acc             = vmlaq_n_s32(acc, dot_h, (int32_t) s_second16);
     return acc;
 }
-#endif
 
 /* One call's operands, for the range bodies below. */
 struct q3k_rows_job {
@@ -54,7 +49,6 @@ struct q3k_rows_job {
     float        *y;
 };
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_q3k_decode_w3a8_pre. */
 static void q3k_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct q3k_rows_job *job              = ctx;
@@ -154,7 +148,6 @@ static void q3k_decode_rows(void *ctx, size_t n0, size_t n1) {
         y[n] = acc;
     }
 }
-#endif
 
 void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                 size_t       n_out,
@@ -162,7 +155,6 @@ void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                 const int8_t x_q8[static n_in],
                                 const void  *w_q3k,
                                 float        y[static n_out]) {
-#if defined(__ARM_NEON)
     const struct block_q3_K_t *w                = (const struct block_q3_K_t *) w_q3k;
     const size_t               n_blocks_per_row = n_in / Q3_K_BLOCK_ELEMS;
 
@@ -173,18 +165,8 @@ void linear_q3k_decode_w3a8_pre(size_t       n_in,
                                .n_blocks_per_row = n_blocks_per_row,
                                .y                = y};
     geist_par_for(n_out, q3k_decode_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_q3k;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q3k_decode_w3a8_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_q3k_w3a8_prefill_pre. */
 static void q3k_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct q3k_rows_job *job              = ctx;
@@ -288,7 +270,6 @@ static void q3k_prefill_rows(void *ctx, size_t n0, size_t n1) {
             y[i * n_out + n] = my_accs[i];
     }
 }
-#endif
 
 void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  size_t        n_in,
@@ -297,7 +278,6 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
                                  const float  *x_scales,
                                  const void   *w_q3k,
                                  float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     const struct block_q3_K_t *w                = (const struct block_q3_K_t *) w_q3k;
@@ -312,14 +292,4 @@ void linear_q3k_w3a8_prefill_pre(size_t        m,
                                .n_blocks_per_row = n_blocks_per_row,
                                .y                = y};
     geist_par_for(n_out, q3k_prefill_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) w_q3k;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q3k_w3a8_prefill_pre: NEON required\n");
-#endif
 }

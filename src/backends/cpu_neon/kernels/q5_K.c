@@ -13,11 +13,8 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 /* One Q5_K W5A8 call, for the row bodies below. */
 struct q5k_rows_job {
@@ -65,7 +62,6 @@ static void q5k_decode_rows(void *ctx, size_t n0, size_t n1) {
                 const float m2f = dmin_blk * (float) mn;
 
                 int32_t acc1 = 0, acc2 = 0;
-#if defined(__ARM_NEON)
                 for (int half = 0; half < 32; half += 16) {
                     uint8x16_t qv   = vld1q_u8(ql + half);
                     uint8x16_t qhv  = vld1q_u8(qh + half);
@@ -80,14 +76,6 @@ static void q5k_decode_rows(void *ctx, size_t n0, size_t n1) {
                     acc1 += dot16_i8(xb + half, q_lo);
                     acc2 += dot16_i8(xb + 32 + half, q_hi);
                 }
-#else
-                for (int l = 0; l < 32; l++) {
-                    int q1 = (ql[l] & 0x0F) + ((qh[l] & u1) ? 16 : 0);
-                    int q2 = (ql[l] >> 4) + ((qh[l] & u2) ? 16 : 0);
-                    acc1 += (int32_t) q1 * (int32_t) xb[l];
-                    acc2 += (int32_t) q2 * (int32_t) xb[32 + l];
-                }
-#endif
                 acc += x_scales[b] * (d1 * (float) acc1 - m1f * (float) sump[0]);
                 acc += x_scales[b] * (d2 * (float) acc2 - m2f * (float) sump[1]);
                 u1 <<= 2;
@@ -118,7 +106,6 @@ void linear_q5k_decode_w5a8_pre(size_t         n_in,
     geist_par_for(n_out, q5k_decode_rows, &job);
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_q5k_w5a8_prefill_pre. */
 static void q5k_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct q5k_rows_job *job              = ctx;
@@ -204,7 +191,6 @@ static void q5k_prefill_rows(void *ctx, size_t n0, size_t n1) {
             y[i * n_out + n] = accs[i];
     }
 }
-#endif
 
 void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  size_t         n_in,
@@ -214,7 +200,6 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
                                  const int32_t *sum32,
                                  const void    *w_q5k,
                                  float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     const struct block_q5_K_t *w                = (const struct block_q5_K_t *) w_q5k;
@@ -232,15 +217,4 @@ void linear_q5k_w5a8_prefill_pre(size_t         m,
                                .n_chunks         = n_chunks,
                                .y                = y};
     geist_par_for(n_out, q5k_prefill_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) w_q5k;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q5k_w5a8_prefill_pre: NEON required\n");
-#endif
 }

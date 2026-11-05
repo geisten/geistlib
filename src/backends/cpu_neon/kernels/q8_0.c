@@ -12,11 +12,8 @@
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
-#include <stdio.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 /* One Q8_0 W8A8 call, for the row bodies below. */
 struct q8_0_rows_job {
@@ -44,15 +41,9 @@ static void q8_0_decode_rows(void *ctx, size_t n0, size_t n1) {
             const int8_t              *xb  = x_q8 + b * Q8_0_BLOCK_ELEMS;
 
             int32_t int_dot = 0;
-#if defined(__ARM_NEON)
             /* 32 int8 elements = two 16-byte chunks. */
             int_dot += dot16_i8(xb, vld1q_s8(blk->qs));
             int_dot += dot16_i8(xb + 16, vld1q_s8(blk->qs + 16));
-#else
-            for (size_t j = 0; j < Q8_0_BLOCK_ELEMS; j++) {
-                int_dot += (int32_t) xb[j] * (int32_t) blk->qs[j];
-            }
-#endif
             acc += d * x_scales[b] * (float) int_dot;
         }
         y[n] = acc;
@@ -75,7 +66,6 @@ void linear_q8_0_decode_w8a8_pre(size_t       n_in,
     geist_par_for(n_out, q8_0_decode_rows, &job);
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_q8_0_w8a8_prefill_pre. */
 static void q8_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct q8_0_rows_job *j          = ctx;
@@ -114,9 +104,7 @@ static void q8_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
             y[i * n_out + n] = accs[i];
     }
 }
-#endif
 
-#if defined(__ARM_NEON)
 /* 4 output rows x 8 tokens, SDOT register-tiled (#7, the Q4_K kernel's
  * structure from #16): the 4 rows of a 32-weight block are transposed into
  * 8 k-groups of [row0..3][4 bytes], so one vdotq_laneq_s32 adds a token's
@@ -232,7 +220,6 @@ static bool q8_0_sdot_on(void) {
     }
     return v != 0;
 }
-#endif
 
 void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   size_t        n_in,
@@ -241,7 +228,6 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   const float  *x_scales,
                                   const void   *w_q8,
                                   float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     struct q8_0_rows_job job = {.w          = (const struct block_q8_0_t *) w_q8,
@@ -257,14 +243,4 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
     } else {
         geist_par_for(n_out, q8_0_prefill_rows, &job);
     }
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) w_q8;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q8_0_w8a8_prefill_pre: NEON required\n");
-#endif
 }

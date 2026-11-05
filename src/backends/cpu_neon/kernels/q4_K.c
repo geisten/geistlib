@@ -19,13 +19,10 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 #include "decode_rows.h"
 
@@ -214,7 +211,6 @@ static inline void q4k_subpair_dots(const uint8_t *q,
                                     float         *s1,
                                     float         *a2,
                                     float         *s2) {
-#if defined(__ARM_NEON)
     float32x4_t a1v = vdupq_n_f32(0.0f), s1v = vdupq_n_f32(0.0f);
     float32x4_t a2v = vdupq_n_f32(0.0f), s2v = vdupq_n_f32(0.0f);
     for (int half = 0; half < 32; half += 16) {
@@ -260,19 +256,6 @@ static inline void q4k_subpair_dots(const uint8_t *q,
     *s1 = vaddvq_f32(s1v);
     *a2 = vaddvq_f32(a2v);
     *s2 = vaddvq_f32(s2v);
-#else
-    float aa1 = 0.0f, ss1 = 0.0f, aa2 = 0.0f, ss2 = 0.0f;
-    for (int l = 0; l < 32; l++) {
-        aa1 += (float) (q[l] & 0xF) * x1[l];
-        aa2 += (float) (q[l] >> 4) * x2[l];
-        ss1 += x1[l];
-        ss2 += x2[l];
-    }
-    *a1 = aa1;
-    *s1 = ss1;
-    *a2 = aa2;
-    *s2 = ss2;
-#endif
 }
 
 void quantize_x_q8_groups(size_t      n,
@@ -290,16 +273,9 @@ void quantize_x_q8_groups(size_t      n,
     }
     const size_t n_chunks = n / 32;
     for (size_t s = 0; s < n_chunks; s++) {
-#if defined(__ARM_NEON)
         int8x16_t lo = vld1q_s8(x_q8 + s * 32 + 0);
         int8x16_t hi = vld1q_s8(x_q8 + s * 32 + 16);
         sum32[s]     = (int32_t) vaddlvq_s8(lo) + (int32_t) vaddlvq_s8(hi);
-#else
-        int32_t sum = 0;
-        for (int j = 0; j < 32; j++)
-            sum += x_q8[s * 32 + j];
-        sum32[s] = sum;
-#endif
     }
 }
 
@@ -332,7 +308,6 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
             mins_corr += (int32_t) mins[is] * sump_blk[is];
         }
 
-#if defined(__ARM_NEON)
         int32x4_t sumi_acc = vdupq_n_s32(0);
         for (int is = 0; is < 8; is += 2, q += 32, xb += 64) {
             const int32_t s_lo = (int32_t) scales[is + 0];
@@ -348,17 +323,6 @@ static inline void q4k_decode_one_row(size_t n, const struct q4k_decode_ctx *c) 
             }
         }
         const int32_t sumi = vaddvq_s32(sumi_acc);
-#else
-        int32_t sumi = 0;
-        for (int is = 0; is < 8; is += 2, q += 32, xb += 64) {
-            int32_t acc1 = 0, acc2 = 0;
-            for (int l = 0; l < 32; l++) {
-                acc1 += (int32_t) (q[l] & 0xF) * (int32_t) xb[l];
-                acc2 += (int32_t) (q[l] >> 4) * (int32_t) xb[32 + l];
-            }
-            sumi += (int32_t) scales[is + 0] * acc1 + (int32_t) scales[is + 1] * acc2;
-        }
-#endif
         acc += c->x_scales[b] * (d_blk * (float) sumi - dmin_blk * (float) mins_corr);
     }
     c->y[n] = acc;
@@ -526,7 +490,6 @@ struct q4k_prefill_job {
     float         *y, *y1;
 };
 
-#if defined(__ARM_NEON)
 /* Vectorized 6-bit Q4_K scale/min unpack into scales[8]/mins[8]; bit-identical
  * to get_scale_min_k4 ×8 (verified over 2M random inputs). */
 static inline void q4k_unpack_scales_mins(const uint8_t *s, uint8_t scales[8], uint8_t mins[8]) {
@@ -546,9 +509,7 @@ static inline void q4k_unpack_scales_mins(const uint8_t *s, uint8_t scales[8], u
     vst1_u8(scales, vbsl_u8(sel, dhi, dlo));
     vst1_u8(mins, vbsl_u8(sel, mhi, mlo));
 }
-#endif
 
-#if defined(__ARM_NEON)
 constexpr int MT = 2;
 
 /* Loop-reordered blocked GEMM: tile output rows into NC-row panels; per
@@ -705,7 +666,6 @@ static void q4k_prefill_panels(void *ctx, size_t p0, size_t p1) {
                 y[i * n_out + (nc0 + r)] = ytile[i * (size_t) NC + r];
     }
 }
-#endif
 
 void linear_q4k_w4a8_prefill_pre(size_t         m,
                                  size_t         n_in,
@@ -715,7 +675,6 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                                  const int32_t *sum32,
                                  const void    *w_q4k,
                                  float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     const size_t n_blocks_per_row = n_in / Q4_K_BLOCK_ELEMS;
@@ -762,20 +721,8 @@ void linear_q4k_w4a8_prefill_pre(size_t         m,
                                   .act      = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_panels, 1, q4k_prefill_panels, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) w_q4k;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q4k_w4a8_prefill_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* [n0, n1) of linear_q4k_w4a8_prefill_predecoded's loop. */
 static void q4k_prefill_predecoded_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4k_prefill_job     *job              = ctx;
@@ -839,8 +786,6 @@ static void q4k_prefill_predecoded_rows(void *ctx, size_t n0, size_t n1) {
     }
 }
 
-#endif
-
 void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                         size_t         n_in,
                                         size_t         n_out,
@@ -849,7 +794,6 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                         const int32_t *sum32,
                                         const void    *packed,
                                         float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q4k_predecode_valid(packed, n_in, n_out))
@@ -864,20 +808,8 @@ void linear_q4k_w4a8_prefill_predecoded(size_t         m,
                                   .w        = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q4k_w4a8_prefill_predecoded: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* [n0, n1) of linear_q4k_w4a8_prefill_predecoded_mtile4's loop. */
 static void q4k_prefill_predecoded_mtile4_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4k_prefill_job     *job              = ctx;
@@ -985,8 +917,6 @@ static void q4k_prefill_predecoded_mtile4_rows(void *ctx, size_t n0, size_t n1) 
     }
 }
 
-#endif
-
 void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                                size_t         n_in,
                                                size_t         n_out,
@@ -995,7 +925,6 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                                const int32_t *sum32,
                                                const void    *packed,
                                                float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q4k_predecode_valid(packed, n_in, n_out))
@@ -1014,20 +943,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4(size_t         m,
                                   .w        = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile4_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q4k_w4a8_prefill_predecoded_mtile4: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* [n0, n1) of linear_q4k_w4a8_prefill_predecoded_mtile8's loop. */
 static void q4k_prefill_predecoded_mtile8_rows(void *ctx, size_t n0, size_t n1) {
     const struct q4k_prefill_job     *job              = ctx;
@@ -1202,8 +1119,6 @@ static void q4k_prefill_predecoded_mtile8_rows(void *ctx, size_t n0, size_t n1) 
     }
 }
 
-#endif
-
 /* mtile8 = mtile4 with the inner M-tile widened to 8 rows. Same buffer
  * contracts (x_q8/x_scales/sum32/packed/y), no new workspace. Falls back
  * to mtile4 when m < 8. */
@@ -1215,7 +1130,6 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                                const int32_t *sum32,
                                                const void    *packed,
                                                float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q4k_predecode_valid(packed, n_in, n_out))
@@ -1234,20 +1148,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8(size_t         m,
                                   .w        = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_out, 4, q4k_prefill_predecoded_mtile8_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q4k_w4a8_prefill_predecoded_mtile8: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* [nt0, nt1) of linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed's loop. */
 static void q4k_prefill_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t nt0, size_t nt1) {
     const struct q4k_prefill_job     *job              = ctx;
@@ -1390,8 +1292,6 @@ static void q4k_prefill_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t 
     }
 }
 
-#endif
-
 void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                              size_t         n_in,
                                                              size_t         n_out,
@@ -1400,7 +1300,6 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                                              const int32_t *sum32,
                                                              const void    *packed,
                                                              float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q4k_predecode_ntile4_valid(packed, n_in, n_out))
@@ -1416,20 +1315,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed(size_t         m,
                                   .w        = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_tiles, 4, q4k_prefill_predecoded_mtile4_ntile4_packed_tiles, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q4k_w4a8_prefill_predecoded_mtile4_ntile4_packed: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* [nt0, nt1) of linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed's loop. */
 static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t nt0, size_t nt1) {
     const struct q4k_prefill_job     *job              = ctx;
@@ -1701,8 +1588,6 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
     }
 }
 
-#endif
-
 /* One block of a 4-row tile as q4k_sdot_tile4x8 consumes it: the four
  * rows' 256 weights transposed into 64 k-groups of [row0..3][4 bytes], and
  * the rows' subblock scales, mins, d and dmin as vectors. */
@@ -1890,7 +1775,6 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                                              const int32_t *sum32,
                                                              const void    *packed,
                                                              float         *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q4k_predecode_ntile4_valid(packed, n_in, n_out))
@@ -1913,20 +1797,8 @@ void linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed(size_t         m,
                                   .w        = packed,
                                   .y        = y};
     geist_par_for_dynamic(n_tiles, 4, q4k_prefill_sdot_tiles, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q4k_w4a8_prefill_predecoded_mtile8_ntile4_packed: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* [tt0, tt1) of linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed's loop. */
 static void
 q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t tt0, size_t tt1) {
@@ -2077,8 +1949,6 @@ q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t tt0, si
     }
 }
 
-#endif
-
 void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t         m,
                                                                   size_t         n_in,
                                                                   size_t         n_out,
@@ -2089,7 +1959,6 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                                                                   const void    *packed1,
                                                                   float         *y0,
                                                                   float         *y1) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q4k_predecode_ntile4_valid(packed0, n_in, n_out) ||
@@ -2111,20 +1980,6 @@ void linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed(size_t        
                                   .y1       = y1};
     geist_par_for_dynamic(
             total_tiles, 4, q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) sum32;
-    (void) m;
-    (void) packed0;
-    (void) packed1;
-    (void) n_in;
-    (void) n_out;
-    (void) y0;
-    (void) y1;
-    fprintf(stderr,
-            "linear_q4k_w4a8_prefill_pair_predecoded_mtile4_ntile4_packed: NEON required\n");
-#endif
 }
 
 void linear_q4k_decode_fp32(size_t      n_in,
