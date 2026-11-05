@@ -124,6 +124,9 @@ struct gguf_tokenizer {
      * (gguf_tokenizer_seq_split): "deepseek-llm", "deepseek-v3" (#242).
      * GGUF_PRE_NONE otherwise. */
     enum gguf_pre_seq pre_seq;
+    /* SPM mode: a malformed UTF-8 byte is encoded as U+FFFD, as llama.cpp
+     * does for its BPE vocabulary types ("gemma4"; #427). */
+    bool    spm_fffd;
     int32_t spm_byte_id[256]; /* SPM byte fallback: byte → "<0xXX>" vocab id, -1 if absent */
 
     /* Loaded from a tokenizer.bin (gguf_tokenizer_load_bin), SPM mode without
@@ -231,6 +234,16 @@ gguf_tokenizer_gpt4o_chunk_end(size_t tlen, size_t i, const char text[static tle
                                                    size_t     i,
                                                    bool       split_digits,
                                                    const char text[static tlen]);
+
+/* The codepoint at text[i], i < n, as llama.cpp's unicode_cpts_from_utf8
+ * reads it (unicode.cpp at 8642541b2), and in *adv the bytes it takes: a
+ * sequence that is malformed, truncated, overlong or past U+10FFFF is
+ * U+FFFD and takes one byte; a surrogate's three bytes pass. Every byte-level
+ * BPE pretokenizer classifies these codepoints, and the encoder writes U+FFFD
+ * for such a byte, as llama.cpp rebuilds its words from them (#427).
+ * Exposed for tests. */
+[[nodiscard]] uint32_t
+gguf_tokenizer_utf8_cp(size_t n, size_t i, const char text[static n], size_t *adv);
 
 /* Split n codepoints as llama.cpp's regex sequence for `kind` does
  * (GGUF_PRE_DEEPSEEK_LLM or _V3): the piece lengths, in codepoints and in
