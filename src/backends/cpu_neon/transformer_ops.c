@@ -27,9 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 [[nodiscard]] enum geist_status cpu_neon_rope_apply(struct geist_backend      *be,
                                                     struct geist_tensor       *x,
@@ -76,7 +74,6 @@
 
 /* ---- attention (sliding-window MQA causal) ---- */
 
-#if defined(__ARM_NEON)
 static inline float dot_f32_neon(const float *a, const float *b, size_t n) {
     size_t      i    = 0;
     float32x4_t acc0 = vdupq_n_f32(0.0f);
@@ -395,9 +392,7 @@ static bool attention_mqa_causal_kv_neon(const float *q,
     attention_par(total, attn_mqa_items, &job);
     return true;
 }
-#endif
 
-#if defined(__ARM_NEON)
 /* ---- Query heads that share a KV head, worked together (#16) ----------
  * The rows above read every K and V row once per query head. A grouped-
  * query model's heads of one KV head and one position share both the rows
@@ -857,9 +852,7 @@ static bool attention_heads_grouped_neon(const float               *q,
     geist_par_for_dynamic(items, 1, attn_group_items, &job);
     return true;
 }
-#endif
 
-#if defined(__ARM_NEON)
 /* ---- The same row kernel over an F16 KV cache (#48): K and V rows are
  * IEEE half, widened eight at a time by vcvt as they are loaded; the
  * arithmetic is attn_row_neon's. */
@@ -965,7 +958,6 @@ static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
                           j.out + (t * j.n_q_heads + h) * j.head_dim);
     }
 }
-#endif
 
 /* Attention over an F16 KV cache (#48): the NEON rows from 16 (query,
  * head) pairs, the shared reference below. */
@@ -973,7 +965,6 @@ static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
                                                               const struct geist_host_attn *a,
                                                               size_t q_offset,
                                                               size_t sliding_window) {
-#if defined(__ARM_NEON)
     /* 16+ (query, head) pairs: the NEON rows, as for the FP32 cache. */
     if (a->n_q * a->n_q_heads >= 16) {
         struct attn_job_f16 job = {.q              = a->q,
@@ -989,7 +980,6 @@ static void attn_f16_items(void *ctx, size_t i0, size_t i1) {
         attention_par(a->n_q * a->n_q_heads, attn_f16_items, &job);
         return GEIST_OK;
     }
-#endif
     if (!attention_mqa_causal_kv_f16(a->n_q,
                                      a->n_kv,
                                      q_offset,
@@ -1243,7 +1233,6 @@ static enum geist_status qkv_prep_run(struct geist_backend      *be,
     float       *op  = a.out;
     const size_t n_q = a.n_q, n_q_heads = a.n_q_heads, head_dim = a.head_dim;
     const size_t n_kv = a.n_kv, n_kv_heads = a.n_kv_heads;
-#if defined(__ARM_NEON)
     /* hd256: the shape attention_mqa1_causal_kv_neon's rows use. */
     if (attention_heads_grouped_neon(qp,
                                      kp,
@@ -1280,7 +1269,6 @@ static enum geist_status qkv_prep_run(struct geist_backend      *be,
                                      op)) {
         return GEIST_OK;
     }
-#endif
     attention_mqa_causal_kv(
             n_q, n_kv, q_offset, n_q_heads, n_kv_heads, head_dim, sliding_window, qp, kp, vp, op);
     return GEIST_OK;

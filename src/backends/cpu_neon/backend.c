@@ -204,7 +204,7 @@ static bool cpu_neon_fused_supported(struct geist_backend *be, const struct geis
     case GEIST_FUSED_ATTN_QKV_PREP:
     case GEIST_FUSED_ATTN_ROPE_APPEND:
         return q->head_dim > 0 && q->head_dim % 2 == 0 && q->n_q_heads > 0; /* any m */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
     case GEIST_FUSED_ATTN_KV_INT8:
         return cpu_neon_attention_kv_int8_supported(q);
     case GEIST_FUSED_ATTN_KV_INT4:
@@ -251,7 +251,7 @@ static const struct geist_backend_fused cpu_neon_fused = {
         .attn_qkv_prep        = cpu_neon_attn_qkv_prep,
         .attn_rope_append     = cpu_neon_attn_rope_append,
         .kv_append_f16        = geist_host_kv_append_f16,
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
         .attention_kv_int8 = cpu_neon_attention_kv_int8,
         .attention_kv_int4 = cpu_neon_attention_kv_int4,
 #endif

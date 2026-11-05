@@ -18,11 +18,8 @@
 #include <stddef.h>
 #include <math.h>
 #include <stdint.h>
-#include <stdio.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 struct mxfp4_rows_job {
     const struct block_mxfp4_t *w;
@@ -32,7 +29,6 @@ struct mxfp4_rows_job {
     float                      *y;
 };
 
-#if defined(__ARM_NEON)
 /* The 32 weights of block blk as int8: lo = elements 0..15, hi = 16..31. */
 [[gnu::always_inline]] static inline void
 mxfp4_block_s8(const struct block_mxfp4_t *blk, int8x16_t kv, int8x16_t *lo, int8x16_t *hi) {
@@ -213,7 +209,6 @@ static void mxfp4_prefill_rows(void *ctx, size_t n0, size_t n1) {
                     mxfp4_row_dot(nb, row, job->x_q8 + t0 * n_in, job->x_scales + t0 * nb);
     }
 }
-#endif
 
 void linear_mxfp4_decode_w4a8_pre(size_t       n_in,
                                   size_t       n_out,
@@ -221,7 +216,6 @@ void linear_mxfp4_decode_w4a8_pre(size_t       n_in,
                                   const int8_t x_q8[static n_in],
                                   const void  *w_mxfp4,
                                   float        y[static n_out]) {
-#if defined(__ARM_NEON)
     struct mxfp4_rows_job job = {.w        = (const struct block_mxfp4_t *) w_mxfp4,
                                  .x_q8     = x_q8,
                                  .x_scales = x_scales,
@@ -231,13 +225,6 @@ void linear_mxfp4_decode_w4a8_pre(size_t       n_in,
                                  .nb       = n_in / MXFP4_BLOCK_ELEMS,
                                  .y        = y};
     geist_par_for(n_out, mxfp4_decode_rows, &job);
-#else
-    (void) x_scales;
-    (void) x_q8;
-    (void) w_mxfp4;
-    (void) y;
-    fprintf(stderr, "linear_mxfp4_decode_w4a8_pre: NEON required\n");
-#endif
 }
 
 void linear_mxfp4_w4a8_prefill_pre(size_t        m,
@@ -247,7 +234,6 @@ void linear_mxfp4_w4a8_prefill_pre(size_t        m,
                                    const float  *x_scales,
                                    const void   *w_mxfp4,
                                    float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0)
         return;
     struct mxfp4_rows_job job = {.w        = (const struct block_mxfp4_t *) w_mxfp4,
@@ -259,14 +245,4 @@ void linear_mxfp4_w4a8_prefill_pre(size_t        m,
                                  .nb       = n_in / MXFP4_BLOCK_ELEMS,
                                  .y        = y};
     geist_par_for(n_out, mxfp4_prefill_rows, &job);
-#else
-    (void) m;
-    (void) n_in;
-    (void) n_out;
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_mxfp4;
-    (void) y;
-    fprintf(stderr, "linear_mxfp4_w4a8_prefill_pre: NEON required\n");
-#endif
 }

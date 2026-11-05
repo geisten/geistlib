@@ -16,7 +16,7 @@
 
 #include "internal.h"
 
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
 constexpr bool NKV_INT4 = false;
 #include "attention_kv.h" /* the loop and the checks, shared with attention_int4.c */
 
@@ -37,4 +37,4 @@ enum geist_status cpu_neon_attention_kv_int8(struct geist_backend               
     return nkv_attention(be, args);
 }
 
-#endif /* __ARM_NEON && __ARM_FEATURE_DOTPROD */
+#endif /* __ARM_FEATURE_DOTPROD */

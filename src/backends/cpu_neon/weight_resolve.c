@@ -43,9 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 /* GEIST_PROFILE_QUANT=1: split the m>1 (prefill) wall time into W4A8/W6A8
  * activation quantization and matmul, printed at exit. The accumulators are
@@ -213,7 +211,7 @@ static void cpu_neon_w_q6k_m1(const float               *x,
     }
 }
 
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
 /* q, k and v of one decode step in one parallel region (#16): Q4_K and
  * Q6_K weights in the source layout, any mix. The activation is quantized
  * once, as quantize_x_q8_groups does for each kernel alone, and every row
@@ -483,9 +481,8 @@ static void cpu_neon_w_mxfp4_mN(size_t                     m,
  * weight lives and of how the rows are split. M>1 stays SGEMM through
  * geist_gemm (row-major [n_out, n_in], y = x @ W^T). */
 static float f32_row_dot(size_t n, const float *w, const float *x) {
-    size_t i = 0;
-    float  s = 0.0f;
-#if defined(__ARM_NEON)
+    size_t      i  = 0;
+    float       s  = 0.0f;
     float32x4_t a0 = vdupq_n_f32(0.0f), a1 = a0, a2 = a0, a3 = a0;
     for (; i + 16 <= n; i += 16) {
         a0 = vfmaq_f32(a0, vld1q_f32(w + i), vld1q_f32(x + i));
@@ -494,7 +491,6 @@ static float f32_row_dot(size_t n, const float *w, const float *x) {
         a3 = vfmaq_f32(a3, vld1q_f32(w + i + 12), vld1q_f32(x + i + 12));
     }
     s = vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
-#endif
     for (; i < n; i++) {
         s += w[i] * x[i];
     }
@@ -979,7 +975,7 @@ dequant_tile(const struct geist_weight *w, size_t row_start, size_t tile_rows, f
         for (size_t r = 0; r < tile_rows; r++) {
             float *dst = tile_fp32 + r * n_in;
             size_t i   = 0;
-#if defined(__ARM_NEON) && defined(__ARM_FP16_FORMAT_IEEE)
+#if defined(__ARM_FP16_FORMAT_IEEE)
             for (; i + 4 <= n_in; i += 4) {
                 float16x4_t h = vld1_f16((const __fp16 *) (src + i));
                 vst1q_f32(dst + i, vcvt_f32_f16(h));
@@ -1159,7 +1155,6 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
  * in-register (vcvt_f32_f16) and accumulated against the fp32 activation,
  * instead of the trampoline's full f32 materialization (the BitNet-2B-4T
  * tied f16 lm_head dominates decode). */
-#if defined(__ARM_NEON)
 /* One cpu_neon_w_f16_m1 call, for f16_m1_rows. */
 struct f16_m1_job {
     const float16_t *W;
@@ -1201,7 +1196,6 @@ void cpu_neon_w_f16_m1(const float               *x,
             .W = (const float16_t *) w->raw, .x = x, .n_in = (size_t) w->n_in, .y = y};
     geist_par_for((size_t) w->n_out, f16_m1_rows, &job);
 }
-#endif
 
 /* M>1: tile through output rows, dequant each tile + sgemm against
  * the full activation block. */
@@ -1271,21 +1265,13 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         /* F32 native both paths. */
         {GEIST_DTYPE_F32, CPU_NEON_ISA_NEON, cpu_neon_w_f32_m1, geist_linear_f32_mN, "f32"},
 
-/* F16: fused in-register-convert GEMV for decode (M=1); prefill and BF16
- * on the dequant+SGEMM trampoline. */
-#if defined(__ARM_NEON)
+        /* F16: fused in-register-convert GEMV for decode (M=1); prefill and BF16
+         * on the dequant+SGEMM trampoline. */
         {GEIST_DTYPE_F16,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_f16_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "f16/fused-m1"},
-#else
-        {GEIST_DTYPE_F16,
-         CPU_NEON_ISA_NEON,
-         cpu_neon_w_dequant_trampoline_m1,
-         cpu_neon_w_dequant_trampoline_mN,
-         "f16/trampoline"},
-#endif
         {GEIST_DTYPE_BF16,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_dequant_trampoline_m1,
@@ -1304,7 +1290,7 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
 /* TQ2_0: ternary BitNet b1.58. Preferred (q8a, requires dotprod)
  * first, fp32 fallback second. The compile-time #if keeps the
  * dotprod-using symbols out of pre-ARMv8.2 builds entirely. */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
         {GEIST_DTYPE_TQ2_0,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
          cpu_neon_w_tq2_0_q8a_m1,
@@ -1321,7 +1307,7 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
  * W2A8 GEMV, prefill on the dequant+SGEMM trampoline (the x8 repack
  * replaces both, see install_pq2_0_x8_gemv_if_eligible). Hosts without
  * dotprod take the trampoline for both. */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
         {GEIST_DTYPE_PQ2_0,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
          cpu_neon_w_pq2_0_q8a_m1,
@@ -1336,7 +1322,7 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
 
 /* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only:
  * no fp32 fallback row (every geist ARM target enables +dotprod). */
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
         {GEIST_DTYPE_I2_S,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
          cpu_neon_w_i2_s_q8a_m1,
@@ -1479,7 +1465,6 @@ install_q6k_ntile_if_eligible(struct geist_weight *w, const struct cpu_neon_kern
 static enum geist_status
 install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
                                 const struct cpu_neon_kernel_policy *policy) {
-#if defined(__ARM_NEON)
     /* Interleaved-8-row Q6_K GEMV. Costs a heap copy of the tensor, so
      * the n_out gate limits it to lm_head-class tensors; the mmap'd
      * source pages go cold after warmup. Default on with Accelerate
@@ -1505,17 +1490,12 @@ install_q6k_x8_gemv_if_eligible(struct geist_weight                 *w,
         return GEIST_OK;
     }
     geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_Q6_K_X8_GEMV, 64, 0);
-#else
-    (void) w;
-    (void) policy;
-#endif
     return GEIST_OK;
 }
 
 static enum geist_status
 install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
                                  const struct cpu_neon_kernel_policy *policy) {
-#if defined(__ARM_NEON)
     /* Interleaved-8-row Q4_0 GEMV. Unlike the Q6_K variant this hits
      * every projection tensor, so the heap copies sum to ~1x the model's
      * Q4_0 bytes; GEIST_W_RAW_COLD lets the loader drop the mmap'd
@@ -1540,10 +1520,6 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
         return GEIST_OK;
     }
     geist_weight_attach_aux(w, buf, bytes, GEIST_W_LAYOUT_Q4_0_X8_GEMV, 64, GEIST_W_RAW_COLD);
-#else
-    (void) w;
-    (void) policy;
-#endif
     return GEIST_OK;
 }
 
@@ -1551,7 +1527,7 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
  * Any refusal (policy off, shape, OOM) keeps the table's row kernel. */
 static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight                 *w,
                                               const struct cpu_neon_kernel_policy *policy) {
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
     if (!policy->pq2_0_x8_gemv || w->linear_m1 != cpu_neon_w_pq2_0_q8a_m1 || w->n_in <= 0 ||
         w->n_out <= 0) {
         return;
@@ -1765,13 +1741,13 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
             w->linear_pair_m1 = cpu_neon_w_q4k_pair_m1;
             w->linear_pair_mN = cpu_neon_w_q4k_pair_mN;
         }
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
         /* The triple takes the row kernels these two rows install. */
         if (w->linear_m1 == cpu_neon_w_q4k_m1 || w->linear_m1 == cpu_neon_w_q6k_m1) {
             w->linear_triple_m1 = cpu_neon_w_kq_triple_m1;
         }
 #endif
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
         /* The row kernel's pair. mN stays the dequant trampoline here,
          * which has no pair form; install_pq2_0_x8_gemv_if_eligible
          * replaces both slots from the post hooks below when the x8

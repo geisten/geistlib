@@ -12,18 +12,14 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdio.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 /* Decode one 32-element IQ2_S sub-block (grid lookup + signs) to int8. */
 static inline void iq2s_subblock_to_int8(int8_t         out[32],
                                          const uint8_t *qs_lo,  /* 4 bytes */
                                          const uint8_t *sign_b, /* 4 bytes */
                                          uint8_t        qh) {
-#if defined(__ARM_NEON)
     const uint8x8_t kmask_v = vld1_u8(kmask_iq2xs);
     for (int l = 0; l < 4; l++) {
         const uint16_t  idx      = (uint16_t) qs_lo[l] | ((uint16_t) (qh << (8 - 2 * l)) & 0x300);
@@ -33,17 +29,6 @@ static inline void iq2s_subblock_to_int8(int8_t         out[32],
         const int8x8_t  signed_v = vbsl_s8(neg_msk, vneg_s8(grid_v), grid_v);
         vst1_s8(out + l * 8, signed_v);
     }
-#else
-    for (int l = 0; l < 4; l++) {
-        const uint16_t idx  = (uint16_t) qs_lo[l] | ((uint16_t) (qh << (8 - 2 * l)) & 0x300);
-        const uint8_t *grid = (const uint8_t *) (iq2s_grid + idx);
-        const uint8_t  sig  = sign_b[l];
-        for (int j = 0; j < 8; j++) {
-            const int8_t val = (int8_t) grid[j];
-            out[l * 8 + j]   = (sig & kmask_iq2xs[j]) ? (int8_t) -val : val;
-        }
-    }
-#endif
 }
 
 /* One call's operands, for the range bodies below. */
@@ -55,7 +40,6 @@ struct iq2s_rows_job {
     float        *y;
 };
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq2s_decode_w2a8_pre. */
 static void iq2s_decode_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq2s_rows_job *job              = ctx;
@@ -108,7 +92,6 @@ static void iq2s_decode_rows(void *ctx, size_t n0, size_t n1) {
         y[n] = acc;
     }
 }
-#endif
 
 void linear_iq2s_decode_w2a8_pre(size_t       n_in,
                                  size_t       n_out,
@@ -116,7 +99,6 @@ void linear_iq2s_decode_w2a8_pre(size_t       n_in,
                                  const int8_t x_q8[static n_in],
                                  const void  *w_iq2s,
                                  float        y[static n_out]) {
-#if defined(__ARM_NEON)
     const struct block_iq2_s_t *w                = (const struct block_iq2_s_t *) w_iq2s;
     const size_t                n_blocks_per_row = n_in / IQ2_S_BLOCK_ELEMS;
 
@@ -127,18 +109,8 @@ void linear_iq2s_decode_w2a8_pre(size_t       n_in,
                                 .n_blocks_per_row = n_blocks_per_row,
                                 .y                = y};
     geist_par_for(n_out, iq2s_decode_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_iq2s;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq2s_decode_w2a8_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* Output rows [n0, n1) of linear_iq2s_w2a8_prefill_pre. */
 static void iq2s_prefill_rows(void *ctx, size_t n0, size_t n1) {
     const struct iq2s_rows_job *job              = ctx;
@@ -203,7 +175,6 @@ static void iq2s_prefill_rows(void *ctx, size_t n0, size_t n1) {
             y[i * n_out + n] = accs[i];
     }
 }
-#endif
 
 void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                   size_t        n_in,
@@ -212,7 +183,6 @@ void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                   const float  *x_scales,
                                   const void   *w_iq2s,
                                   float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     const struct block_iq2_s_t *w                = (const struct block_iq2_s_t *) w_iq2s;
@@ -227,14 +197,4 @@ void linear_iq2s_w2a8_prefill_pre(size_t        m,
                                 .n_blocks_per_row = n_blocks_per_row,
                                 .y                = y};
     geist_par_for(n_out, iq2s_prefill_rows, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) w_iq2s;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_iq2s_w2a8_prefill_pre: NEON required\n");
-#endif
 }

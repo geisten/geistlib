@@ -22,9 +22,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 struct q6k_predecode_header {
     uint32_t magic;
@@ -328,7 +326,6 @@ int q6k_x8_gemv_pack(const void *w_q6k, size_t n_in, size_t n_out, void *dst) {
     return 0;
 }
 
-#if defined(__ARM_NEON)
 static void q6k_decode_rows(void *ctx, size_t n0, size_t n1);
 
 const int16_t *q6k_decode_bsums(size_t n_in, const int8_t x_q8[static n_in]) {
@@ -348,7 +345,6 @@ const int16_t *q6k_decode_bsums(size_t n_in, const int8_t x_q8[static n_in]) {
     }
     return bsums_tl;
 }
-#endif
 
 bool linear_q6k_decode_w6a8_pre(size_t       n_in,
                                 size_t       n_out,
@@ -356,7 +352,6 @@ bool linear_q6k_decode_w6a8_pre(size_t       n_in,
                                 const int8_t x_q8[static n_in],
                                 const void  *w_q6k,
                                 float        y[static n_out]) {
-#if defined(__ARM_NEON)
     const size_t n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
 
     /* Per-(super-block, sub-block) activation sums for the deferred -32
@@ -386,19 +381,9 @@ bool linear_q6k_decode_w6a8_pre(size_t       n_in,
      * 4096 rows cost 12-15 % of an M1 Max Llama 3.2 3B decode (#16). */
     geist_par_for(n_out, q6k_decode_rows, &ctx);
     return true;
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) w_q6k;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q6k_decode_w6a8_pre: NEON required\n");
-    return false;
-#endif
 }
 
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
 /* One linear_q6k_decode_w6a8_x8_pre call. */
 struct q6k_x8_job {
     const struct q6k_x8_block         *w;
@@ -560,7 +545,7 @@ bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                    const int8_t x_q8[static n_in],
                                    const void  *packed,
                                    float        y[static n_out]) {
-#if defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD)
+#if defined(__ARM_FEATURE_DOTPROD)
     if (!q6k_x8_valid(packed, n_in, n_out))
         return false;
     const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
@@ -597,7 +582,6 @@ bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
 #endif
 }
 
-#if defined(__ARM_NEON)
 static void q6k_decode_one_row(size_t n, const struct q6k_decode_ctx *c) {
     const struct block_q6_K_t *w                = (const struct block_q6_K_t *) c->w_q6k;
     const size_t               n_blocks_per_row = c->n_blocks_per_row;
@@ -727,9 +711,7 @@ static void q6k_decode_rows(void *ctx, size_t n0, size_t n1) {
 struct cpu_neon_decode_part q6k_decode_part(struct q6k_decode_ctx *ctx) {
     return (struct cpu_neon_decode_part) {.rows = q6k_decode_rows, .ctx = ctx, .n_out = ctx->n_out};
 }
-#endif
 
-#if defined(__ARM_NEON)
 /* One linear_q6k_w6a8_prefill_pre call (also the per-block kernels below). */
 struct q6k_prefill_job {
     const struct block_q6_K_t *w;
@@ -916,7 +898,6 @@ static void q6k_prefill_pre_pairs(void *ctx, size_t np0, size_t np1) {
         }
     }
 }
-#endif
 
 void linear_q6k_w6a8_prefill_pre(size_t        m,
                                  size_t        n_in,
@@ -925,7 +906,6 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                                  const float  *x_scales,
                                  const void   *w_q6k,
                                  float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     const struct block_q6_K_t *w                = (const struct block_q6_K_t *) w_q6k;
@@ -1039,19 +1019,8 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
             y[i * n_out + n] = accs[i];
     }
 #undef Q6K_RECON_BLOCK
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) w_q6k;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q6k_w6a8_prefill_pre: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* One linear_q6k_w6a8_prefill_predecoded_ntile4 call. */
 struct q6k_ntile4_job {
     const struct q6k_predecode_block *w;
@@ -1158,7 +1127,6 @@ static void q6k_ntile4_tiles(void *ctx, size_t nt0, size_t nt1) {
         }
     }
 }
-#endif
 
 void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                                size_t        n_in,
@@ -1167,7 +1135,6 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                                const float  *x_scales,
                                                const void   *packed,
                                                float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q6k_predecode_ntile4_valid(packed, n_in, n_out))
@@ -1186,19 +1153,8 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4(size_t        m,
                                  .n_blocks_per_row = n_blocks_per_row,
                                  .y                = y};
     geist_par_for_dynamic(n_tiles, 4, q6k_ntile4_tiles, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q6k_w6a8_prefill_predecoded_ntile4: NEON required\n");
-#endif
 }
 
-#if defined(__ARM_NEON)
 /* One linear_q6k_w6a8_prefill_predecoded_ntile4_stream call. */
 struct q6k_stream4_job {
     const struct q6k_predecode_stream4 *w;
@@ -1371,7 +1327,6 @@ static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
         }
     }
 }
-#endif
 
 void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                                       size_t        n_in,
@@ -1380,7 +1335,6 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                                       const float  *x_scales,
                                                       const void   *packed,
                                                       float        *y) {
-#if defined(__ARM_NEON)
     if (m == 0 || m > GEIST_QUANT_M_CAP)
         return;
     if (!q6k_predecode_ntile4_stream_valid(packed, n_in, n_out))
@@ -1399,16 +1353,6 @@ void linear_q6k_w6a8_prefill_predecoded_ntile4_stream(size_t        m,
                                   .n_blocks_per_row = n_blocks_per_row,
                                   .y                = y};
     geist_par_for_dynamic(n_tiles, 4, q6k_stream4_tiles, &job);
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) m;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q6k_w6a8_prefill_predecoded_ntile4_stream: NEON required\n");
-#endif
 }
 
 /* One linear_q6k_decode_fp32 call. */

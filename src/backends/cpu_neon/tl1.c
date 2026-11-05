@@ -3,15 +3,12 @@
  *
  * Layer: BACKEND (cpu_neon). See tl1.h for the algorithmic overview.
  *
- * Two lowerings of the same kernel, selected by __ARM_NEON:
- *   - the SIMD path, vqtbl1q_s8 LUT lookups into int16x8 accumulators;
- *   - a scalar reference in the #else, kept so the layout, encoding and
- *     accumulation stay readable and testable on non-ARM hosts.
+ * vqtbl1q_s8 LUT lookups into int16x8 accumulators. cpu_neon builds only
+ * for arm64, so there is no scalar lowering.
  *
- * Correctness is gated from the outside rather than between these two:
- * test_tl1_parity_unit.c asserts this kernel is bit-identical to the
- * independent TQ2_0 SDOT kernel (cpu_neon_w_tq2_0_q8a_m1) on whichever
- * lowering the host compiles.
+ * Correctness is gated from the outside: test_tl1_parity_unit.c asserts
+ * this kernel is bit-identical to the independent TQ2_0 SDOT kernel
+ * (cpu_neon_w_tq2_0_q8a_m1).
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -28,9 +25,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 /* Nibble → ternary pair (w0, w1). Encoder writes value (w0+1)*3 + (w1+1)
  * into bits 0..3 of a packed byte (low nibble first, high nibble after).
@@ -163,7 +158,6 @@ int tl1_pack_from_tq2_0(const void *tq2_0_rows, size_t n_in, size_t n_out, void 
     return 0;
 }
 
-#if defined(__ARM_NEON)
 /* One cpu_neon_w_tl1_m1 call, for the range bodies below. */
 struct tl1_job {
     const int8_t  *xq;
@@ -312,7 +306,6 @@ static void tl1_row_tiles(void *ctx, size_t rt0, size_t rt1) {
         }
     }
 }
-#endif /* __ARM_NEON */
 
 void cpu_neon_w_tl1_m1(const float               *x,
                        const struct geist_weight *w,
@@ -353,7 +346,6 @@ void cpu_neon_w_tl1_m1(const float               *x,
     const size_t n_r_tiles = n_out / TL1_BM;
     const size_t n_k_tiles = n_in / TL1_BBK;
 
-#if defined(__ARM_NEON)
     /* Precompute activation LUTs once per matmul (depends only on x).
      * Layout: lut_scratch[kt][c][p][hi/lo][16]. Total bytes per kt =
      * 16 c * 4 p * 2 (hi/lo) * 16 = 2 KB; fits L1 with margin. */
@@ -378,50 +370,4 @@ void cpu_neon_w_tl1_m1(const float               *x,
                           .y                   = y};
     geist_par_for(n_k_tiles, tl1_lut_range, &job);
     geist_par_for(n_r_tiles, tl1_row_tiles, &job);
-#else  /* !__ARM_NEON: scalar reference */
-    int16_t lut[TL1_KPAIRS_PER_INNER][16];
-    for (size_t rt = 0; rt < n_r_tiles; rt++) {
-        int32_t tile_acc[TL1_BM];
-        float   row_sum_fp32[TL1_BM];
-        for (size_t r = 0; r < TL1_BM; r++)
-            row_sum_fp32[r] = 0.0f;
-        for (size_t kt = 0; kt < n_k_tiles; kt++) {
-            for (size_t r = 0; r < TL1_BM; r++)
-                tile_acc[r] = 0;
-            const size_t   tile_off = (rt * n_k_tiles + kt) * TL1_TILE_BYTES;
-            const uint8_t *packed   = base + tile_off;
-            const float   *scales   = (const float *) (packed + TL1_PACKED_PER_TILE);
-            for (size_t c = 0; c < TL1_K_INNERS; c++) {
-                const size_t kp_base = kt * TL1_BBK + c * TL1_K_PER_INNER;
-                for (size_t p = 0; p < TL1_KPAIRS_PER_INNER; p++) {
-                    const int16_t a = (int16_t) xq[kp_base + p * 2 + 0];
-                    const int16_t b = (int16_t) xq[kp_base + p * 2 + 1];
-                    for (size_t n = 0; n < 9; n++) {
-                        lut[p][n] =
-                                (int16_t) ((int16_t) NIBBLE_W0[n] * a + (int16_t) NIBBLE_W1[n] * b);
-                    }
-                    for (size_t n = 9; n < 16; n++)
-                        lut[p][n] = 0;
-                }
-                const uint8_t *c_base = packed + c * 64;
-                for (size_t g = 0; g < 2; g++) {
-                    for (size_t kw = 0; kw < 2; kw++) {
-                        const uint8_t *pkt = c_base + g * 32 + kw * 16;
-                        for (size_t b = 0; b < 16; b++) {
-                            const uint8_t byte = pkt[b];
-                            tile_acc[g * 16 + b] += (int32_t) lut[kw * 2 + 0][(byte >> 4) & 0xF] +
-                                                    (int32_t) lut[kw * 2 + 1][byte & 0xF];
-                        }
-                    }
-                }
-            }
-            for (size_t r = 0; r < TL1_BM; r++) {
-                row_sum_fp32[r] += (float) tile_acc[r] * scales[r];
-            }
-        }
-        for (size_t r = 0; r < TL1_BM; r++) {
-            y[rt * TL1_BM + r] = row_sum_fp32[r] * inv_act_scale;
-        }
-    }
-#endif /* __ARM_NEON */
 }

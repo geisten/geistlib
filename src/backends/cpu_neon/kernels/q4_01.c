@@ -27,9 +27,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#if defined(__ARM_NEON)
 #include <arm_neon.h>
-#endif
 
 struct [[gnu::packed]] block_q4_0k_t {
     uint16_t d;
@@ -47,7 +45,6 @@ static_assert(sizeof(struct block_q4_1k_t) == 20, "q4_1 block size");
 /* dot of 32 activations against one nibble block, weights biased by -8
  * (Q4_0) or unbiased (Q4_1: bias handled via bsum outside). */
 static inline int32_t q4_nibble_dot(const int8_t *xb, const uint8_t *qs, int biased) {
-#if defined(__ARM_NEON)
     const uint8x16_t q  = vld1q_u8(qs);
     int8x16_t        lo = vreinterpretq_s8_u8(vandq_u8(q, vdupq_n_u8(0x0F)));
     int8x16_t        hi = vreinterpretq_s8_u8(vshrq_n_u8(q, 4));
@@ -56,15 +53,6 @@ static inline int32_t q4_nibble_dot(const int8_t *xb, const uint8_t *qs, int bia
         hi = vsubq_s8(hi, vdupq_n_s8(8));
     }
     return dot16_i8(xb, lo) + dot16_i8(xb + 16, hi);
-#else
-    int32_t acc = 0;
-    for (int j = 0; j < 16; j++) {
-        const int lo = (int) (qs[j] & 0x0F) - (biased ? 8 : 0);
-        const int hi = (int) (qs[j] >> 4) - (biased ? 8 : 0);
-        acc += (int32_t) xb[j] * lo + (int32_t) xb[j + 16] * hi;
-    }
-    return acc;
-#endif
 }
 
 /* One call's operands, for the range bodies below. */
@@ -245,10 +233,9 @@ static void q4_0_x8_decode_tiles(void *ctx, size_t tile0, size_t tile1) {
     float                      *y          = job->y;
     for (size_t tile = tile0; tile < tile1; tile++) {
         const struct q4_0_x8_block *row = w + tile * nb_per_row;
-#if defined(__ARM_NEON)
         /* Lane-SDOT on the pre-transposed layout: each accumulator lane is
-         * one output row, so there is no per-row horizontal add. The f32
-         * update per lane matches the scalar fallback's op order. */
+         * one output row, so there is no per-row horizontal add. Per lane
+         * the f32 update is d * x_scale * (dot - 8 * bsum), block by block. */
         float32x4_t accv0 = vdupq_n_f32(0.0f);
         float32x4_t accv1 = vdupq_n_f32(0.0f);
         for (size_t b = 0; b < nb_per_row; b++) {
@@ -283,25 +270,6 @@ static void q4_0_x8_decode_tiles(void *ctx, size_t tile0, size_t tile1) {
         }
         vst1q_f32(y + tile * 8 + 0, accv0);
         vst1q_f32(y + tile * 8 + 4, accv1);
-#else
-        float accf[8] = {0};
-        for (size_t b = 0; b < nb_per_row; b++) {
-            const struct q4_0_x8_block *blk   = row + b;
-            const int8_t               *xb    = x_q8 + b * Q4_0_BLOCK_ELEMS;
-            const float                 bias8 = 8.0f * (float) bsum[b];
-            for (size_t r = 0; r < 8; r++) {
-                int32_t acc = 0;
-                for (size_t j = 0; j < 16; j++) {
-                    const uint8_t qb = blk->qs[q4_0_x8_v2_idx(r, j)];
-                    acc += (int32_t) xb[j] * (int32_t) (qb & 0x0F);
-                    acc += (int32_t) xb[j + 16] * (int32_t) (qb >> 4);
-                }
-                accf[r] += fp16_to_fp32(blk->d[r]) * x_scales[b] * ((float) acc - bias8);
-            }
-        }
-        for (int r = 0; r < 8; r++)
-            y[tile * 8 + r] = accf[r];
-#endif
     }
 }
 
@@ -347,7 +315,6 @@ static void q4_0_x8_prefill_tiles(void *ctx, size_t tile0, size_t tile1) {
         const struct q4_0_x8_block *row = w + tile * nb;
         for (size_t t0 = 0; t0 < m; t0 += 4) {
             const size_t tcnt = (m - t0 < 4) ? (m - t0) : 4;
-#if defined(__ARM_NEON)
             /* f32 accumulators per token (d varies per block) */
             float32x4_t facc[4][2];
             for (size_t t = 0; t < 4; t++) {
@@ -411,27 +378,6 @@ static void q4_0_x8_prefill_tiles(void *ctx, size_t tile0, size_t tile1) {
                 vst1q_f32(yt + 0, facc[t][0]);
                 vst1q_f32(yt + 4, facc[t][1]);
             }
-#else
-            for (size_t t = 0; t < tcnt; t++) {
-                float *yt = y + (t0 + t) * n_out + tile * 8;
-                for (int r = 0; r < 8; r++) {
-                    float acc_f = 0.0f;
-                    for (size_t b = 0; b < nb; b++) {
-                        const struct q4_0_x8_block *blk = row + b;
-                        const int8_t *xb = x_q8 + (t0 + t) * n_in + b * Q4_0_BLOCK_ELEMS;
-                        int32_t       dt = 0;
-                        for (size_t j = 0; j < 16; j++) {
-                            const uint8_t qb = blk->qs[q4_0_x8_v2_idx((size_t) r, j)];
-                            dt += (int32_t) xb[j] * (int32_t) (qb & 0x0F);
-                            dt += (int32_t) xb[j + 16] * (int32_t) (qb >> 4);
-                        }
-                        acc_f += fp16_to_fp32(blk->d[r]) * x_scales[(t0 + t) * nb + b] *
-                                 ((float) dt - 8.0f * (float) bsums[(t0 + t) * nb + b]);
-                    }
-                    yt[r] = acc_f;
-                }
-            }
-#endif
         }
     }
 }
