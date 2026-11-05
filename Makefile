@@ -593,7 +593,9 @@ check-static: check-layers
 check-static: check-static-tidy
 
 # clang-tidy: the seeded defects in tests/static/ must be found, and the
-# library must have no finding beyond scripts/static-baseline.txt (#342).
+# library must have no finding beyond this configuration's baseline (#342):
+# scripts/static-baseline.txt on macOS arm64, static-baseline-linux-x86_64.txt
+# for TARGET=linux CC=clang BACKENDS="vulkan cpu_x86 cpu_scalar" (#420).
 CLANG_TIDY ?= clang-tidy
 .PHONY: check-static-tidy
 check-static-tidy:
@@ -629,9 +631,9 @@ c23-metrics:
 .PHONY: toolchain-probe
 toolchain-probe:
 	@CC="$(CC)" CXX="$(CXX)" sh tools/toolchain_probe.sh
-# benchmark/include_graph.json + docs/INCLUDE_GRAPH.md: direct include edges
-# per layer, from clang's preprocessor output (#341). Needs clang; CI's
-# static-analysis job runs `tools/include_graph.py check`.
+# build/include_graph/: direct include edges per layer, from clang's
+# preprocessor output (#341). A report, not committed and not checked (#442):
+# make check-layers enforces the edges that matter. Needs clang.
 .PHONY: include-graph
 include-graph:
 	@python3 tools/include_graph.py write
@@ -681,7 +683,7 @@ help:
 	"Format:  make format | format-check          (clang-format, reads .clang-format)" \
 	"Metrics: make c23-metrics                    (benchmark/c23_metrics.json, #341)" \
 	"         make toolchain-probe                C23 features of CC/CXX (docs/TOOLCHAIN_PROBE.md)" \
-	"         make include-graph                  (benchmark/include_graph.json, docs/INCLUDE_GRAPH.md)" \
+	"         make include-graph                  include edges per layer (build/include_graph/)" \
 	"" \
 	"Release: make release-check                  candidate metadata and published ancestry" \
 	"         make release-state-check            geisten.net latest: version, ancestry, assets" \

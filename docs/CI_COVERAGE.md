@@ -294,8 +294,15 @@ wall time to the required tier.
   a use-after-free, each on a `// expect: <check>` line. The job fails unless
   the findings there are exactly those marks: a seeded defect that goes
   unreported fails, and so does a defect added to a fixture without its mark.
-- **Gap:** only the macOS arm64 sources are analysed (NEON, Metal, scalar);
-  `cpu_x86`, Vulkan, `tests/` and `tools/` are not.
+- **Linux x86_64 + Vulkan (#420):** required job `static analysis
+  (clang-tidy, Linux x86_64 + Vulkan)` runs `make check-static-tidy
+  TARGET=linux CC=clang BACKENDS="vulkan cpu_x86 cpu_scalar"` on
+  `ubuntu-24.04` against its own baseline,
+  `scripts/static-baseline-linux-x86_64.txt`: each configuration analyses
+  other sources and other `#if` branches, so neither sees the other's
+  findings. `static-reasons.txt` is shared (keyed by file and check).
+  clang-tidy borrows gcc-14's `omp.h` (`OMP_CC`), which its own headers lack.
+- **Gap:** `tests/` and `tools/` are not analysed.
 
 Evaluated and not adopted (#342, measured on main 13cb783e):
 
