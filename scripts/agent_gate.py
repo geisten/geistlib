@@ -44,6 +44,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -77,6 +78,9 @@ HOLD_STEP = "Hold an agent head until a human approves it"
 REVIEW_HEAD = "**Agent review**"
 FIX_HEAD = "**Agent:**"
 CI_FAILED_HEAD = "**CI failed**"
+# rerun-held waits this long for a held run to finish (ci-ok.yml's timeout
+# covers it): Gitea refuses to rerun a run that is not done (geist-runtime#275).
+RUN_WAIT_S, RUN_POLL_S = 15 * 60, 20
 
 
 # -- pure rules (tests/test_agent_gate_py.py)
@@ -365,6 +369,15 @@ def set_status(c: Client, repo: str, n: int, status: str) -> None:
     c.call("PUT", f"{repo}/issues/{n}/labels", {"labels": keep + [f"status:{status}"]})
 
 
+def run_done(c: Client, repo: str, run: int, deadline: float) -> bool:
+    """Polls the run until it is `completed`; False once `deadline` passes."""
+    while (c.call("GET", f"{repo}/actions/runs/{run}", tries=3) or {}).get("status") != "completed":
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(RUN_POLL_S)
+    return True
+
+
 def cmd_rerun_held() -> int:
     ev = event()
     m = CI_OK.match((ev.get("comment") or {}).get("body") or "")
@@ -384,7 +397,14 @@ def cmd_rerun_held() -> int:
                    if s.get("status") in ("failure", "error")
                    for m in [re.search(r"/actions/runs/(\d+)", s.get("target_url") or "")] if m})
     failed = []
+    deadline = time.monotonic() + RUN_WAIT_S
     for run in runs:
+        if not run_done(c, repo, run, deadline):
+            c.call("POST", f"{repo}/issues/{n}/comments", {"body": (
+                f"/ci-ok {prefix} was accepted, but run {run} was still not done after "
+                f"{RUN_WAIT_S // 60} min, so nothing was rerun. Rerun its failed jobs from the "
+                "run's page once it has finished.")})
+            return 1
         try:
             c.call("POST", f"{repo}/actions/runs/{run}/rerun-failed-jobs")
             print(f"rerun-failed-jobs: run {run}")

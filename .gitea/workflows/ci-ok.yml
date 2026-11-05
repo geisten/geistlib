@@ -16,7 +16,7 @@ jobs:
       github.event.issue.pull_request && github.event.sender.login == 'germar' &&
       startsWith(github.event.comment.body, '/ci-ok')
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20  # agent_gate.py waits up to RUN_WAIT_S (15 min) for the held run
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

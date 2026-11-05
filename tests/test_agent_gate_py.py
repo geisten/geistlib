@@ -178,6 +178,7 @@ class FakeClient:
     def call(self, method, path, body=None, **_):
         self.calls.append((method, path, body))
         v = self.routes[path] if method == "GET" else self.routes.get((method, path))
+        v = v() if callable(v) else v
         if isinstance(v, Exception):
             raise v
         return v
@@ -294,17 +295,32 @@ expect(o.get("go") == "false" and any(m == "POST" for m, _, _ in fake.calls), "f
 ok_ev = {"sender": {"login": "germar"}, "issue": {"number": 9}, "comment": {"body": f"/ci-ok {SHA[:8]}"}}
 st = {"statuses": [{"status": "failure", "target_url": "/geisten/geistlib/actions/runs/41/jobs/3"},
                    {"status": "success", "target_url": "/geisten/geistlib/actions/runs/40/jobs/1"}]}
-rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), f"/repos/geisten/geistlib/commits/{SHA}/status?limit=100": st})
+RUN41, ST = "/repos/geisten/geistlib/actions/runs/41", f"/repos/geisten/geistlib/commits/{SHA}/status?limit=100"
+rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), ST: st, RUN41: {"status": "completed"}})
 expect(("POST", "/repos/geisten/geistlib/actions/runs/41/rerun-failed-jobs", None) in fake.calls,
        "/ci-ok -> the held run is rerun")
 rc, o, fake, _ = run(["rerun-held"], dict(ok_ev, sender={"login": "geist-agent"}), {})
 expect(fake.calls == [], "/ci-ok by the bot -> nothing")
 RERUN41 = "/repos/geisten/geistlib/actions/runs/41/rerun-failed-jobs"
-rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), f"/repos/geisten/geistlib/commits/{SHA}/status?limit=100": st,
+rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), ST: st, RUN41: {"status": "completed"},
                                              ("POST", RERUN41): gate.ApiError(403, "user should have a permission")})
 posted = [b["body"] for m, p, b in fake.calls if m == "POST" and p == C9]
 expect(rc == 1 and len(posted) == 1 and "run 41" in posted[0] and "HTTP 403" in posted[0],
        "/ci-ok, rerun refused (403) -> a comment names the run and the error, the job fails")
+
+# geist-runtime#275: Gitea refuses to rerun a run that is not done; wait for it.
+gate.RUN_POLL_S = 0
+states = iter(["in_progress", "in_progress", "completed"])
+rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), ST: st, RUN41: lambda: {"status": next(states)}})
+calls = [(m, p) for m, p, _ in fake.calls if p.startswith(RUN41)]
+expect(rc == 0 and calls == [("GET", RUN41)] * 3 + [("POST", RUN41 + "/rerun-failed-jobs")],
+       "/ci-ok while the held run is in progress -> polled until completed, then rerun once")
+gate.RUN_WAIT_S = 0
+rc, o, fake, _ = run(["rerun-held"], ok_ev, {P9: pull(), ST: st, RUN41: {"status": "in_progress"}})
+posted = [b["body"] for m, p, b in fake.calls if m == "POST" and p == C9]
+expect(rc == 1 and not any(p.endswith("/rerun-failed-jobs") for _, p, _ in fake.calls)
+       and len(posted) == 1 and "run 41" in posted[0] and "not done" in posted[0],
+       "/ci-ok, the held run never finishes -> no rerun, a comment says so, the job fails")
 
 if failures:
     print(f"test_agent_gate_py: FAIL ({failures})")
