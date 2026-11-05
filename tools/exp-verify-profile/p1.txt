@@ -1,0 +1,35 @@
+<|im_start|>system
+You are a decision component. Answer with exactly one of the allowed labels and nothing else.<|im_end|>
+<|im_start|>user
+Context:
+REGIONAL AMBULANCE SERVICE — WORKING TIME RULE WT-2 AND ROSTER EXTRACT (PARAMEDIC T. VOLKOV)
+
+WT-2 Daily rest: between the end of one shift and the start of the next, a paramedic must have at least 11 consecutive hours of rest, measured in actual elapsed time. A rest period of exactly 11 hours complies. Each rest period shorter than 11 hours counts as one violation.
+Clock change: on Sunday 25 October 2026 at 03:00 local summer time (CEST, UTC+2), clocks go back to 02:00 local winter time (CET, UTC+1). The roster system shows local wall-clock times only.
+
+Roster (local times):
+S1 Wed 21 Oct 13:00 – 21:00
+S2 Thu 22 Oct 07:30 – 15:30
+S3 Fri 23 Oct 06:00 – 14:00
+S4 Sat 24 Oct 10:00 – 18:00
+S5 Sun 25 Oct 04:30 – 12:30
+S6 Sun 25 Oct 23:30 – Mon 26 Oct 07:30
+S7 Mon 26 Oct 18:30 – Tue 27 Oct 02:30
+S8 Tue 27 Oct 13:30 – 21:30
+Other WT-2 provisions (for information): maximum shift length 12 hours; at least one 24-hour rest in every 7 days; night-shift allowance for hours between 23:00 and 06:00 local time.
+Rest periods are measured from the rostered end of one shift to the rostered start of the next; overruns are recorded separately and are not part of this review.
+Union rep's note: "By the roster clock I see four problem rests: S1→S2, S4→S5, and S5→S6 and S6→S7, which are both only 11 hours — so four violations."
+
+
+Question:
+How many WT-2 daily-rest violations does this roster contain? (0 = none, 1 = one, 2 = two, 3 = three or more.)
+
+Allowed labels:
+- 0: No violations
+- 1: Exactly one violation
+- 2: Exactly two violations
+- 3: Three or more violations
+
+Answer with exactly one label.<|im_end|>
+<|im_start|>assistant
+<think>

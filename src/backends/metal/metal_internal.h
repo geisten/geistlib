@@ -457,6 +457,7 @@ struct metal_state {
     /* Grow-only private MTLBuffer scratch for the chunked DeltaNet
      * prefill (raw handle, argmax_result_buffer pattern). */
     struct metal_buffer_h   *dn_scratch;
+    bool                     x_skip_next; /* EXPERIMENT: GEIST_X_SKIP */
     size_t                   dn_scratch_bytes;
     struct metal_function_h *qgate_split_function;
     struct metal_pipeline_h *qgate_split_pipeline;

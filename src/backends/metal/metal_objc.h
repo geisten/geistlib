@@ -362,6 +362,10 @@ static inline void metal_msg_send_dispatch(struct metal_state     *st,
                                            struct metal_encoder_h *receiver,
                                            struct metal_size       groups,
                                            struct metal_size       threads) {
+    if (st->x_skip_next) { /* EXPERIMENT: GEIST_X_SKIP */
+        st->x_skip_next = false;
+        return;
+    }
     void *sel = metal_sel_register_name(st, "dispatchThreadgroups:threadsPerThreadgroup:");
     union {
         void *raw;

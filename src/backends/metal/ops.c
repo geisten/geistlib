@@ -4398,7 +4398,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             row.row                          = r;
             row.qkv_offset += r * (uint32_t) conv_dim;
             metal_msg_send_set_bytes(st, enc, &row, sizeof row, 10);
-            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_PREP, gk); /* EXP tag */
             metal_msg_send_dispatch(st, enc, gk, tk);
         }
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);

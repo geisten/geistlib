@@ -109,6 +109,24 @@ void metal_profile_add_wait(struct metal_state      *st,
 void metal_profile_add_dispatch(struct metal_state      *st,
                                 enum metal_profile_stage stage,
                                 struct metal_size        groups) {
+    /* EXPERIMENT (verify profile): GEIST_X_SKIP=name,name drops the next
+     * dispatch of those classes (timing ablation, wrong output). */
+    if (st != nullptr && stage < METAL_PROFILE_STAGE_COUNT) {
+        const char *e = getenv("GEIST_X_SKIP");
+        if (e != nullptr && *e != '\0') {
+            const char *n = metal_profile_stage_names[stage];
+            n             = strncmp(n, "dispatch.", 9) == 0 ? n + 9 : n;
+            const size_t len = strlen(n);
+            for (const char *q = e; *q != '\0';) {
+                const char  *c = strchr(q, ',');
+                const size_t l = c != nullptr ? (size_t) (c - q) : strlen(q);
+                if (l == len && strncmp(q, n, l) == 0) {
+                    st->x_skip_next = true;
+                }
+                q += l + (c != nullptr ? 1 : 0);
+            }
+        }
+    }
     if (st == nullptr || !st->profile_enabled || stage >= METAL_PROFILE_STAGE_COUNT) {
         return;
     }
