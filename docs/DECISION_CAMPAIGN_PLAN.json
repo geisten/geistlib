@@ -983,6 +983,18 @@
         "estimate": "about 2.5-3 h of extra lease for the full-reasoning arm of the 300",
         "unchanged": "sample, main run, primary analysis, accuracy evidence (power does not change the computation, only its speed)"
       }
-    ]
+    ],
+    "result": {
+      "writeup": "benchmark/results/DECISION_EARLY_EXIT_DEFAULT_2026-11-05.md",
+      "json": "benchmark/results/DECISION_EARLY_EXIT_DEFAULT_2026-11-05.json",
+      "raw_bundle": "benchmark/results/raw/decision-early-exit-default-2026-11-05",
+      "measured_source_revision": "4da9fdb2ae96c83c5b129dd55f33d07356a9fcec",
+      "primary": "PASS: early exit tau 0.8 84.57 % vs full reasoning at cap 8192 82.80 %; gains 170, losses 108; +1.77 pp, conservative 95 % interval [+0.27, +3.27]; non-inferior at 2 pp",
+      "tokens": "1,163,236 vs 4,784,285 (0.243x); 2,186 exits (1,320 at token 128); capped 277 -> 15",
+      "rests_on": "all 108 losses on questions full reasoning finishes (post hoc -2.45 pp [-3.56, -1.33] on those 3,223); 141 of 170 gains on the 277 capped; moral_scenarios -12.4 pp",
+      "latency_check": "live early exit = offline answers 300/300 (answer, stop, position); live full = main run 300/300; p50 39.5 vs 37.9 s, p95 285.5 vs 1,177.7 s; 282 vs 97 answers per hour of lease; power gate 501/501 samples on AC, Low Power Mode off",
+      "decision": "owner 2026-11-05: default of geistr decide --escalate chat for the verified Bonsai 2 27B profile only (geist-runtime#284); the cost on finished questions accepted and documented; tau 0.9 follow-up #467",
+      "result_comment": "geistlib#286 comment 7661"
+    }
   }
 }
