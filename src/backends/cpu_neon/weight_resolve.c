@@ -211,7 +211,6 @@ static void cpu_neon_w_q6k_m1(const float               *x,
     }
 }
 
-#if defined(__ARM_FEATURE_DOTPROD)
 /* q, k and v of one decode step in one parallel region (#16): Q4_K and
  * Q6_K weights in the source layout, any mix. The activation is quantized
  * once, as quantize_x_q8_groups does for each kernel alone, and every row
@@ -286,7 +285,6 @@ static void cpu_neon_w_kq_triple_m1(const float               *x,
     }
     cpu_neon_decode_parts(3, parts);
 }
-#endif
 
 static void cpu_neon_w_q8_0_m1(const float               *x,
                                const struct geist_weight *w,
@@ -1287,48 +1285,42 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          cpu_neon_w_dequant_trampoline_mN,
          "q5_0/trampoline"},
 
-/* TQ2_0: ternary BitNet b1.58. Preferred (q8a, requires dotprod)
- * first, fp32 fallback second. The compile-time #if keeps the
- * dotprod-using symbols out of pre-ARMv8.2 builds entirely. */
-#if defined(__ARM_FEATURE_DOTPROD)
+        /* TQ2_0: ternary BitNet b1.58. Preferred (q8a, requires dotprod)
+         * first, fp32 fallback second, for a host without dotprod at run
+         * time (every build target compiles with +dotprod). */
         {GEIST_DTYPE_TQ2_0,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
          cpu_neon_w_tq2_0_q8a_m1,
          cpu_neon_w_tq2_0_q8a_mN,
          "tq2_0/q8a"},
-#endif
         {GEIST_DTYPE_TQ2_0,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_tq2_0_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "tq2_0/fp32"},
 
-/* PQ2_0: PrismML ternary (Ternary-Bonsai). Decode through the SDOT
- * W2A8 GEMV, prefill on the dequant+SGEMM trampoline (the x8 repack
- * replaces both, see install_pq2_0_x8_gemv_if_eligible). Hosts without
- * dotprod take the trampoline for both. */
-#if defined(__ARM_FEATURE_DOTPROD)
+        /* PQ2_0: PrismML ternary (Ternary-Bonsai). Decode through the SDOT
+         * W2A8 GEMV, prefill on the dequant+SGEMM trampoline (the x8 repack
+         * replaces both, see install_pq2_0_x8_gemv_if_eligible). Hosts without
+         * dotprod take the trampoline for both. */
         {GEIST_DTYPE_PQ2_0,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
          cpu_neon_w_pq2_0_q8a_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "pq2_0/q8a-m1"},
-#endif
         {GEIST_DTYPE_PQ2_0,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_dequant_trampoline_m1,
          cpu_neon_w_dequant_trampoline_mN,
          "pq2_0/trampoline"},
 
-/* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only:
- * no fp32 fallback row (every geist ARM target enables +dotprod). */
-#if defined(__ARM_FEATURE_DOTPROD)
+        /* I2_S: BitNet b1.58 official ternary (Microsoft 2B-4T). Dotprod-only:
+         * no fp32 fallback row (every geist ARM target enables +dotprod). */
         {GEIST_DTYPE_I2_S,
          CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
          cpu_neon_w_i2_s_q8a_m1,
          cpu_neon_w_i2_s_q8a_mN,
          "i2_s/q8a"},
-#endif
 };
 /* Resolution counters: with GEIST_LOG_KERNELS=1 the resolver counts the
  * tensors bound per table row and prints them at backend destroy, so the
@@ -1527,7 +1519,6 @@ install_q4_0_x8_gemv_if_eligible(struct geist_weight                 *w,
  * Any refusal (policy off, shape, OOM) keeps the table's row kernel. */
 static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight                 *w,
                                               const struct cpu_neon_kernel_policy *policy) {
-#if defined(__ARM_FEATURE_DOTPROD)
     if (!policy->pq2_0_x8_gemv || w->linear_m1 != cpu_neon_w_pq2_0_q8a_m1 || w->n_in <= 0 ||
         w->n_out <= 0) {
         return;
@@ -1546,10 +1537,6 @@ static void install_pq2_0_x8_gemv_if_eligible(struct geist_weight               
     w->linear_mN      = cpu_neon_w_pq2_0_x8_mN;
     w->linear_pair_m1 = cpu_neon_w_pq2_0_x8_pair_m1;
     w->linear_pair_mN = cpu_neon_w_pq2_0_x8_pair_mN;
-#else
-    (void) w;
-    (void) policy;
-#endif
 }
 
 /* Apply per-dtype policy overrides after the table match: layout repacks,
@@ -1741,13 +1728,10 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
             w->linear_pair_m1 = cpu_neon_w_q4k_pair_m1;
             w->linear_pair_mN = cpu_neon_w_q4k_pair_mN;
         }
-#if defined(__ARM_FEATURE_DOTPROD)
         /* The triple takes the row kernels these two rows install. */
         if (w->linear_m1 == cpu_neon_w_q4k_m1 || w->linear_m1 == cpu_neon_w_q6k_m1) {
             w->linear_triple_m1 = cpu_neon_w_kq_triple_m1;
         }
-#endif
-#if defined(__ARM_FEATURE_DOTPROD)
         /* The row kernel's pair. mN stays the dequant trampoline here,
          * which has no pair form; install_pq2_0_x8_gemv_if_eligible
          * replaces both slots from the post hooks below when the x8
@@ -1757,7 +1741,6 @@ enum cpu_neon_linear_support_kind cpu_neon_linear_support(const struct geist_bac
         if (w->linear_m1 == cpu_neon_w_pq2_0_q8a_m1) {
             w->linear_pair_m1 = cpu_neon_w_pq2_0_q8a_pair_m1;
         }
-#endif
         if (w->backend_layout == 0) {
             w->backend_layout = GEIST_W_LAYOUT_SOURCE;
         }

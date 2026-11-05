@@ -19,7 +19,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <stdio.h>
 #include <string.h>
 
 #include <arm_neon.h>
@@ -383,7 +382,6 @@ bool linear_q6k_decode_w6a8_pre(size_t       n_in,
     return true;
 }
 
-#if defined(__ARM_FEATURE_DOTPROD)
 /* One linear_q6k_decode_w6a8_x8_pre call. */
 struct q6k_x8_job {
     const struct q6k_x8_block         *w;
@@ -537,7 +535,6 @@ static void q6k_x8_tiles(void *ctx, size_t t0, size_t t1) {
         vst1q_f32(dst + 4, acc_f32_1);
     }
 }
-#endif
 
 bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                    size_t       n_out,
@@ -545,7 +542,6 @@ bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                                    const int8_t x_q8[static n_in],
                                    const void  *packed,
                                    float        y[static n_out]) {
-#if defined(__ARM_FEATURE_DOTPROD)
     if (!q6k_x8_valid(packed, n_in, n_out))
         return false;
     const size_t                                      n_blocks_per_row = n_in / Q6_K_BLOCK_ELEMS;
@@ -570,16 +566,6 @@ bool linear_q6k_decode_w6a8_x8_pre(size_t       n_in,
                              .y                = y};
     geist_par_for(n_out / 8, q6k_x8_tiles, &job);
     return true;
-#else
-    (void) x_q8;
-    (void) x_scales;
-    (void) packed;
-    (void) n_in;
-    (void) n_out;
-    (void) y;
-    fprintf(stderr, "linear_q6k_decode_w6a8_x8_pre: NEON dotprod required\n");
-    return false;
-#endif
 }
 
 static void q6k_decode_one_row(size_t n, const struct q6k_decode_ctx *c) {
