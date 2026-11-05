@@ -139,6 +139,14 @@ class Committed(unittest.TestCase):
         del ceiling["goto"]
         self.assertEqual(metrics.ratchet(ceiling, totals)[0], ["goto"])
 
+    def test_write_only_raises(self):
+        totals = dict.fromkeys(metrics.GAPS, 5)
+        ceiling = {k: {"max": 9} for k in metrics.GAPS}
+        ceiling["goto"]["max"] = 3
+        new = metrics.raised(ceiling, totals)
+        self.assertEqual(new["goto"]["max"], 5)       # exceeded: raised
+        self.assertEqual(new["void_ptr"]["max"], 9)   # not exceeded: kept, not lowered
+
     def test_two_runs_agree(self):
         a = self.run_tool("show", "--json")
         b = self.run_tool("show", "--json")

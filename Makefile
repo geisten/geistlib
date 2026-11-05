@@ -619,7 +619,7 @@ format-check:
 
 # benchmark/c23_metrics.json: a ceiling per C23 gap of #333 (#341). CI runs
 # `tools/c23_metrics.py check`; a change that adds one raises the ceiling and
-# commits the file, one that removes some may lower it.
+# commits the file (write only raises); `tools/c23_metrics.py lower` lowers.
 .PHONY: c23-metrics
 c23-metrics:
 	@python3 tools/c23_metrics.py write
