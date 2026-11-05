@@ -608,6 +608,11 @@ static bool name_in(size_t n, const char *s, const char *const *list) {
             tok->pre_seq = GGUF_PRE_NONE;
     } else if (tok->n_merges > 0) {
         tok->mode = GGUF_TOK_MODE_SPM;
+        /* llama.cpp's BPE vocabulary types (Gemma 4) read the text as
+         * codepoints, a malformed byte as U+FFFD; its SPM ("llama") keeps
+         * the raw bytes (#427). */
+        static const char *const BPE_SPM[] = {"gemma4", nullptr};
+        tok->spm_fffd                      = name_in(tok->model_len, tok->model, BPE_SPM);
     } else if (tok->scores != nullptr) {
         /* No merges but per-token scores -> SentencePiece unigram (Llama/BitNet). */
         tok->mode = GGUF_TOK_MODE_UNIGRAM;
@@ -1345,16 +1350,48 @@ static bool is_ascii_space(unsigned char b) {
  * "qwen35" adds \p{M} to the letter run and removes it from the punct run,
  * so a mark classifies as a letter there. \p{L} / \p{N} and \s are
  * llama.cpp's own (unicode_class.h and its whitespace list). */
-static uint32_t q2_cp_at(const char *text, size_t tlen, size_t i, size_t *adv) {
-    /* A malformed sequence returns -1 with *adv = 1, so it arrives here as
-     * 0xFFFFFFFF and the branch below never runs; llama.cpp uses U+FFFD
-     * (#427). Written out until that fix lands with its parity test. */
-    uint32_t cp = (uint32_t) utf8_decode_one(text + i, tlen - i, adv);
-    if (*adv == 0) { /* malformed byte — treat as 1-byte symbol */
+uint32_t gguf_tokenizer_utf8_cp(size_t n, size_t i, const char text[static n], size_t *adv) {
+    static const int32_t MIN_CP[5] = {0, 0, 0x80, 0x800, 0x10000};
+    const int32_t        cp        = utf8_decode_one(text + i, n - i, adv);
+    if (cp < MIN_CP[*adv] || cp > 0x10FFFF) {
         *adv = 1;
-        cp   = (uint8_t) text[i];
+        return 0xFFFD;
     }
-    return cp;
+    return (uint32_t) cp;
+}
+/* gguf_tokenizer_utf8_cp in the scanners' argument order. */
+static uint32_t q2_cp_at(const char *text, size_t tlen, size_t i, size_t *adv) {
+    return gguf_tokenizer_utf8_cp(tlen, i, text, adv);
+}
+
+/* Whether text[i], i < tlen, is a byte llama.cpp reads as U+FFFD
+ * (q2_cp_at); *adv is the bytes its codepoint takes. */
+static bool utf8_bad_at(const char *text, size_t tlen, size_t i, size_t *adv) {
+    *adv = 1;
+    return (unsigned char) text[i] >= 0x80 && q2_cp_at(text, tlen, i, adv) == 0xFFFD && *adv == 1;
+}
+
+/* U+FFFD, which llama.cpp writes for a malformed byte when it rebuilds a
+ * word from its codepoints (unicode_regex_split). */
+static const char UTF8_FFFD[3] = {(char) 0xEF, (char) 0xBF, (char) 0xBD};
+
+/* text[from, to) in GPT-2's byte-level form, as llama.cpp's
+ * unicode_regex_split + unicode_byte_encoding_process build it: every
+ * malformed byte replaced by U+FFFD's three bytes (#427), each byte then
+ * mapped to its GPT-2 codepoint and written to out as UTF-8 — at most 6
+ * bytes per byte of text. Returns the bytes written. */
+static size_t gpt2_chunk_bytes(size_t to, size_t from, const char text[static to], char *out) {
+    size_t w = 0;
+    for (size_t b = from; b < to;) {
+        size_t       adv;
+        const bool   bad = utf8_bad_at(text, to, b, &adv);
+        const char  *src = bad ? UTF8_FFFD : text + b;
+        const size_t n   = bad ? sizeof UTF8_FFFD : adv;
+        for (size_t k = 0; k < n; k++)
+            w += utf8_encode_one(gpt2_byte_to_codepoint((unsigned char) src[k]), out + w);
+        b += adv;
+    }
+    return w;
 }
 static bool q2_is_ws(uint32_t cp) {
     return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x0B || cp == 0x0C ||
@@ -1862,12 +1899,17 @@ static bool encode_spm(const struct gguf_tokenizer *tok,
             memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                      \
             w_ += SPM_MARKER_LEN;                                                              \
         }                                                                                      \
-        for (size_t r_ = chunk_start; r_ < (end); r_++) {                                      \
+        for (size_t r_ = chunk_start, adv_ = 1; r_ < (end); r_ += adv_) {                      \
+            adv_ = 1;                                                                          \
             if (text[r_] == ' ') {                                                             \
                 memcpy(buf + w_, SPM_MARKER, SPM_MARKER_LEN);                                  \
                 w_ += SPM_MARKER_LEN;                                                          \
-            } else {                                                                           \
-                buf[w_++] = text[r_];                                                          \
+            } else if (tok->spm_fffd && utf8_bad_at(text, (end), r_, &adv_)) {                 \
+                memcpy(buf + w_, UTF8_FFFD, sizeof UTF8_FFFD);                                 \
+                w_ += sizeof UTF8_FFFD;                                                        \
+            } else { /* adv_: the codepoint's bytes when spm_fffd, else 1 */                   \
+                memcpy(buf + w_, text + r_, adv_);                                             \
+                w_ += adv_;                                                                    \
             }                                                                                  \
         }                                                                                      \
         first_chunk = false;                                                                   \
@@ -2181,9 +2223,13 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
     if (tlen == 0)
         return true;
 
-    /* Worst-case chunk size = entire input byte run × 4 (codepoint
-     * 256+ encodes as 2 UTF-8 bytes, so up to 2× expansion). */
-    GEIST_CLEANUP(heap_freep) char *chunk_buf = heap_alloc_array_aligned(char, tlen * 4 + 16);
+    /* Worst-case chunk size: 6 bytes per byte of text — a malformed byte
+     * becomes U+FFFD's three bytes, each mapped to a codepoint that UTF-8
+     * writes in two (gpt2_chunk_bytes). */
+    size_t chunk_cap;
+    if (ckd_mul(&chunk_cap, tlen, (size_t) 6) || ckd_add(&chunk_cap, chunk_cap, (size_t) 16))
+        return false;
+    GEIST_CLEANUP(heap_freep) char *chunk_buf = heap_alloc_array_aligned(char, chunk_cap);
     if (chunk_buf == nullptr)
         return false;
     /* Regex-sequence pretokenizers (#242): a fragment's codepoints, their
@@ -2232,11 +2278,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
                     gguf_tokenizer_seq_split(tok->pre_seq, n_cp, seq_cps, seq_pieces);
             size_t at = 0;
             for (size_t k = 0; k < n_pieces && *n_out < cap; k++) {
-                size_t cb_used = 0;
-                for (size_t b = seq_off[at]; b < seq_off[at + seq_pieces[k]]; b++) {
-                    uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
-                    cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
-                }
+                const size_t cb_used =
+                        gpt2_chunk_bytes(seq_off[at + seq_pieces[k]], seq_off[at], text, chunk_buf);
                 at += seq_pieces[k];
                 size_t produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
@@ -2269,12 +2312,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
                                       next_special, i, tok->pre_split_digits, text)
                             : gguf_tokenizer_llama3_chunk_end(
                                       next_special, i, tok->pre_digits, tok->pre_marks, text);
-            size_t cb_used = 0;
-            for (size_t b = i; b < end; b++) {
-                uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
-                cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
-            }
-            size_t produced = bpe_chunk_to_ids(
+            const size_t cb_used  = gpt2_chunk_bytes(end, i, text, chunk_buf);
+            size_t       produced = bpe_chunk_to_ids(
                     tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
             if (produced == SIZE_MAX)
                 return false;
@@ -2297,12 +2336,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
          * chunk ("\n<|im_start|>" would become "\n<" + "|" + ..., #275). */
         if (i > start && i < tlen) {
             if (special_at(sc, tlen, i, text, &sp_id) != 0) {
-                size_t cb_used = 0;
-                for (size_t b = start; b < i; b++) {
-                    uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
-                    cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
-                }
-                size_t produced = bpe_chunk_to_ids(
+                const size_t cb_used  = gpt2_chunk_bytes(i, start, text, chunk_buf);
+                size_t       produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
                 if (produced == SIZE_MAX)
                     return false;
@@ -2319,11 +2354,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
         if (i >= tlen) {
             /* Trailing whitespace becomes its own chunk. */
             if (lead_ws_end > lead_ws_start) {
-                size_t cb_used = 0;
-                for (size_t b = lead_ws_start; b < lead_ws_end; b++) {
-                    uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
-                    cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
-                }
+                const size_t cb_used =
+                        gpt2_chunk_bytes(lead_ws_end, lead_ws_start, text, chunk_buf);
                 size_t produced = bpe_chunk_to_ids(
                         tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
                 if (produced == SIZE_MAX)
@@ -2349,12 +2381,8 @@ static bool encode_upto(const struct gguf_tokenizer *tok,
 
         /* Emit chunk: leading whitespace + run (all bytes get
          * byte→codepoint→UTF-8 mapping). */
-        size_t cb_used = 0;
-        for (size_t b = lead_ws_start; b < i; b++) {
-            uint32_t cp = gpt2_byte_to_codepoint((unsigned char) text[b]);
-            cb_used += utf8_encode_one(cp, chunk_buf + cb_used);
-        }
-        size_t produced =
+        const size_t cb_used = gpt2_chunk_bytes(i, lead_ws_start, text, chunk_buf);
+        size_t       produced =
                 bpe_chunk_to_ids(tok, chunk_buf, cb_used, out_ids + *n_out, cap - *n_out, false);
         if (produced == SIZE_MAX)
             return false;
