@@ -10,7 +10,9 @@ on macOS and Linux.
 Scope: the tracked .c, .h and .m files under src/ and include/, except the
 generated SPIR-V and Metal shader headers (*_spv.h, metal_shaders.h).
 
-    write   write benchmark/c23_metrics.json
+    write   raise the ceilings the tree exceeds, leave the others
+    lower   set every ceiling to the tree's total (after a cleanup lands,
+            on a branch fresh off main)
     check   compare the tree with benchmark/c23_metrics.json; exit 1 when a
             gap grew past its committed ceiling (runs in CI)
     show    print every metric, the gaps and what is already done, as a
@@ -20,7 +22,10 @@ benchmark/c23_metrics.json is a ratchet: one ceiling per gap, the total
 #333's tickets reduce. `check` fails only when a total rises above its
 ceiling, so a pull request that adds such a construct raises the ceiling
 (`make c23-metrics`) and review sees it. A pull request that removes some
-passes as is; it may lower the ceiling the same way, and `check` says so.
+passes as is. `write` only raises: lowering every ceiling to one branch's
+totals drops them below constructs another pull request has merged since,
+and main's check fails (#447 after #450). Lowering is `lower`, on purpose,
+from a branch that has main.
 Per-file counts are in `show`, not in the committed file: concurrent pull
 requests touching different files used to conflict over every line of it.
 The constructs that are already done (nullptr, [[nodiscard]], ...) and the
@@ -317,13 +322,19 @@ def ratchet(ceiling: dict, totals: dict) -> tuple[list, list]:
     return grew, fell
 
 
+def raised(ceiling: dict, totals: dict) -> dict:
+    """The ceilings with every exceeded (or missing) one raised to the total."""
+    grew, _ = ratchet(ceiling, totals)
+    return {k: {"what": GAPS[k], "max": totals[k] if k in grew else ceiling[k]["max"]} for k in GAPS}
+
+
 def dump(doc: dict) -> str:
     return json.dumps(doc, indent=1, sort_keys=True) + "\n"
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=("write", "check", "show"))
+    ap.add_argument("command", choices=("write", "lower", "check", "show"))
     ap.add_argument("--json", action="store_true", help="show: print JSON")
     args = ap.parse_args()
     totals, per_file = measure()
@@ -339,14 +350,20 @@ def main() -> int:
                     "files", "lines") else ""
                 print(f"{totals[k]:>7}  {what}" + (f"  ({where})" if where else ""))
         return 0
-    text = dump(committed(totals, per_file))
-    if args.command == "write":
-        OUT.write_text(text)
+    if args.command == "lower" or not OUT.exists():
+        OUT.write_text(dump(committed(totals, per_file)))
         return 0
-    ceiling = json.loads(OUT.read_text()).get("ceiling", {}) if OUT.exists() else {}
+    doc = json.loads(OUT.read_text())
+    ceiling = doc.get("ceiling", {})
     grew, fell = ratchet(ceiling, totals)
+    if args.command == "write":
+        for k in grew:
+            print(f"  raise {k}: {ceiling.get(k, {}).get('max')} -> {totals[k]}")
+        doc["ceiling"] = raised(ceiling, totals)
+        OUT.write_text(dump(doc))
+        return 0
     for k in fell:
-        print(f"  {k}: {ceiling[k]['max']} -> {totals[k]} (may lower the ceiling: make c23-metrics)")
+        print(f"  {k}: {ceiling[k]['max']} -> {totals[k]} (may lower the ceiling: tools/c23_metrics.py lower)")
     if not grew:
         return 0
     print(f"{OUT.relative_to(ROOT)}: a gap grew past its ceiling. Remove the new construct, "

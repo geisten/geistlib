@@ -143,9 +143,10 @@ make format-check    # verify only (hard CI gate)
 `benchmark/c23_metrics.json` holds a ceiling for each construct the C23
 work of #333 removes: `switch` with `default:`, enums without a fixed type,
 `void *`, `#if`, `goto` and the rest. CI fails when a total rises above its
-ceiling. A change that adds one raises the ceiling with `make c23-metrics`
-and commits the file, so the review sees the count move; a change that
-removes some passes as is and may lower the ceiling the same way.
+ceiling. A change that adds one raises that ceiling with `make c23-metrics`
+(it only raises) and commits the file, so the review sees the count move; a
+change that removes some passes as is. `tools/c23_metrics.py lower` sets
+every ceiling to the tree's totals, from a branch that has main.
 `python3 tools/c23_metrics.py show` has the per-file counts.
 
 `make check-layers` proves the layer table `tools/layers.json` (shown in
