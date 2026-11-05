@@ -1,8 +1,8 @@
 /*
- * src/engine/sampler_penalties.c — repetition control (#695): llama.cpp's
+ * src/sampling/sampler_penalties.c — repetition control (#695): llama.cpp's
  * `penalties` and `dry` samplers, ported operation for operation.
  *
- * Layer: ENGINE. Pure host arithmetic on a copy of the logits.
+ * Layer: SAMPLING. Pure host arithmetic on a copy of the logits.
  *
  * Built with -fno-fast-math -ffp-contract=off (mk/common.mk): the target-wide
  * -ffast-math would turn `logit / repeat_penalty` into a multiply by the

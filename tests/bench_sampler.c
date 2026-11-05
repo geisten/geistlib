@@ -9,7 +9,7 @@
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
-#include "src/engine/sampler.h"
+#include "src/sampling/sampler.h"
 
 #include "heap.h"
 #include "test_helpers.h"

@@ -134,6 +134,9 @@ WARNINGS_STRICT := $(WARNINGS_BASE) -Wshadow -Wundef
 #   -Isrc/quant quantization contract — quant.h (block layouts, dequant row
 #               codecs, quantized linear kernels) + iq_grids.h. Format-agnostic;
 #               shared by formats/gguf and the CPU backends.
+#   -Isrc/sampling  token sampling and repetition penalties (sampler.h),
+#               below the archs so the transformer and the engine both use
+#               it (#441).
 #   -I.         project root — internal tests reaching across the engine/arch
 #               boundary via path-relative includes
 #               (e.g. `#include "src/archs/transformer/arch_state.h"`)
@@ -146,6 +149,7 @@ CFLAGS_BASE := -std=c23 $(WARNINGS_BASE) -fno-strict-aliasing \
                -Isrc/formats/ptqtp \
                -Isrc/io \
                -Isrc/engine \
+               -Isrc/sampling \
                -Isrc/archs/audio_conformer \
                -Isrc/archs/vision_siglip \
                -Ithird_party/stb
@@ -180,6 +184,7 @@ CFLAGS_STRICT := -std=c23 $(WARNINGS_STRICT) -fno-strict-aliasing \
                  -Isrc/formats/ptqtp \
                  -Isrc/io \
                  -Isrc/engine \
+                 -Isrc/sampling \
                  -Isrc/archs/audio_conformer \
                  -Isrc/archs/vision_siglip \
                  -Ithird_party/stb \
@@ -255,8 +260,8 @@ LIB_SOURCES := \
     src/engine/backend_registry.c \
     src/engine/arch_registry.c \
     src/engine/model.c \
-    src/engine/sampler.c \
-    src/engine/sampler_penalties.c \
+    src/sampling/sampler.c \
+    src/sampling/sampler_penalties.c \
     src/engine/dry_breakers.c \
     src/engine/session.c \
     src/engine/decision.c \
@@ -487,7 +492,7 @@ $(BUILD_DIR)/tools/bench_decision.o $(BUILD_DIR)/tests/test_decision_errors_unit
 $(BUILD_DIR)/tests/test_geist_gemm_unit.o: CFLAGS += -fno-finite-math-only
 # The repetition penalties match llama.cpp's floats exactly: no reciprocal
 # division, no fused multiply-add, and option checks that see NaN/Inf.
-$(BUILD_DIR)/src/engine/sampler_penalties.o: CFLAGS_STRICT += -fno-fast-math -ffp-contract=off
+$(BUILD_DIR)/src/sampling/sampler_penalties.o: CFLAGS_STRICT += -fno-fast-math -ffp-contract=off
 # INT8 attention quantizes each query row as lrintf(q / (amax / 127)). With
 # -freciprocal-math gcc may turn either division into a multiply in one TU
 # and not in another (seen at -O1 --coverage on x86): a value next to a .5
@@ -505,7 +510,7 @@ $(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-c
 # (65), src/formats (10), src/quant (4) and tests/ (173): every site there is
 # index or geometry arithmetic on non-negative ints that only a cast would
 # silence, and none was a bug (numbers in #343).
-CONVERSION_DIRS := src/base src/io src/engine src/archs/vision_siglip \
+CONVERSION_DIRS := src/base src/io src/engine src/sampling src/archs/vision_siglip \
                    src/backends/cpu_scalar src/backends/metal src/backends/vulkan
 $(foreach d,$(CONVERSION_DIRS),$(BUILD_DIR)/$(d)/%.o): CFLAGS_STRICT += -Wconversion -Wsign-conversion
 $(BUILD_DIR)/tools/%.o: CFLAGS += -Wconversion -Wsign-conversion

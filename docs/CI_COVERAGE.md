@@ -251,8 +251,8 @@ produces JSON + Cobertura XML + HTML (uploaded as the `coverage-report` artifact
 against the versioned baselines in `benchmark/coverage_baselines.json`, with
 the overall figure and per-subsystem table published to the job summary.
 
-- **Scope**: `src/base`, `src/engine`, `src/io`, `src/formats`, `src/quant`,
-  `src/archs/transformer`, `src/archs/audio_conformer`,
+- **Scope**: `src/base`, `src/engine`, `src/io`, `src/sampling`, `src/formats`,
+  `src/quant`, `src/archs/transformer`, `src/archs/audio_conformer`,
   `src/archs/vision_siglip`, `src/backends/common`, `src/backends/cpu_scalar`.
   `vision_siglip` is barely reached by unit + int (~12 % line); its baseline
   only keeps it from falling.

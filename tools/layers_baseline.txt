@@ -52,24 +52,3 @@ if src/formats/gguf/tq2_0.c 1
 if src/io/gguf_reader.c 4
 if src/quant/quant.h 4
 if src/quant/quant_blocks.h 1
-include src/archs/transformer/arch_state.h -> src/engine/sampler.h
-include src/archs/transformer/forward/spec_head.c -> src/engine/sampler.h
-symbol src/archs/transformer/arch.c -> geist_sampler_penalties_set_breakers (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/arch_state.c -> geist_rng_seed (src/engine/sampler.c)
-symbol src/archs/transformer/arch_state.c -> geist_sampler_penalties_destroy (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/arch_state.c -> geist_sampler_workspace_destroy (src/engine/sampler.c)
-symbol src/archs/transformer/forward/head.c -> geist_sampler_argmax (src/engine/sampler.c)
-symbol src/archs/transformer/forward/head.c -> geist_sampler_penalties_active (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/forward/head.c -> geist_sampler_penalties_apply (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/forward/head.c -> geist_sampler_temperature_ws (src/engine/sampler.c)
-symbol src/archs/transformer/forward/head.c -> geist_sampler_top_k_ws (src/engine/sampler.c)
-symbol src/archs/transformer/forward/head.c -> geist_sampler_top_p_ws (src/engine/sampler.c)
-symbol src/archs/transformer/forward/mtp.c -> geist_sampler_argmax (src/engine/sampler.c)
-symbol src/archs/transformer/forward/spec_head.c -> geist_sampler_argmax (src/engine/sampler.c)
-symbol src/archs/transformer/forward/spec_head.c -> geist_sampler_penalties_active (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/forward/step.c -> geist_rng_seed (src/engine/sampler.c)
-symbol src/archs/transformer/forward/step.c -> geist_sampler_penalties_active (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/forward/step.c -> geist_sampler_penalties_init (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/forward/step.c -> geist_sampler_penalty_params_from_opts (src/engine/sampler_penalties.c)
-symbol src/archs/transformer/forward/step.c -> geist_sampler_workspace_destroy (src/engine/sampler.c)
-symbol src/archs/transformer/forward/step.c -> geist_sampler_workspace_init (src/engine/sampler.c)

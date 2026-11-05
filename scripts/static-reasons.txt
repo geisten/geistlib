@@ -20,7 +20,7 @@ src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-unix.cstring.NullArg	heap_tl
 src/base/fnv1a.h	clang-analyzer-core.uninitialized.Assign	the caller passes a fully initialized uint64_t[3]; byte reads inside an integer are not modelled
 src/engine/backend.c	clang-analyzer-security.VAList	va_start precedes va_end on a straight line; a checker miss
 src/engine/model.c	clang-analyzer-core.NullDereference	both branches read the same thread-local error code with no write between
-src/engine/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	both passes walk the same const packed list, so t is non-null or OOM returned
+src/sampling/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	both passes walk the same const packed list, so t is non-null or OOM returned
 src/engine/session.c	clang-analyzer-core.uninitialized.Assign	session_fail returns its non-OK code; variadics are not inlined by the analyzer
 src/archs/transformer/forward/moe.c	clang-analyzer-core.UndefinedBinaryOperatorResult	sel[0, n) is written in full; group q reads sel[q*per, q*per + per) with q < g and g*per == n (n % g == 0 checked), which the analyzer does not connect
 src/backends/common/gemma4_kernels.c	clang-analyzer-core.NonNullParamChecker	glibc's nonnull memcpy reports the macOS cstring.NullArg finding: heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
@@ -35,5 +35,5 @@ src/backends/vulkan/sequence.c	clang-analyzer-security.ArrayBound	nbind is a vk_
 src/base/cpu_limit.c	clang-analyzer-security.ArrayBound	the index is strcspn(line, "\n") on a NUL-terminated fgets line: at most strlen(line) < sizeof line
 src/base/error.c	clang-analyzer-security.VAList	va_start precedes vsnprintf on a straight line; x86_64's array-typed va_list trips the checker
 src/base/hw_probe.c	clang-analyzer-security.ArrayBound	the index is strcspn(buf, "\n") on a NUL-terminated fgets line: at most strlen(buf) < sizeof buf
-src/engine/sampler_penalties.c	clang-analyzer-core.NonNullParamChecker	glibc's nonnull memcpy reports the macOS cstring.NullArg finding: both passes walk the same const packed list, so t is non-null or OOM returned
+src/sampling/sampler_penalties.c	clang-analyzer-core.NonNullParamChecker	glibc's nonnull memcpy reports the macOS cstring.NullArg finding: both passes walk the same const packed list, so t is non-null or OOM returned
 src/engine/session.c	clang-analyzer-security.VAList	va_start precedes vsnprintf on a straight line; x86_64's array-typed va_list trips the checker

@@ -89,7 +89,7 @@
 1	src/base/par.c	bugprone-reserved-identifier	declaration uses identifier '_POSIX_C_SOURCE', which is a reserved identifier
 1	src/engine/backend.c	clang-analyzer-security.VAList	va_end() is called on an uninitialized va_list
 1	src/engine/model.c	clang-analyzer-core.NullDereference	Access to field 'auto_backend' results in a dereference of a null pointer
-1	src/engine/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 1st argument to memory copy function
+1	src/sampling/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	Null pointer passed as 1st argument to memory copy function
 1	src/engine/session.c	clang-analyzer-core.uninitialized.Assign	Assigned value is uninitialized
 2	src/formats/gguf/iq2_s.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to 'float'
 2	src/formats/gguf/iq3_s.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to 'float'

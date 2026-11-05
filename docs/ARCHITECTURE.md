@@ -10,8 +10,8 @@ codebase and the design rationale referenced from
 ```
 include/geist*.h         public C ABI (geist.h + geist_util.h for consumers)
   │
-src/engine/              orchestration: model load, sessions, sampler,
-  │                      tokenizers, allocators, backend/arch registries
+src/engine/              orchestration: model load, sessions, tokenizers,
+  │                      allocators, backend/arch registries
 src/archs/               architectures: how a model's forward pass is wired
   │   transformer/         decoder stack: families/ (one unit per model family),
   │                        forward/ (shared blocks, layer loop), weight_load/
@@ -24,6 +24,9 @@ src/backends/            compute: the kernels that actually run the ops
       cpu_x86/             x86-64-v3 + runtime AVX-512/VNNI dispatch (default on x86)
       metal/               Apple GPU (experimental, built on Apple Silicon; dlopen'd Metal.framework)
       vulkan/              Linux/NVIDIA GPU (opt-in, experimental; dlopen'd libvulkan)
+src/sampling/            token sampling on host logits (greedy, top-k/top-p,
+                         repetition and DRY penalties); the transformer's head
+                         and the engine's sessions both call it
 src/formats/             GGUF quant (de)quantization; ptqtp/ holds only the AWQ scale loader
 src/quant/               the quantization contract: block layouts, codec declarations
 src/io/                  GGUF reader, safetensors reader
@@ -69,16 +72,17 @@ shrinks.
 | quant | `src/quant/` | base, public | the quantization contract: block layouts and codec declarations, defined in formats (interface) |
 | io | `src/io/` | base, public, quant | GGUF and safetensors readers, file mapping |
 | formats | `src/formats/` | base, public, quant, io | per-quant decode of GGUF tensors, the AWQ scale loader |
+| sampling | `src/sampling/` | base, public | token sampling on host logits: greedy, top-k/top-p, repetition and DRY penalties |
 | backend_common | `src/backends/common/` | base, public, quant | the shared compute library: GEMM facade, gemma4 kernels, KIVI, host buffers |
 | cpu_neon | `src/backends/cpu_neon/` | base, public, quant, backend_common | backend: Apple Silicon and ARM64 |
 | cpu_scalar | `src/backends/cpu_scalar/` | base, public, quant, backend_common | backend: the portable reference |
 | cpu_x86 | `src/backends/cpu_x86/` | base, public, quant, backend_common, cpu_scalar | backend: x86-64-v3 with AVX-512/VNNI dispatch; falls back to cpu_scalar, the portable reference, for the fused table, the resolver and the kernels it has none of its own for (#441) |
 | metal | `src/backends/metal/` | base, public, quant, backend_common | backend: Apple GPU |
 | vulkan | `src/backends/vulkan/` | base, public, quant, backend_common | backend: Vulkan GPU |
-| transformer | `src/archs/transformer/` | base, public, quant, io, formats, backend_common | arch: the decoder stack, families, forward blocks, weight loading |
+| transformer | `src/archs/transformer/` | base, public, quant, io, formats, sampling, backend_common | arch: the decoder stack, families, forward blocks, weight loading |
 | audio_conformer | `src/archs/audio_conformer/` | base, public, quant, io, formats, backend_common | arch: the Conformer audio tower |
 | vision_siglip | `src/archs/vision_siglip/` | base, public, quant, io, formats, backend_common, third_party | arch: the SigLIP vision tower |
-| engine | `src/engine/` | base, public, quant, io, formats, backend_common | orchestration: model load, sessions, sampler, tokenizers, registries |
+| engine | `src/engine/` | base, public, quant, io, formats, sampling, backend_common | orchestration: model load, sessions, tokenizers, registries |
 | third_party | `third_party/` | nothing | vendored stb image headers |
 
 Composition point `src/engine/arch_registry.c` may also use transformer, audio_conformer, vision_siglip.
