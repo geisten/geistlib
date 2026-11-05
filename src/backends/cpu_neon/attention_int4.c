@@ -7,15 +7,13 @@
  * The loop is in attention_kv.h, shared with the INT8 cache; K is INT8 as
  * there, each V row is unpacked from head_dim / 2 bytes (int4_kv.h) before
  * the int8 sums. The
- * architecture's portable loop is the decomposed twin. Without
- * FEAT_DotProd this file is empty and the slot stays null.
+ * architecture's portable loop is the decomposed twin.
  */
 
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
 
-#if defined(__ARM_FEATURE_DOTPROD)
 constexpr bool NKV_INT4 = true;
 #include "attention_kv.h" /* the loop and the checks, shared with attention_int8.c */
 
@@ -36,5 +34,3 @@ enum geist_status cpu_neon_attention_kv_int4(struct geist_backend               
     }
     return nkv_attention(be, args);
 }
-
-#endif /* __ARM_FEATURE_DOTPROD */

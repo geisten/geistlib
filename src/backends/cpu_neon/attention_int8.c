@@ -8,15 +8,13 @@
  * The loop is in attention_kv.h, shared with the INT4 cache: each query
  * head quantized to int8 (amax / 127, round to nearest), exact int32 dots,
  * an online softmax over blocks of 512 positions, the V sums in fp32. The
- * architecture's portable loop is the decomposed twin. Without
- * FEAT_DotProd this file is empty and the slot stays null.
+ * architecture's portable loop is the decomposed twin.
  */
 
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "internal.h"
 
-#if defined(__ARM_FEATURE_DOTPROD)
 constexpr bool NKV_INT4 = false;
 #include "attention_kv.h" /* the loop and the checks, shared with attention_int4.c */
 
@@ -36,5 +34,3 @@ enum geist_status cpu_neon_attention_kv_int8(struct geist_backend               
     }
     return nkv_attention(be, args);
 }
-
-#endif /* __ARM_FEATURE_DOTPROD */
