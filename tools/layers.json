@@ -47,7 +47,8 @@
   "src/backends/cpu_x86/attention_driver.h": "a template: each including file defines ax_run_item, called by name rather than through a pointer"
  },
  "portability": {
-  "wrappers": ["src/base/"],
+  "why": "src/base/ wraps the platform for everyone; a backend is the boundary for its own hardware (AGENT.md 5), so neither counts (#441)",
+  "wrappers": ["src/base/", "src/backends/"],
   "not_portability": ["__cplusplus"]
  }
 }

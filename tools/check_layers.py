@@ -16,7 +16,8 @@ only shrink (tools/layers_baseline.txt):
            prototype itself and needs no include.
   header   every internal header compiles on its own (like check-headers for
            the public ones), with the flags of its directory.
-  if       the portability #ifs per file outside the wrapper headers: a
+  if       the portability #ifs per file outside the wrappers (src/base/ and
+           the backends, tools/layers.json "portability"): a
            #if/#ifdef/#ifndef/#elif whose condition names a reserved
            identifier (__APPLE__, __ARM_NEON, _OPENMP, ...), counted with the
            lexer of tools/c23_metrics.py. The count of a file may only fall

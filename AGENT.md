@@ -219,8 +219,9 @@ Neither is "cleaner" in general. Match the surrounding code.
 - Express invariants through **explicit validation**, not `assert`. Release
   builds define `NDEBUG`.
 - Portability differences live **behind clear boundaries**, not scattered
-  `#ifdef`s in logic. `make check-layers` counts the `#if`s on a platform
-  macro per file outside `src/base/`; a file's count may only fall.
+  `#ifdef`s in logic. `src/base/` wraps the platform and a backend is the
+  boundary for its own hardware; `make check-layers` counts the `#if`s on a
+  platform macro per file everywhere else, and a file's count may only fall.
 - **Layers are a table, not a convention.** `tools/layers.json` says which
   layer of `src/` may include and call which; `make check-layers` proves it
   from the compiler's include tree and `nm`. A new edge goes into the table
