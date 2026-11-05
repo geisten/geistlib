@@ -30,7 +30,12 @@ class Ratchet(unittest.TestCase):
 
 class Reasons(unittest.TestCase):
     def test_every_baselined_analyzer_finding_has_a_reason(self):
-        self.assertEqual(check_static.unexplained(check_static.read_baseline()), [])
+        scripts = os.path.dirname(check_static.BASELINE)
+        for name in sorted(os.listdir(scripts)):
+            if name.startswith("static-baseline"):
+                base = check_static.read_baseline(os.path.join(scripts, name))
+                self.assertTrue(base, name)
+                self.assertEqual(check_static.unexplained(base), [], name)
 
     def test_an_unexplained_analyzer_finding_is_reported(self):
         key = ("src/none.c", "clang-analyzer-core.NullDereference", "m")

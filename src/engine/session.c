@@ -21,7 +21,6 @@
 #include "clock.h"
 #include "heap.h"
 #include "parse.h"
-#include "image_pipeline.h"
 #include "dry_breakers.h"
 #include "sampler.h"
 #include "gguf_tokenizer.h"
@@ -1385,7 +1384,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
      * that narrows to int on the way into the resizer). Bound it at the
      * public entry so no product downstream can be formed from a value
      * that was never representable. */
-    if (height > IMAGE_PIPELINE_MAX_DIM || width > IMAGE_PIPELINE_MAX_DIM) {
+    if (height > GEIST_IMAGE_MAX_DIM || width > GEIST_IMAGE_MAX_DIM) {
         return GEIST_E_INVALID_ARG;
     }
     struct geist_session_full           *sf      = as_full(s);
@@ -1438,7 +1437,7 @@ geist_session_audio_push(struct geist_session *s, size_t n, const int16_t *pcm) 
      * soft-token buffer below is 70 * n_frames rows. Both products are
      * caller-controlled. */
     size_t frame_px = 0, frame_bytes = 0, clip_bytes = 0;
-    if (height > IMAGE_PIPELINE_MAX_DIM || width > IMAGE_PIPELINE_MAX_DIM ||
+    if (height > GEIST_IMAGE_MAX_DIM || width > GEIST_IMAGE_MAX_DIM ||
         ckd_mul(&frame_px, height, width) || ckd_mul(&frame_bytes, frame_px, 3u) ||
         ckd_mul(&clip_bytes, frame_bytes, n_frames)) {
         return GEIST_E_INVALID_ARG;

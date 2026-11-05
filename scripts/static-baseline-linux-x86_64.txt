@@ -1,0 +1,98 @@
+# scripts/check_static.py: known findings; this list only shrinks.
+# count, file, check, message. Regenerate with --update.
+1	include/geist_backend.h	clang-analyzer-core.NullDereference	Access to field 'fused' results in a dereference of a null pointer (loaded from field 'desc')
+2	src/archs/audio_conformer/arch.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+3	src/archs/audio_conformer/encoder_forward.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+2	src/archs/audio_conformer/encoder_forward.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+5	src/archs/audio_conformer/encoder_stream.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/audio_conformer/encoder_weights.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/transformer/arch_state.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/archs/transformer/arch_state.c	bugprone-invalid-enum-default-initialization	enum value of type 'geist_moe_gating' initialized with invalid value of 0, enum doesn't have a zero-value enumerator
+2	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'desc' results in a dereference of a null pointer (loaded from variable 'be')
+1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'split' results in a dereference of a null pointer (loaded from variable 'state')
+1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'vtbl' results in a dereference of a null pointer (loaded from field 'desc')
+1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Dereference of null pointer
+1	src/archs/transformer/families/llama.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+1	src/archs/transformer/families/llama4.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+2	src/archs/transformer/families/llama4.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+2	src/archs/transformer/forward/attention.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '*' is a garbage value
+16	src/archs/transformer/forward/blocks.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+1	src/archs/transformer/forward/decision_rows.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+3	src/archs/transformer/forward/decision_rows.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+9	src/archs/transformer/forward/head.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+18	src/archs/transformer/forward/kv_store.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+16	src/archs/transformer/forward/layer.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+10	src/archs/transformer/forward/layer_deltanet.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+1	src/archs/transformer/forward/layer_deltanet.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '*' is a garbage value
+9	src/archs/transformer/forward/layer_ple.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+1	src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	Access to field 'be' results in a dereference of a null pointer (loaded from field 'moe_gpu')
+1	src/archs/transformer/forward/moe.c	clang-analyzer-core.NullDereference	Access to field 'one_wait' results in a dereference of a null pointer (loaded from field 'moe_gpu')
+2	src/archs/transformer/forward/moe.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '>' is a garbage value
+2	src/archs/transformer/forward/mtp.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+2	src/archs/transformer/forward/probes.c	bugprone-misplaced-widening-cast	either cast from 'int' to 'size_t' (aka 'unsigned long') is ineffective, or there is loss of precision before the conversion
+1	src/archs/transformer/forward/spec_head.c	clang-analyzer-optin.taint.TaintedDiv	Division by a tainted value, possibly zero
+4	src/archs/transformer/forward/step.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
+4	src/archs/transformer/moe_gpu.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/transformer/moe_gpu.c	bugprone-unchecked-string-to-number-conversion	'sscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoul' instead
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-core.CallAndMessage	3rd function call argument is an uninitialized value
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '+' is a garbage value
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-deadcode.DeadStores	Value stored to 'rows' is never read
+1	src/archs/transformer/moe_gpu.c	clang-analyzer-security.ArrayBound	Potential out of bound access to the region with tainted offset
+1	src/archs/transformer/moe_profile.c	bugprone-misplaced-widening-cast	either cast from 'uint64_t' (aka 'unsigned long') to 'unsigned long long' is ineffective, or there is loss of precision before the conversion
+1	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an integer value, but function will not report conversion errors; consider using 'strtol' instead
+2	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoul' instead
+1	src/archs/transformer/moe_profile.c	bugprone-unchecked-string-to-number-conversion	'fscanf' used to convert a string to an unsigned integer value, but function will not report conversion errors; consider using 'strtoull' instead
+2	src/archs/transformer/scratch_plan.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/archs/transformer/weight_load/layer_wiring.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
+4	src/archs/vision_siglip/vision_encoder.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/archs/vision_siglip/vision_encoder.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+2	src/backends/common/geist_gemm.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/common/gemma4_kernels.c	clang-analyzer-core.NonNullParamChecker	Null pointer passed to 1st parameter expecting 'nonnull'
+1	src/backends/cpu_x86/attention.c	clang-analyzer-core.uninitialized.Assign	The left expression of the compound assignment uses uninitialized memory
+1	src/backends/cpu_x86/attention_f16.c	bugprone-suspicious-include	suspicious #include of file with '.c' extension
+1	src/backends/cpu_x86/attention_int8.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The left operand of '*' is a garbage value
+1	src/backends/cpu_x86/attention_int8.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '*' is a garbage value
+1	src/backends/cpu_x86/attention_int8_avx512_vnni.c	clang-analyzer-core.UndefinedBinaryOperatorResult	The right operand of '-' is a garbage value
+4	src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+21	src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_x86/kernel_q4k_tiled_avx512_vnni.c	bugprone-signed-char-misuse	'signed char' to 'int32_t' (aka 'int') conversion; consider casting to 'unsigned char' first.
+6	src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+8	src/backends/cpu_x86/kernel_q4kx8_gemm_avx512.c	bugprone-narrowing-conversions	narrowing conversion from 'uint32_t' (aka 'unsigned int') to signed type 'int' is implementation-defined
+7	src/backends/cpu_x86/kernel_q4kx8_gemm_avx512_full.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+2	src/backends/cpu_x86/kernel_q4kx8_gemm_scalar.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+2	src/backends/cpu_x86/kernel_q6k_gemv.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_x86/linear_pq2_0.c	bugprone-casting-through-void	do not cast 'uint8_t *' (aka 'unsigned char *') to 'float *' through 'void *'; use reinterpret_cast instead
+1	src/backends/cpu_x86/linear_q4k.c	clang-analyzer-core.NullDereference	Access to field 'state' results in a dereference of a null pointer (loaded from variable 'be')
+1	src/backends/cpu_x86/q4k_to_q4kx8.h	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+2	src/backends/cpu_x86/q8_kx4.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+2	src/backends/cpu_x86/q8_kx4.h	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+1	src/backends/vulkan/lifecycle.c	bugprone-macro-parentheses	macro argument should be enclosed in parentheses
+3	src/backends/vulkan/ops.c	bugprone-branch-clone	switch has 2 consecutive identical branches
+7	src/backends/vulkan/ops.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
+2	src/backends/vulkan/ops.c	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'unsigned int'
+1	src/backends/vulkan/ops.c	clang-analyzer-core.NullDereference	Access to field 'ndim' results in a dereference of a null pointer (loaded from variable 'cos')
+1	src/backends/vulkan/ops.c	clang-analyzer-core.NullDereference	Access to field 'ndim' results in a dereference of a null pointer (loaded from variable 'k')
+1	src/backends/vulkan/ops.c	clang-analyzer-core.NullDereference	Access to field 'ndim' results in a dereference of a null pointer (loaded from variable 'q')
+1	src/backends/vulkan/ops.c	clang-analyzer-core.NullDereference	Access to field 'ndim' results in a dereference of a null pointer (loaded from variable 'v')
+1	src/backends/vulkan/ops.c	clang-analyzer-core.NullDereference	Access to field 'ndim' results in a dereference of a null pointer (loaded from variable 'x')
+1	src/backends/vulkan/ops.c	clang-analyzer-security.ArrayBound	Out of bound access to memory around the field 'shape'
+1	src/backends/vulkan/resources.c	clang-analyzer-security.ArrayBound	Out of bound access to memory after the end of the field 'memoryHeaps'
+1	src/backends/vulkan/resources.c	clang-analyzer-security.ArrayBound	Out of bound access to memory after the end of the field 'stat_scratch_n'
+1	src/backends/vulkan/sequence.c	clang-analyzer-security.ArrayBound	Out of bound access to memory after the end of the field 'seq_dlayouts'
+1	src/backends/vulkan/sequence.c	clang-analyzer-security.ArrayBound	Out of bound access to memory after the end of the field 'seq_playouts'
+3	src/backends/vulkan/vk_internal.h	bugprone-macro-parentheses	macro argument should be enclosed in parentheses
+1	src/base/cpu_limit.c	clang-analyzer-security.ArrayBound	Potential out of bound access to 'line' with tainted index
+1	src/base/error.c	clang-analyzer-security.VAList	Function 'vsnprintf' is called with an uninitialized va_list argument
+1	src/base/fnv1a.h	clang-analyzer-core.uninitialized.Assign	Assigned value is uninitialized
+2	src/base/hw_probe.c	clang-analyzer-security.ArrayBound	Potential out of bound access to 'buf' with tainted index
+1	src/base/omp_idle.c	bugprone-reserved-identifier	declaration uses identifier '_POSIX_C_SOURCE', which is a reserved identifier
+1	src/base/par.c	bugprone-reserved-identifier	declaration uses identifier '_DARWIN_C_SOURCE', which is a reserved identifier
+1	src/base/par.c	bugprone-reserved-identifier	declaration uses identifier '_POSIX_C_SOURCE', which is a reserved identifier
+1	src/engine/backend.c	clang-analyzer-security.VAList	Function 'vsnprintf' is called with an uninitialized va_list argument
+1	src/engine/model.c	clang-analyzer-core.NullDereference	Access to field 'auto_backend' results in a dereference of a null pointer
+1	src/sampling/sampler_penalties.c	clang-analyzer-core.NonNullParamChecker	Null pointer passed to 1st parameter expecting 'nonnull'
+1	src/engine/session.c	clang-analyzer-core.uninitialized.Assign	Assigned value is uninitialized
+1	src/engine/session.c	clang-analyzer-security.VAList	Function 'vsnprintf' is called with an uninitialized va_list argument
+2	src/formats/gguf/iq2_s.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to 'float'
+2	src/formats/gguf/iq3_s.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to 'float'
+4	src/formats/gguf/q6_K.c	bugprone-narrowing-conversions	narrowing conversion from 'int' to signed type 'int8_t' (aka 'signed char') is implementation-defined

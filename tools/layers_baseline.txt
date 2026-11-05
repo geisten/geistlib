@@ -52,9 +52,3 @@ if src/formats/gguf/tq2_0.c 1
 if src/io/gguf_reader.c 4
 if src/quant/quant.h 4
 if src/quant/quant_blocks.h 1
-include src/engine/session.c -> src/archs/vision_siglip/image_pipeline.h
-symbol src/backends/cpu_x86/backend.c -> cpu_scalar_fused (src/backends/cpu_scalar/backend.c)
-symbol src/backends/cpu_x86/backend.c -> cpu_scalar_mul (src/backends/cpu_scalar/elementwise.c)
-symbol src/backends/cpu_x86/backend.c -> cpu_scalar_relu_squared (src/backends/cpu_scalar/elementwise.c)
-symbol src/backends/cpu_x86/backend.c -> cpu_scalar_resolve_weight (src/backends/cpu_scalar/weight_resolve.c)
-symbol src/backends/cpu_x86/backend.c -> cpu_scalar_rope_apply (src/backends/cpu_scalar/transformer_ops.c)

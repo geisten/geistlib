@@ -25,6 +25,8 @@
 #ifndef IMAGE_PIPELINE_H
 #define IMAGE_PIPELINE_H
 
+#include <geist_arch.h> /* GEIST_IMAGE_MAX_DIM */
+
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -37,7 +39,7 @@
  * caller-supplied image geometry stops being representable rather than
  * merely large. Sizes that are representable but absurd fail honestly at
  * the allocator. */
-constexpr size_t IMAGE_PIPELINE_MAX_DIM = (size_t) (INT_MAX / 3);
+constexpr size_t IMAGE_PIPELINE_MAX_DIM = GEIST_IMAGE_MAX_DIM;
 
 constexpr int VISION_PATCH_SIZE  = 16;
 constexpr int VISION_POOL_KERNEL = 3;

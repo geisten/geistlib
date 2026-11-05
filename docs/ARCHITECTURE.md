@@ -76,7 +76,7 @@ shrinks.
 | backend_common | `src/backends/common/` | base, public, quant | the shared compute library: GEMM facade, gemma4 kernels, KIVI, host buffers |
 | cpu_neon | `src/backends/cpu_neon/` | base, public, quant, backend_common | backend: Apple Silicon and ARM64 |
 | cpu_scalar | `src/backends/cpu_scalar/` | base, public, quant, backend_common | backend: the portable reference |
-| cpu_x86 | `src/backends/cpu_x86/` | base, public, quant, backend_common | backend: x86-64-v3 with AVX-512/VNNI dispatch |
+| cpu_x86 | `src/backends/cpu_x86/` | base, public, quant, backend_common, cpu_scalar | backend: x86-64-v3 with AVX-512/VNNI dispatch; falls back to cpu_scalar, the portable reference, for the fused table, the resolver and the kernels it has none of its own for (#441) |
 | metal | `src/backends/metal/` | base, public, quant, backend_common | backend: Apple GPU |
 | vulkan | `src/backends/vulkan/` | base, public, quant, backend_common | backend: Vulkan GPU |
 | transformer | `src/archs/transformer/` | base, public, quant, io, formats, sampling, backend_common | arch: the decoder stack, families, forward blocks, weight loading |
