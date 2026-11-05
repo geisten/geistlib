@@ -94,8 +94,13 @@ def tidy(tool, db, args, src):
         capture_output=True,
         text=True,
     )
-    if r.returncode not in (0, 1):
-        raise RuntimeError(f"{tool} on {src}: exit {r.returncode}\n{r.stderr[-2000:]}")
+    # A file clang-tidy cannot compile reports a clang-diagnostic-error with
+    # no path and exits 1, like a file with findings: never let it pass as
+    # clean (#439).
+    if r.returncode not in (0, 1) or "[clang-diagnostic-error]" in r.stdout:
+        raise RuntimeError(
+            f"{tool} on {src}: exit {r.returncode}\n{(r.stdout + r.stderr)[-2000:]}"
+        )
     return r.stdout
 
 
