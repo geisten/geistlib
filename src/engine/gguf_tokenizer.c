@@ -140,6 +140,19 @@ static size_t utf8_lead_len(uint8_t b) {
     return 1;
 }
 
+/* The bytes of one merge symbol starting at lead byte b, as llama.cpp's
+ * unicode_len_utf8 sizes it (unicode.cpp at 8642541b2) from the high
+ * nibble alone: 0x0..0xB (ASCII, and a stray continuation byte) 1, 0xC..0xD
+ * 2, 0xE 3, 0xF 4 (0xF8..0xFF too); continuation bytes are not looked at,
+ * and the caller clips the symbol to the chunk's end. Its SentencePiece
+ * tokenizer splits the raw text so, so a malformed sequence there swallows
+ * the bytes after it (#454); on valid UTF-8 it is the codepoint's length,
+ * and the byte-level BPE chunks are valid UTF-8 by then (#427). */
+static size_t utf8_symbol_len(uint8_t b) {
+    static const uint8_t LEN[16] = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 4};
+    return LEN[b >> 4];
+}
+
 /* Hash helpers, defined further down. */
 static uint64_t fnv1a64(const char *p, size_t n);
 static uint64_t fnv1a64_pair(const char *a, size_t alen, const char *b, size_t blen);
@@ -1216,11 +1229,9 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
             return 1;
         }
     }
-    /* One codepoint has no pair to merge: skip the scratch (smollm's
+    /* One symbol has no pair to merge: skip the scratch (smollm's
      * digits and lone spaces, #403). */
-    size_t adv1;
-    (void) utf8_decode_one(buf, buf_len, &adv1);
-    if (adv1 == buf_len && !tok->tokenizer_bin) {
+    if (utf8_symbol_len((uint8_t) buf[0]) >= buf_len && !tok->tokenizer_bin) {
         const int32_t id = vocab_lookup(tok, buf, buf_len);
         if (id >= 0) {
             out[0] = id;
@@ -1238,14 +1249,8 @@ static size_t bpe_chunk_to_ids(const struct gguf_tokenizer *tok,
     int        n_syms    = 0;
     size_t     k         = 0;
     while (k < buf_len) {
-        size_t adv;
-        if (lead_only) {
-            adv = utf8_lead_len((uint8_t) buf[k]);
-        } else {
-            (void) utf8_decode_one(buf + k, buf_len - k, &adv);
-        }
-        if (adv == 0)
-            adv = 1;
+        size_t adv =
+                lead_only ? utf8_lead_len((uint8_t) buf[k]) : utf8_symbol_len((uint8_t) buf[k]);
         if (k + adv > buf_len)
             adv = buf_len - k;
         syms[n_syms].off  = k;
@@ -1769,11 +1774,8 @@ static size_t unigram_chunk_to_ids(const struct gguf_tokenizer *tok,
         return SIZE_MAX; /* Allocation failure, never an empty chunk. */
     int    n_syms = 0;
     size_t k      = 0;
-    while (k < buf_len) { /* one symbol per UTF-8 codepoint */
-        size_t adv;
-        (void) utf8_decode_one(buf + k, buf_len - k, &adv);
-        if (adv == 0)
-            adv = 1;
+    while (k < buf_len) { /* one symbol per UTF-8 codepoint, sized as llama.cpp does */
+        size_t adv = utf8_symbol_len((uint8_t) buf[k]);
         if (k + adv > buf_len)
             adv = buf_len - k;
         syms[n_syms].off  = k;

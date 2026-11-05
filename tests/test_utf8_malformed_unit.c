@@ -23,10 +23,23 @@
  *    splitter ("deepseek-coder"): one id per byte of REBUILT. The same for a
  *    "gemma4" vocabulary (raw UTF-8, one token per codepoint): one id per
  *    codepoint of REBUILT with spaces as U+2581.
+ * 4. SentencePiece ("llama"; #454): llama.cpp's llm_tokenizer_spm_session
+ *    does not decode at all. After llama_escape_whitespace (' ' -> U+2581)
+ *    it cuts the text into symbols by unicode_len_utf8 — the lead byte's
+ *    high nibble alone: 0x0..0xB 1 byte (a stray continuation byte too),
+ *    0xC..0xD 2, 0xE 3, 0xF 4 (0xF8..0xFF too), clipped to the end, the
+ *    continuation bytes never checked — so a malformed sequence swallows
+ *    the bytes after it, U+2581's included; a symbol that forms no token
+ *    is written as its <0xXX> byte tokens. SYMBOLS_SPM is that split, from
+ *    the same harness. gguf_tokenizer_encode on a vocabulary of the byte
+ *    tokens, the ASCII characters, U+2581 and every symbol that is one
+ *    valid codepoint, with no pair to merge, as unigram (scores) and as
+ *    SPM (a merge nothing uses): one id per symbol, or its bytes.
  * On the real vocabularies (ggml-vocab-*.gguf of llama.cpp, gpt-oss-20b,
- * Llama 4 Scout, DeepSeek-V2-Lite) the ids of llama-tokenize 0.8.0 and of
- * gguf_tokenizer_encode agree on these texts for every one of these
- * pretokenizers and gemma4 (#427 PR).
+ * Llama 4 Scout, DeepSeek-V2-Lite, Gemma 3 270M) the ids of llama-tokenize
+ * 0.8.0 and of gguf_tokenizer_encode agree on these texts for every one of
+ * these pretokenizers, gemma4 and the SentencePiece vocabularies llama-spm,
+ * phi-3, baichuan and Gemma 3 (#427, #454 PRs).
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
@@ -308,6 +321,44 @@ static const char *const PIECES_DSV3[N_TEXTS] = {
         ".\xFF.",
 };
 
+static const char *const SYMBOLS_SPM[N_TEXTS] = {
+        "a\x01\xFF"
+        "b\xE2\x96\x01\x81\x01\xFF\xFE!",
+        "H\x01"
+        "e\x01l\x01l\x01o\x01\x80\x01w\x01o\x01r\x01l\x01"
+        "d",
+        "x\x01\xE2\x96\x81\x01\xC3(\x01y",
+        "\xE2\x82\xE2\x01\x96\x01\x81\x01"
+        "e\x01u\x01r\x01o",
+        "\xF0\x9F\x98\xE2\x01\x96\x01\x81\x01s\x01m\x01i\x01l\x01"
+        "e",
+        "a\x01"
+        "b\x01"
+        "c\x01\xF8\x88"
+        "de\x01"
+        "f",
+        "1\x01"
+        "2\x01"
+        "3\x01\xFF"
+        "456\x01"
+        "7",
+        "\xE2\x96\x81\x01\xE2\x96\x81\x01\xFF\xE2\x96\x81\x01\xE2\x96\x81\x01x",
+        "i\x01t\x01\xFF's\xE2\x01\x96\x01\x81\x01\xFFOK",
+        "\xC0\xAF\x01\xE2\x96\x81\x01s\x01l\x01"
+        "a\x01s\x01h\x01\xE2\x96\x81\x01\xE0\x80\x80",
+        "\xF4\x90\x80\x80\x01\xE2\x96\x81\x01"
+        "b\x01i\x01g",
+        "\xED\xA0\x80\x01\xE2\x96\x81\x01s\x01u\x01r\x01r",
+        "e\x01n\x01"
+        "d\x01\xE4",
+        "\xFF\n\n\xFE",
+        "\xFF"
+        "abc\x01\xE2\x96\x81\x01\xFF"
+        "123",
+        "C\x01J\x01K\x01\xE6\x97\xA5\x01\xFF\xE6\x9C\xAC",
+        ".\x01\xFF.",
+};
+
 /* Valid UTF-8 (REBUILT) to codepoints with their lengths; returns the count. */
 static size_t decode_valid(const char *s, uint32_t cps[static 64], size_t lens[static 64]) {
     size_t k = 0;
@@ -483,15 +534,16 @@ static size_t put_utf8(uint32_t cp, char out[static 4]) {
     return 4;
 }
 
-/* A tokenizer-only GGUF: model, pre (unless null), the tokens, the merges
- * ("l r" strings) and, for gemma4, add_space_prefix = false. */
+/* A tokenizer-only GGUF: model, pre (unless null), the tokens with their
+ * scores, the merges ("l r" strings) and, for gemma4 and llama,
+ * add_space_prefix = false. */
 static struct tf_buf make_gguf(const char *model, const char *pre, const struct tf_vocab *v) {
-    const bool    gemma4 = strcmp(model, "gemma4") == 0;
+    const bool    gemma4 = strcmp(model, "gemma4") == 0 || strcmp(model, "llama") == 0;
     struct tf_buf o      = {0};
     tf_put(&o, "GGUF", 4);
     tf_u32(&o, 3);
     tf_u64(&o, 1); /* tensors: the reader wants at least one */
-    tf_u64(&o, 3 + (pre != nullptr) + gemma4);
+    tf_u64(&o, 4 + (pre != nullptr) + gemma4);
     tf_gstr(&o, "tokenizer.ggml.model", 20);
     tf_u32(&o, TF_GGUF_STRING);
     tf_gstr(&o, model, strlen(model));
@@ -506,6 +558,12 @@ static struct tf_buf make_gguf(const char *model, const char *pre, const struct 
     tf_u64(&o, v->n_tok);
     for (size_t i = 0; i < v->n_tok; i++)
         tf_gstr(&o, v->tok[i], strlen(v->tok[i]));
+    tf_gstr(&o, "tokenizer.ggml.scores", 21);
+    tf_u32(&o, TF_GGUF_ARRAY);
+    tf_u32(&o, TF_GGUF_FLOAT32);
+    tf_u64(&o, v->n_tok);
+    for (size_t i = 0; i < v->n_tok; i++)
+        tf_f32(&o, v->score[i]);
     tf_gstr(&o, "tokenizer.ggml.merges", 21);
     tf_u32(&o, TF_GGUF_ARRAY);
     tf_u32(&o, TF_GGUF_STRING);
@@ -639,6 +697,72 @@ static int check_encode_gemma4(void) {
     return fails;
 }
 
+/* SentencePiece: the ids of llama.cpp's symbols (SYMBOLS_SPM) on a
+ * vocabulary in which no two symbols merge — unigram, or with merges an SPM
+ * vocabulary whose only merge nothing uses. */
+static int check_encode_spm(bool with_merges) {
+    static const char MARK[] = "\xE2\x96\x81";
+    struct tf_vocab   v      = {0};
+    for (int b = 0; b < 256; b++) {
+        char s[8];
+        snprintf(s, sizeof s, "<0x%02X>", b);
+        tf_add_tok(&v, s, 6, -100.0f);
+    }
+    for (char c = '!'; c <= '~'; c++)
+        tf_add_tok(&v, &c, 1, -1.0f);
+    tf_add_tok(&v, "\n", 1, -1.0f);
+    tf_add_tok(&v, MARK, 3, -1.0f);
+    for (size_t t = 0; t < N_TEXTS; t++) {
+        for (const char *p = SYMBOLS_SPM[t];;) {
+            const char    *sep = strchr(p, '\x01');
+            const size_t   len = sep != nullptr ? (size_t) (sep - p) : strlen(p);
+            size_t         adv;
+            const uint32_t cp = gguf_tokenizer_utf8_cp(len, 0, p, &adv);
+            if (adv == len && !(cp == 0xFFFD && adv == 1))
+                tf_add_tok(&v, p, len, -1.0f); /* one valid codepoint */
+            if (sep == nullptr)
+                break;
+            p = sep + 1;
+        }
+    }
+    if (with_merges) {
+        tf_add_tok(&v, "QQ", 2, -1.0f);
+        tf_add_merge(&v, "Q", 1, "Q", 1);
+    }
+    const char           *what = with_merges ? "spm" : "unigram";
+    struct tf_buf         g    = make_gguf("llama", nullptr, &v);
+    struct gguf_tokenizer tok;
+    int                   fails = geist_expect(load(&tok, &g), "llama vocabulary loads");
+    for (size_t t = 0; fails == 0 && t < N_TEXTS; t++) {
+        int32_t ids[64], want[64];
+        size_t  n = 0, n_want = 0;
+        fails += geist_expect(gguf_tokenizer_encode(&tok, TEXTS[t], 64, ids, &n) == GEIST_OK,
+                              "encode succeeds");
+        for (const char *p = SYMBOLS_SPM[t];;) {
+            const char  *sep = strchr(p, '\x01');
+            const size_t len = sep != nullptr ? (size_t) (sep - p) : strlen(p);
+            int32_t      id  = -1;
+            for (size_t i = 0; id < 0 && i < v.n_tok; i++)
+                if (strlen(v.tok[i]) == len && memcmp(v.tok[i], p, len) == 0)
+                    id = (int32_t) i;
+            if (id >= 0)
+                want[n_want++] = id;
+            else /* no token: its bytes, <0xXX> = id XX */
+                for (size_t b = 0; b < len; b++)
+                    want[n_want++] = (unsigned char) p[b];
+            if (sep == nullptr)
+                break;
+            p = sep + 1;
+        }
+        fails += compare_ids(what, t, n, ids, n_want, want);
+    }
+    if (fails == 0)
+        gguf_tokenizer_unload(&tok);
+    free(g.b);
+    tf_free_vocab(&v);
+    return fails;
+}
+
 int main(void) {
     int fails = 0;
     for (size_t t = 0; t < N_TEXTS; t++)
@@ -650,7 +774,10 @@ int main(void) {
         fails += check_encode_gpt2(FAMILIES[f].pre);
     fails += check_encode_gemma4();
     fails += check_encode_gpt2("deepseek-coder"); /* the simple splitter */
-    printf("malformed UTF-8 vs llama.cpp: %d texts x %d pretokenizers + gemma4, %d failed\n",
+    fails += check_encode_spm(false);
+    fails += check_encode_spm(true);
+    printf("malformed UTF-8 vs llama.cpp: %d texts x %d pretokenizers + gemma4, spm, unigram; "
+           "%d failed\n",
            (int) N_TEXTS,
            (int) N_FAMILIES,
            fails);
