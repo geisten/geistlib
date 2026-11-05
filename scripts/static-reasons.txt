@@ -23,3 +23,17 @@ src/engine/model.c	clang-analyzer-core.NullDereference	both branches read the sa
 src/engine/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	both passes walk the same const packed list, so t is non-null or OOM returned
 src/engine/session.c	clang-analyzer-core.uninitialized.Assign	session_fail returns its non-OK code; variadics are not inlined by the analyzer
 src/archs/transformer/forward/moe.c	clang-analyzer-core.UndefinedBinaryOperatorResult	sel[0, n) is written in full; group q reads sel[q*per, q*per + per) with q < g and g*per == n (n % g == 0 checked), which the analyzer does not connect
+src/backends/common/gemma4_kernels.c	clang-analyzer-core.NonNullParamChecker	glibc's nonnull memcpy reports the macOS cstring.NullArg finding: heap_tl_grow keeps ptr and cap paired (heap.c:342) and the path needs a nonzero size
+src/backends/cpu_x86/attention.c	clang-analyzer-core.uninitialized.Assign	acc_all[..][0, head_dim) is zeroed before the block loop (line 310) and then written by _mm256_store_ps, which the analyzer does not follow
+src/backends/cpu_x86/attention_int8.c	clang-analyzer-core.UndefinedBinaryOperatorResult	q_all and ks are written over [0, head_dim) and [0, n) before the scores read them; the analyzer loses the loop bounds across the AVX2 stores
+src/backends/cpu_x86/attention_int8_avx512_vnni.c	clang-analyzer-core.UndefinedBinaryOperatorResult	corr_all[tq][g] is set for every tq < tn and g < G by the quantize loop; the analyzer does not tie its tn * G count to the later loops
+src/backends/cpu_x86/linear_q4k.c	clang-analyzer-core.NullDereference	linear_mN's be is the backend that owns w, never null; the defensive be != nullptr at line 264 seeds the report
+src/backends/vulkan/ops.c	clang-analyzer-core.NullDereference	vk_tensor_host (resources.c) returns nullptr for a null tensor, so x/cos/q/k/v are non-null past the host check; the analyzer does not see across the TU and the GPU path's nullptr checks seed it
+src/backends/vulkan/ops.c	clang-analyzer-security.ArrayBound	cos->ndim >= 1 once vk_tensor_host succeeded (geist_tensor_elems refuses ndim < 1); cross-TU, so the analyzer cannot see it
+src/backends/vulkan/resources.c	clang-analyzer-security.ArrayBound	heapIndex < memoryHeapCount <= VK_MAX_MEMORY_HEAPS by the Vulkan spec; stat_scratch_n: buf->buf is a created VkBuffer there, so vk_buffer_placement is never VK_PLACEMENT_NONE
+src/backends/vulkan/sequence.c	clang-analyzer-security.ArrayBound	nbind is a vk_pipe_nbind entry, all in [2, VK_MAX_BINDINGS] (pipelines.c creates exactly those layouts); the analyzer does not know the table's range
+src/base/cpu_limit.c	clang-analyzer-security.ArrayBound	the index is strcspn(line, "\n") on a NUL-terminated fgets line: at most strlen(line) < sizeof line
+src/base/error.c	clang-analyzer-security.VAList	va_start precedes vsnprintf on a straight line; x86_64's array-typed va_list trips the checker
+src/base/hw_probe.c	clang-analyzer-security.ArrayBound	the index is strcspn(buf, "\n") on a NUL-terminated fgets line: at most strlen(buf) < sizeof buf
+src/engine/sampler_penalties.c	clang-analyzer-core.NonNullParamChecker	glibc's nonnull memcpy reports the macOS cstring.NullArg finding: both passes walk the same const packed list, so t is non-null or OOM returned
+src/engine/session.c	clang-analyzer-security.VAList	va_start precedes vsnprintf on a straight line; x86_64's array-typed va_list trips the checker

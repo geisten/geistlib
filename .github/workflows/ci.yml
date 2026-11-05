@@ -1432,9 +1432,9 @@ jobs:
 
   # Static analysis on the macOS arm64 build, the one the baseline was taken
   # on: clang-tidy pinned like clang-format, because a new version brings new
-  # findings. x86_64 and Vulkan sources are not analysed (#342). check-static
-  # also runs check-layers (#344) on this build; build-test-musl-x86_64 runs
-  # it on the x86 one.
+  # findings. static-analysis-x86_64 covers the x86_64 and Vulkan sources.
+  # check-static also runs check-layers (#344) on this build;
+  # build-test-musl-x86_64 runs it on the x86 one.
   static-analysis:
     name: static analysis (clang-tidy, macOS arm64)
     needs: changes
@@ -1455,6 +1455,33 @@ jobs:
       # tree (#341); needs clang, which this runner has.
       - name: Include graph up to date
         run: python3 tools/include_graph.py check
+
+  # The same clang-tidy on the Linux x86_64 build with Vulkan (#420): cpu_x86,
+  # the Vulkan backend and the x86/Linux #if branches, none of which the macOS
+  # leg compiles. Its own baseline, scripts/static-baseline-linux-x86_64.txt,
+  # so neither leg sees the other's findings. CC=clang only names the flags of
+  # `make -n` (clang is not installed); gcc-14 lends its omp.h, which
+  # clang-tidy's own headers lack. Only check-static-tidy: check-layers runs
+  # on this build in build-test-musl-x86_64.
+  static-analysis-x86_64:
+    name: static analysis (clang-tidy, Linux x86_64 + Vulkan)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install deps (Vulkan headers, gcc-14's omp.h)
+        uses: ./.github/actions/apt-install
+        timeout-minutes: 5
+        with:
+          packages: gcc-14 libvulkan-dev
+      - name: Install clang-tidy 22 (as the macOS leg)
+        run: sudo python3 -m pip install --break-system-packages clang-tidy==22.1.8
+      - name: Check
+        run: >-
+          make check-static-tidy TARGET=linux CC=clang GEMM_PROVIDER=native
+          BACKENDS="vulkan cpu_x86 cpu_scalar" OMP_CC=gcc-14
 
   # Post-merge tier on main: one Gitea issue per failing job name, updated by
   # every later run and closed by the first green one (scripts/ci-issues.py).
@@ -1484,6 +1511,7 @@ jobs:
       - coverage
       - format
       - static-analysis
+      - static-analysis-x86_64
     if: always() && github.server_url != 'https://github.com' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.changes.outputs.full != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 10

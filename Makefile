@@ -593,7 +593,9 @@ check-static: check-layers
 check-static: check-static-tidy
 
 # clang-tidy: the seeded defects in tests/static/ must be found, and the
-# library must have no finding beyond scripts/static-baseline.txt (#342).
+# library must have no finding beyond this configuration's baseline (#342):
+# scripts/static-baseline.txt on macOS arm64, static-baseline-linux-x86_64.txt
+# for TARGET=linux CC=clang BACKENDS="vulkan cpu_x86 cpu_scalar" (#420).
 CLANG_TIDY ?= clang-tidy
 .PHONY: check-static-tidy
 check-static-tidy:

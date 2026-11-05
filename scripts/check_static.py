@@ -16,12 +16,20 @@ stay out, so moving code does not disturb the baseline.
 A NOLINT needs its reason on the same line: NOLINT(check): why. So does an
 analyzer finding in the baseline, in static-reasons.txt.
 
-CLANG_TIDY names the binary; JOBS the parallelism.
+Each configuration has its own baseline, because each analyses other sources
+and other #if branches: static-baseline.txt is the macOS arm64 build,
+static-baseline-linux-x86_64.txt the Linux x86_64 one with cpu_x86 and Vulkan
+(#420). STATIC_BASELINE names another. The make variables of the calling
+`make` (BACKENDS, CC, TARGET) reach `make -n` through MAKEFLAGS.
+
+CLANG_TIDY names the binary; JOBS the parallelism; OMP_CC the gcc whose omp.h
+clang-tidy borrows on Linux.
 """
 import argparse
 import collections
 import json
 import os
+import platform
 import re
 import shlex
 import subprocess
@@ -30,7 +38,13 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BASELINE = os.path.join(ROOT, "scripts", "static-baseline.txt")
+BASELINE = os.environ.get("STATIC_BASELINE") or os.path.join(
+    ROOT,
+    "scripts",
+    "static-baseline.txt"
+    if sys.platform == "darwin"
+    else f"static-baseline-{sys.platform}-{platform.machine()}.txt",
+)
 REASONS = os.path.join(ROOT, "scripts", "static-reasons.txt")
 FINDING = re.compile(r"^(.+?):(\d+):(\d+): (warning|error): (.*) \[([^\]]+)\]$")
 NOLINT = re.compile(r"NOLINT(?:NEXTLINE|BEGIN|END)?(\([^)]*\))?(.*)")
@@ -53,18 +67,29 @@ def compile_commands():
     return cmds
 
 
-def extra_args():
-    if sys.platform != "darwin":
-        return []
-    sdk = subprocess.run(
-        ["xcrun", "--show-sdk-path"], check=True, capture_output=True, text=True
+def extra_args(tmp):
+    if sys.platform == "darwin":
+        sdk = subprocess.run(
+            ["xcrun", "--show-sdk-path"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        return ["--extra-arg=-isysroot" + sdk]
+    # clang-tidy's own headers have no omp.h. gcc's directory cannot go on the
+    # path whole -- it holds gcc's intrinsics headers too -- so omp.h alone.
+    gcc = os.environ.get("OMP_CC", "gcc")
+    omp = subprocess.run(
+        [gcc, "-print-file-name=include/omp.h"], check=True, capture_output=True, text=True
     ).stdout.strip()
-    return ["--extra-arg=-isysroot" + sdk]
+    if not os.path.isabs(omp):
+        raise RuntimeError(f"{gcc} has no omp.h (install its libgomp headers)")
+    inc = os.path.join(tmp, "omp")
+    os.makedirs(inc, exist_ok=True)
+    os.symlink(omp, os.path.join(inc, "omp.h"))
+    return ["--extra-arg=-isystem" + inc]
 
 
-def tidy(tool, db, src):
+def tidy(tool, db, args, src):
     r = subprocess.run(
-        [tool, "-p", db, "--quiet", *extra_args(), src],
+        [tool, "-p", db, "--quiet", *args, src],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -79,9 +104,10 @@ def scan(tool, cmds):
     with tempfile.TemporaryDirectory() as db:
         with open(os.path.join(db, "compile_commands.json"), "w") as f:
             json.dump(cmds, f)
+        args = extra_args(db)
         jobs = int(os.environ.get("JOBS", os.cpu_count() or 1))
         with ThreadPoolExecutor(jobs) as pool:
-            outputs = list(pool.map(lambda c: tidy(tool, db, c["file"]), cmds))
+            outputs = list(pool.map(lambda c: tidy(tool, db, args, c["file"]), cmds))
     seen = set()
     for text in outputs:
         for line in text.splitlines():
@@ -99,10 +125,10 @@ def findings(tool, cmds):
     return collections.Counter((p, check, msg) for p, _, _, check, msg in scan(tool, cmds))
 
 
-def read_baseline():
+def read_baseline(path=BASELINE):
     counts = collections.Counter()
-    if os.path.exists(BASELINE):
-        with open(BASELINE) as f:
+    if os.path.exists(path):
+        with open(path) as f:
             for line in f:
                 if line.startswith("#") or not line.strip():
                     continue
