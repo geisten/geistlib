@@ -5,23 +5,23 @@
    "what": "_Static_assert"
   },
   "__attribute__": {
-   "max": 18,
+   "max": 0,
    "what": "__attribute__"
   },
   "__builtin": {
-   "max": 83,
+   "max": 76,
    "what": "__builtin_* calls and names"
   },
   "define_function": {
-   "max": 101,
+   "max": 97,
    "what": "function-like #define"
   },
   "define_object": {
-   "max": 167,
+   "max": 62,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
-   "max": 46,
+   "max": 3,
    "what": "enum { ... } used as constants (no tag, no typedef)"
   },
   "enum_named_unfixed": {
@@ -33,7 +33,7 @@
    "what": "goto"
   },
   "pp_conditional": {
-   "max": 523,
+   "max": 501,
    "what": "#if, #ifdef, #ifndef"
   },
   "pp_elif": {
@@ -45,15 +45,15 @@
    "what": "switch statements with a default: label of their own"
   },
   "void_pp_cast": {
-   "max": 320,
+   "max": 319,
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
-   "max": 2023,
+   "max": 1262,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {
-   "max": 66,
+   "max": 23,
    "what": "(void *) and (const void *) casts"
   }
  },
