@@ -58,8 +58,9 @@ against it with `tools/check_layers.py`:
   (`include/`, `src/quant/`) belongs to that layer, wherever it is defined;
 - every **internal header compiles on its own**, as `check-headers` does for
   the public ones, except the templates the table lists with their reason;
-- the **portability `#if`s** per file outside the wrapper headers of
-  `src/base/` may only fall (AGENT.md §5).
+- the **portability `#if`s** per file outside `src/base/` and the backends
+  (each backend is the boundary for its own hardware) may only fall
+  (AGENT.md §5).
 
 Known violations are listed in `tools/layers_baseline.txt`, which only
 shrinks.

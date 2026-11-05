@@ -88,6 +88,9 @@ class PortabilityIfs(unittest.TestCase):
 
     def test_wrappers_do_not_count(self):
         self.assertEqual(self.count("#ifdef __linux__\n#endif\n", "src/base/par.c"), 0)
+        # a backend is the boundary for its own hardware (#441)
+        self.assertEqual(self.count("#ifdef __ARM_NEON\n#endif\n", "src/backends/cpu_neon/x.c"), 0)
+        self.assertEqual(self.count("#ifdef __ARM_NEON\n#endif\n", "src/archs/audio_conformer/x.c"), 1)
 
 
 class Ratchet(unittest.TestCase):
