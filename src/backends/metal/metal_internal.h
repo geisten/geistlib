@@ -432,6 +432,10 @@ struct metal_state {
     struct metal_pipeline_h *dn_dec_v_pipeline;
     struct metal_function_h *dn_dec_v_rows_function;
     struct metal_pipeline_h *dn_dec_v_rows_pipeline;
+    struct metal_function_h *dn_dec_v_cs_function; /* #469: column-split rows */
+    struct metal_pipeline_h *dn_dec_v_cs_pipeline;
+    struct metal_function_h *dn_dec_vnorm_function;
+    struct metal_pipeline_h *dn_dec_vnorm_pipeline;
     struct metal_function_h *dn_dec_qk_b_function; /* #26: several sessions' decode rows */
     struct metal_pipeline_h *dn_dec_qk_b_pipeline;
     struct metal_function_h *dn_dec_v_b_function;

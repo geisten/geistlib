@@ -3708,6 +3708,72 @@ static const char metal_dn_decode_rows_source[] =
         "rcs[p.rcso+(t*(p.K-1u)+r)*cd+cv]=cs[p.cso+r*cd+cv];}}}}"
         "FOR_UNROLL(uint i=0u;i<32u;i++){if(i0+i<i1)S[sb+(i0+i)*p.dv+j]=sr[i];}}\n";
 
+/* dn_dec_v_cs / dn_dec_vnorm (#469): dn_dec_v_rows split by value column,
+ * the layout of Vulkan's deltanet_scan_f32 (#467). The delta rule is
+ * independent per column j, so 8 adjacent lanes own one column, each with
+ * 16 of its rows (i = r * 8 + lane) in registers, and the two row sums are
+ * 8-lane shuffle reductions: no threadgroup barrier in the recurrence. A
+ * threadgroup of 128 threads holds 16 columns; the grid is ceil(dv / 16) x
+ * n_vh, so a head spreads over several threadgroups and many fit a core
+ * (dn_dec_v_rows: one 512-thread threadgroup per head and per core, #266).
+ * Lane 0 of a column runs its v conv with the window in registers. Every
+ * row's q and k are staged in threadgroup memory once. The unnormalized
+ * output goes to o (buffer 13, seq x vd); dn_dec_vnorm applies the gated
+ * RMS norm afterwards, as dn_dec_v_rows does, since it needs every column
+ * of a head. Host-checked: conv kernel 4, dk <= 128, seq <= 8. Idle lanes
+ * (j >= dv) compute on column 0 and never store, so every cluster keeps
+ * its shuffles converged. */
+static const char metal_dn_decode_cs_source[] =
+        "kernel void dn_dec_v_cs(device float*qkv[[buffer(0)]],"
+        "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
+        "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
+        "device const float*dt[[buffer(6)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
+        "device float*rS[[buffer(11)]],device float*rcs[[buffer(12)]],device float*o[[buffer(13)]],"
+        "uint2 tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]],"
+        "uint sl[[thread_index_in_simdgroup]]){"
+        "threadgroup float tq[1024];threadgroup float tk[1024];"
+        "uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd,h=tg.y,hk=h%p.nkh,l=lid&7u;"
+        "uint j=tg.x*16u+(lid>>3u);bool live=j<p.dv;uint jc=live?j:0u;"
+        "for(uint i=lid;i<p.seq*p.dk;i+=128u){uint t=i/p.dk,qb=p.qo+t*cd+hk*p.dk+(i-t*p.dk);"
+        "tq[i]=qkv[qb];tk[i]=qkv[qb+keyd];}"
+        "uint sb=p.so+h*p.dk*p.dv,cv=2u*keyd+h*p.dv+jc;float sr[16];"
+        "FOR_UNROLL(uint r=0u;r<16u;r++){uint i=r*8u+l;sr[r]=i<p.dk?S[sb+i*p.dv+jc]:0.0f;}"
+        "float w0=0.0f,w1=0.0f,w2=0.0f,c0=0.0f,c1=0.0f,c2=0.0f,c3=0.0f;"
+        "if(l==0u){w0=cs[p.cso+cv];w1=cs[p.cso+cd+cv];w2=cs[p.cso+2u*cd+cv];"
+        "c0=cw[p.cwo+cv*4u];c1=cw[p.cwo+cv*4u+1u];c2=cw[p.cwo+cv*4u+2u];c3=cw[p.cwo+cv*4u+3u];}"
+        "float a=aw[p.awo+h],db=dt[p.dto+h];"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint t=0u;t<p.seq;t++){float vc=0.0f;"
+        "if(l==0u){float vr=qkv[p.qo+t*cd+cv];vc+=c0*w0;vc+=c1*w1;vc+=c2*w2;vc+=c3*vr;"
+        "w0=w1;w1=w2;w2=vr;vc=silu1(vc);if(live){qkv[p.qo+t*cd+cv]=vc;if(t<p.rslots){"
+        "uint ro=p.rcso+t*3u*cd+cv;rcs[ro]=w0;rcs[ro+cd]=w1;rcs[ro+2u*cd]=w2;}}}"
+        "vc=simd_shuffle(vc,ushort(sl&~7u));"
+        "float be=1.0f/(1.0f+exp(-beta[p.bo+t*p.nvh+h]));"
+        "float decay=exp(a*log(1.0f+exp(alpha[p.ao+t*p.nvh+h]+db)));"
+        "uint ko=t*p.dk;float mp=0.0f;"
+        "FOR_UNROLL(uint r=0u;r<16u;r++){uint i=r*8u+l;if(i<p.dk)mp+=sr[r]*tk[ko+i];}"
+        "mp+=simd_shuffle_xor(mp,ushort(1));mp+=simd_shuffle_xor(mp,ushort(2));"
+        "mp+=simd_shuffle_xor(mp,ushort(4));"
+        "float d=(vc-mp*decay)*be,op=0.0f;"
+        "FOR_UNROLL(uint r=0u;r<16u;r++){uint i=r*8u+l;if(i<p.dk){"
+        "float sv=sr[r]*decay+tk[ko+i]*d;sr[r]=sv;op+=sv*tq[ko+i];}}"
+        "op+=simd_shuffle_xor(op,ushort(1));op+=simd_shuffle_xor(op,ushort(2));"
+        "op+=simd_shuffle_xor(op,ushort(4));"
+        "if(live){if(l==0u)o[t*vd+h*p.dv+j]=op;if(t<p.rslots){"
+        "uint rb=p.rso+t*p.nvh*p.dk*p.dv+h*p.dk*p.dv;"
+        "FOR_UNROLL(uint r=0u;r<16u;r++){uint i=r*8u+l;if(i<p.dk)rS[rb+i*p.dv+j]=sr[r];}}}}"
+        "if(live){FOR_UNROLL(uint r=0u;r<16u;r++){uint i=r*8u+l;if(i<p.dk)S[sb+i*p.dv+j]=sr[r];}"
+        "if(l==0u){cs[p.cso+cv]=w0;cs[p.cso+cd+cv]=w1;cs[p.cso+2u*cd+cv]=w2;}}}\n"
+        "kernel void dn_dec_vnorm(device float*z[[buffer(1)]],device const float*nw[[buffer(7)]],"
+        "constant P&p[[buffer(10)]],device const float*o[[buffer(13)]],"
+        "uint2 tg[[threadgroup_position_in_grid]],uint j[[thread_index_in_threadgroup]]){"
+        "threadgroup float part[256];uint vd=p.nvh*p.dv,h=tg.x,t=tg.y;"
+        "float out=o[t*vd+h*p.dv+j];part[j]=out*out;"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);float ss=0.0f;"
+        "for(uint c=0u;c<p.dv;c++)ss+=part[c];float inv=rsqrt(ss/float(p.dv)+p.eps);"
+        "uint zi=p.zo+t*vd+h*p.dv+j;z[zi]=out*inv*nw[p.no+j]*silu1(z[zi]);}\n";
+
 /* Chunked DeltaNet prefill on simdgroup matrices (#99): the chunk recipe of
  * transformer_dn_head_chunk / dn_run_prefill_chunked (64-token chunks, F32
  * state and accumulation), arranged so that only the state recurrence runs

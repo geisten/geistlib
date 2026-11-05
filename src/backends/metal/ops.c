@@ -4168,6 +4168,23 @@ metal_pipeline_fits(struct metal_state *st, struct metal_pipeline_h *pipe, unsig
     return metal_msg_send_ulong0(st, pipe, "maxTotalThreadsPerThreadgroup") >= threads;
 }
 
+/* Grows st->dn_scratch (device-private, shared by the chunked prefill and
+ * the column-split verify) to at least `bytes`; false if allocation failed. */
+static bool metal_dn_scratch_reserve(struct metal_state *st, size_t bytes) {
+    if (st->dn_scratch_bytes >= bytes) {
+        return true;
+    }
+    metal_residency_forget(st, st->dn_scratch);
+    metal_msg_send_void0(st, st->dn_scratch, "release");
+    st->dn_scratch       = metal_msg_send_id_size_uint(st,
+                                                       st->device,
+                                                       "newBufferWithLength:options:",
+                                                       bytes,
+                                                       METAL_RESOURCE_STORAGE_MODE_PRIVATE);
+    st->dn_scratch_bytes = st->dn_scratch != nullptr ? bytes : 0;
+    return st->dn_scratch != nullptr;
+}
+
 [[nodiscard]] static enum geist_status
 metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_args *args) {
     if (be == nullptr || be->state == nullptr || args == nullptr || args->qkv == nullptr ||
@@ -4290,16 +4307,8 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
                 sizeof(float);
         if (scr_bytes > (size_t) 1u << 31) { /* the kernels index it with uint */
             fast = false;
-        } else if (st->dn_scratch_bytes < scr_bytes) {
-            metal_residency_forget(st, st->dn_scratch);
-            metal_msg_send_void0(st, st->dn_scratch, "release");
-            st->dn_scratch       = metal_msg_send_id_size_uint(st,
-                                                               st->device,
-                                                               "newBufferWithLength:options:",
-                                                               scr_bytes,
-                                                               METAL_RESOURCE_STORAGE_MODE_PRIVATE);
-            st->dn_scratch_bytes = st->dn_scratch != nullptr ? scr_bytes : 0;
-            fast                 = st->dn_scratch != nullptr;
+        } else {
+            fast = metal_dn_scratch_reserve(st, scr_bytes);
         }
     }
     for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
@@ -4393,12 +4402,33 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_msg_send_dispatch(st, enc, gk, tk);
         }
         metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
-        metal_msg_send_set_pipeline(
-                st, enc, params.seq == 1u ? st->dn_dec_v_pipeline : st->dn_dec_v_rows_pipeline);
-        const struct metal_size gv = {args->n_v_heads, 1, 1};
-        const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
-        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
-        metal_msg_send_dispatch(st, enc, gv, tv);
+        /* Column-split rows (#469): v state update by column, then the norm. */
+        const bool cs = params.seq > 1u && args->conv_kernel == 4u &&
+                        st->dn_dec_v_cs_pipeline != nullptr &&
+                        st->dn_dec_vnorm_pipeline != nullptr &&
+                        metal_pipeline_fits(st, st->dn_dec_v_cs_pipeline, 128u) &&
+                        metal_pipeline_fits(st, st->dn_dec_vnorm_pipeline, args->head_v) &&
+                        metal_dn_scratch_reserve(st, params.seq * value_dim * sizeof(float));
+        if (cs) {
+            const struct metal_size gc = {(args->head_v + 15u) / 16u, args->n_v_heads, 1};
+            const struct metal_size tc = {128, 1, 1};
+            const struct metal_size gn = {args->n_v_heads, params.seq, 1};
+            const struct metal_size tn = {args->head_v, 1, 1};
+            metal_msg_send_set_buffer(st, enc, st->dn_scratch, 0, 13);
+            metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_cs_pipeline);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gc);
+            metal_msg_send_dispatch(st, enc, gc, tc);
+            metal_msg_send_set_pipeline(st, enc, st->dn_dec_vnorm_pipeline);
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gn);
+            metal_msg_send_dispatch(st, enc, gn, tn);
+        } else {
+            metal_msg_send_set_pipeline(
+                    st, enc, params.seq == 1u ? st->dn_dec_v_pipeline : st->dn_dec_v_rows_pipeline);
+            const struct metal_size gv = {args->n_v_heads, 1, 1};
+            const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
+            metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
+            metal_msg_send_dispatch(st, enc, gv, tv);
+        }
         if (rows) {
             *args->rows_written = true;
         }
