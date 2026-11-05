@@ -27,9 +27,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { CONV_K = 4, N_CALLS = 9, SNAP_CALL = 4 };
+enum { CONV_K = 4, N_CALLS = 10, SNAP_CALL = 4 };
 
-static const size_t calls[N_CALLS] = {37, 64, 1, 65, 291, 2, 600, 1, 130};
+static const size_t calls[N_CALLS] = {37, 64, 1, 65, 291, 2, 600, 1, 130, 7};
 
 struct cfg {
     const char *name;
@@ -76,17 +76,20 @@ static double err_rel1(size_t n, const float *got, const double *ref) {
 }
 
 /* One deltanet_mix call on the device: seq rows from token offset `at` of
- * the full input arrays. z_got receives the seq output rows. */
-static bool run_call(struct geist_backend *be,
-                     const struct cfg     *c,
-                     const struct dev     *d,
-                     size_t                at,
-                     size_t                seq,
-                     const float          *qkv,
-                     const float          *z,
-                     const float          *beta,
-                     const float          *alpha,
-                     float                *z_got) {
+ * the full input arrays. z_got receives the seq output rows. With rslot,
+ * the call also fills the per-row state slots (rslot[0] conv, rslot[1]
+ * delta; seq - 1 slots each). */
+static bool run_call(struct geist_backend      *be,
+                     const struct cfg          *c,
+                     const struct dev          *d,
+                     size_t                     at,
+                     size_t                     seq,
+                     const float               *qkv,
+                     const float               *z,
+                     const float               *beta,
+                     const float               *alpha,
+                     struct geist_buffer *const rslot[2],
+                     float                     *z_got) {
     const struct geist_backend_vtbl  *v    = be->desc->vtbl;
     const struct geist_backend_fused *f    = geist_backend_fused_tbl(be);
     const size_t                      keyd = c->nkh * c->dk, vd = c->nvh * c->dv;
@@ -113,25 +116,38 @@ static bool run_call(struct geist_backend *be,
                                .ndim   = 3,
                                .shape  = {(int64_t) c->nvh, (int64_t) c->dk, (int64_t) c->dv},
                                .stride = {(int64_t) (c->dk * c->dv), (int64_t) c->dv, 1}};
-    const struct geist_deltanet_mix_args args = {.qkv         = &tq,
-                                                 .z           = &tz,
-                                                 .beta        = &tb,
-                                                 .alpha       = &ta,
-                                                 .conv_w      = &tcw,
-                                                 .ssm_a       = &taw,
-                                                 .dt_bias     = &tdt,
-                                                 .norm_w      = &tnw,
-                                                 .conv_state  = &tcs,
-                                                 .delta_state = &tst,
-                                                 .seq         = seq,
-                                                 .n_k_heads   = c->nkh,
-                                                 .n_v_heads   = c->nvh,
-                                                 .head_k      = c->dk,
-                                                 .head_v      = c->dv,
-                                                 .conv_kernel = CONV_K,
-                                                 .eps         = 1e-6f};
+    const size_t        ncs = (CONV_K - 1) * cd, ns = c->nvh * c->dk * c->dv;
+    struct geist_tensor trc     = vec(rslot != nullptr ? rslot[0] : nullptr, (seq - 1) * ncs);
+    struct geist_tensor trs     = vec(rslot != nullptr ? rslot[1] : nullptr, (seq - 1) * ns);
+    bool                written = false;
+    struct geist_deltanet_mix_args args = {.qkv         = &tq,
+                                           .z           = &tz,
+                                           .beta        = &tb,
+                                           .alpha       = &ta,
+                                           .conv_w      = &tcw,
+                                           .ssm_a       = &taw,
+                                           .dt_bias     = &tdt,
+                                           .norm_w      = &tnw,
+                                           .conv_state  = &tcs,
+                                           .delta_state = &tst,
+                                           .seq         = seq,
+                                           .n_k_heads   = c->nkh,
+                                           .n_v_heads   = c->nvh,
+                                           .head_k      = c->dk,
+                                           .head_v      = c->dv,
+                                           .conv_kernel = CONV_K,
+                                           .eps         = 1e-6f};
+    if (rslot != nullptr) {
+        args.row_conv_state  = &trc;
+        args.row_delta_state = &trs;
+        args.rows_written    = &written;
+    }
     if (ok && f->deltanet_mix(be, &args) != GEIST_OK) {
         fprintf(stderr, "deltanet_mix(seq %zu): %s\n", seq, geist_backend_errmsg(be));
+        ok = false;
+    }
+    if (ok && rslot != nullptr && !written) {
+        fprintf(stderr, "deltanet_mix(seq %zu): row slots not written\n", seq);
         ok = false;
     }
     ok = ok && v->buffer_download(seq * vd * sizeof(float), (uint8_t *) z_got, d->b[1]) == GEIST_OK;
@@ -249,7 +265,7 @@ static int run_cfg(struct geist_backend *be, const struct cfg *c) {
         if (i == SNAP_CALL) {
             ok &= save_states(be, &d, ncs, cs_s, ns, st_s);
         }
-        ok &= run_call(be, c, &d, at, s, qkv, z, beta, alpha, zgot);
+        ok &= run_call(be, c, &d, at, s, qkv, z, beta, alpha, nullptr, zgot);
         deltanet_mix_ref_f64(s,
                              c->nkh,
                              c->nvh,
@@ -297,14 +313,15 @@ static int run_cfg(struct geist_backend *be, const struct cfg *c) {
             memcpy(zsnap, zgot, s * vd * sizeof(float));
             ok &= save_states(be, &d, ncs, cs_g, ns, st_g);
             ok &= load_states(be, &d, ncs, cs_s, ns, st_s);
-            ok &= run_call(be, c, &d, at, s, qkv, z, beta, alpha, zgot);
+            ok &= run_call(be, c, &d, at, s, qkv, z, beta, alpha, nullptr, zgot);
             const bool same = ok && memcmp(zgot, zsnap, s * vd * sizeof(float)) == 0;
             printf("%s restore + rerun: z %s\n", c->name, same ? "bit-identical" : "DIFFERS");
             ok &= same;
             /* truncate-and-continue: same tokens as 100 + 191 */
             ok &= load_states(be, &d, ncs, cs_s, ns, st_s);
-            ok &= run_call(be, c, &d, at, 100, qkv, z, beta, alpha, zgot);
-            ok &= run_call(be, c, &d, at + 100, s - 100, qkv, z, beta, alpha, zgot + 100 * vd);
+            ok &= run_call(be, c, &d, at, 100, qkv, z, beta, alpha, nullptr, zgot);
+            ok &= run_call(
+                    be, c, &d, at + 100, s - 100, qkv, z, beta, alpha, nullptr, zgot + 100 * vd);
             const double es = err_rel1(s * vd, zgot, z64);
             printf("%s restore + 100/191 split: z err %.2e\n", c->name, es);
             ok &= es <= tol;
@@ -342,6 +359,56 @@ static int run_cfg(struct geist_backend *be, const struct cfg *c) {
                worst,
                worst_f);
         ok &= ecs == 0.0 && est <= tol;
+    }
+    /* Row slots of a 7-row call (speculative verify, #192/#469): slot t must
+     * hold the states that rows 0..t alone leave behind. */
+    if (ok) {
+        enum { ROWS = 7 };
+        struct geist_buffer *rslot[2] = {nullptr, nullptr};
+        ok &= v->buffer_create(be,
+                               (ROWS - 1) * ncs * sizeof(float),
+                               GEIST_BUFFER_SCRATCH,
+                               GEIST_MEMORY_AUTO,
+                               &rslot[0]) == GEIST_OK &&
+              v->buffer_create(be,
+                               (ROWS - 1) * ns * sizeof(float),
+                               GEIST_BUFFER_SCRATCH,
+                               GEIST_MEMORY_AUTO,
+                               &rslot[1]) == GEIST_OK;
+        float *rcs = xmalloc((ROWS - 1) * ncs * sizeof(float));
+        float *rs  = xmalloc((ROWS - 1) * ns * sizeof(float));
+        ok &= save_states(be, &d, ncs, cs_s, ns, st_s);
+        ok &= run_call(be, c, &d, 0, ROWS, qkv, z, beta, alpha, rslot, zgot);
+        ok = ok &&
+             v->buffer_download((ROWS - 1) * ncs * sizeof(float), (uint8_t *) rcs, rslot[0]) ==
+                     GEIST_OK &&
+             v->buffer_download((ROWS - 1) * ns * sizeof(float), (uint8_t *) rs, rslot[1]) ==
+                     GEIST_OK;
+        double dcs = 0.0, dst = 0.0;
+        for (size_t t = 0; t + 1 < ROWS && ok; t++) {
+            ok &= load_states(be, &d, ncs, cs_s, ns, st_s);
+            ok &= run_call(be, c, &d, 0, t + 1, qkv, z, beta, alpha, nullptr, zgot);
+            ok &= save_states(be, &d, ncs, cs_g, ns, st_g);
+            const double ec = geist_test_max_abs(ncs, rcs + t * ncs, cs_g);
+            const double es = geist_test_max_abs(ns, rs + t * ns, st_g);
+            dcs             = ec > dcs || ec != ec ? ec : dcs;
+            dst             = es > dst || es != es ? es : dst;
+        }
+        printf("%s row slots (%d rows): conv-state %.2e, delta-state %.2e\n",
+               c->name,
+               ROWS,
+               dcs,
+               dst);
+        /* both sides are this backend's F32 recurrence over the same rows;
+         * they differ only by summation order (~1e-8 here) */
+        ok &= dcs == 0.0 && dst <= 1e-6;
+        for (size_t i = 0; i < 2; i++) {
+            if (rslot[i] != nullptr) {
+                v->buffer_destroy(be, rslot[i]);
+            }
+        }
+        free(rcs);
+        free(rs);
     }
     for (size_t i = 0; i < 10; i++) {
         if (d.b[i] != nullptr) {
