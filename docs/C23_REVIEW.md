@@ -140,7 +140,7 @@ Compare like with like before reading a regression into an A/B.
 - **Generated files and concurrent PRs.** An exact-match check on a
   committed generated file makes every concurrent PR conflict over it.
   `c23_metrics.json` became a ceiling ratchet (#415) for that reason;
-  `include_graph.json` still has the problem (#442).
+  `include_graph.json` was dropped from the tree for the same reason (#442).
 - **Combinations.** Two PRs green alone can make main red: a new
   `__attribute__` meeting the spelling test, new symbols meeting the layer
   baseline. Merge one at a time and recheck the combination.
@@ -154,6 +154,5 @@ Compare like with like before reading a regression into an A/B.
 - #427: the tokenizer's replacement character, with a parity test.
 - #441: the layer violations in `tools/layers_baseline.txt`, among them the
   235 portability `#if`s in hot kernels (one kernel family at a time).
-- #442: `include_graph.json` conflicts between concurrent PRs.
 - #443: gcc-14 x86_64 `MODE=tsan` and `-Wstringop-overflow` in a test.
 - #444: the M1 Max cells of the Phase 0 baseline.

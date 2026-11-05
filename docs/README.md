@@ -14,7 +14,6 @@ produces tokens.
 | [DEPLOY.md](DEPLOY.md) | Building the library, the packaged SDK, single-file deployment |
 | [API_CONTRACT.md](API_CONTRACT.md) | What the stability tags promise across a release |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Engine layers, load-time kernel binding, KV cache, why C |
-| [INCLUDE_GRAPH.md](INCLUDE_GRAPH.md) | Generated: direct include edges per layer (`make include-graph`) |
 | [TOOLCHAIN_PROBE.md](TOOLCHAIN_PROBE.md) | Which C23 features each CI toolchain has |
 | [C23_REVIEW.md](C23_REVIEW.md) | The C23 review (#333): what is proven at build time, what was rejected |
 | [TUNING.md](TUNING.md) | Forward-only (zeroth-order) fine-tuning with per-tensor gains |

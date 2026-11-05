@@ -1451,10 +1451,6 @@ jobs:
           "$RUNNER_TEMP/tidy/bin/pip" install clang-tidy==22.1.8
       - name: Check
         run: make check-static CLANG_TIDY="$RUNNER_TEMP/tidy/bin/clang-tidy"
-      # benchmark/include_graph.json and docs/INCLUDE_GRAPH.md follow the
-      # tree (#341); needs clang, which this runner has.
-      - name: Include graph up to date
-        run: python3 tools/include_graph.py check
 
   # Post-merge tier on main: one Gitea issue per failing job name, updated by
   # every later run and closed by the first green one (scripts/ci-issues.py).
