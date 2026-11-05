@@ -2,6 +2,7 @@
 """test_check_static_py - the ratchet and the NOLINT rule of scripts/check_static.py (#342)."""
 import collections
 import os
+import subprocess
 import sys
 import unittest
 
@@ -71,6 +72,27 @@ class Nolint(unittest.TestCase):
         m = check_static.FINDING.match("src/a.c:3:4: warning: bad thing [bugprone-x]")
         self.assertEqual((m[1], m[5], m[6]), ("src/a.c", "bad thing", "bugprone-x"))
 
+
+
+class Tidy(unittest.TestCase):
+    """A file clang-tidy cannot compile must fail the run, not pass (#439)."""
+
+    def run_tidy(self, code, out):
+        real = check_static.subprocess.run
+        check_static.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, code, out, "")
+        try:
+            return check_static.tidy("clang-tidy", "/db", [], "src/a.c")
+        finally:
+            check_static.subprocess.run = real
+
+    def test_findings_pass_through(self):
+        out = "src/a.c:3:4: warning: bad thing [bugprone-x]\n"
+        self.assertEqual(self.run_tidy(1, out), out)
+
+    def test_a_file_that_does_not_compile_fails(self):
+        out = "error: unable to handle compilation, expected exactly one compiler job in '' [clang-diagnostic-error]\n"
+        with self.assertRaises(RuntimeError):
+            self.run_tidy(1, out)
 
 if __name__ == "__main__":
     unittest.main()
