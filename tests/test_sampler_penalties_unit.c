@@ -12,7 +12,7 @@
 
 #include "test_helpers.h"
 
-#include "src/engine/sampler.h"
+#include "src/sampling/sampler.h"
 
 #include <geist.h>
 

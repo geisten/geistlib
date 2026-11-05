@@ -15,7 +15,11 @@
     "the floor sits just under what it reaches - raise it with the coverage,",
     "do not let it drift down.",
     "src/archs/vision_siglip is mostly unexercised by the unit + int suites",
-    "(13 %); the baseline only stops it from falling further."
+    "(13 %); the baseline only stops it from falling further.",
+    "src/sampling (#441) is sampler.c + sampler_penalties.c, moved out of",
+    "src/engine: their files in the nightly report of 60ac20f3 (artifact 4151,",
+    "2026-11-05) measure 95.10 % line / 81.41 % branch, same rule as above.",
+    "src/engine without them measured 88.08 / 72.36, above its baseline."
   ],
   "tolerance_pp": 0.5,
   "subsystems": {
@@ -30,6 +34,10 @@
     "src/io": {
       "line": 85,
       "branch": 63
+    },
+    "src/sampling": {
+      "line": 94,
+      "branch": 80
     },
     "src/formats": {
       "line": 51,

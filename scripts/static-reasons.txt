@@ -20,6 +20,6 @@ src/backends/cpu_neon/kernels/q6_K.c	clang-analyzer-unix.cstring.NullArg	heap_tl
 src/base/fnv1a.h	clang-analyzer-core.uninitialized.Assign	the caller passes a fully initialized uint64_t[3]; byte reads inside an integer are not modelled
 src/engine/backend.c	clang-analyzer-security.VAList	va_start precedes va_end on a straight line; a checker miss
 src/engine/model.c	clang-analyzer-core.NullDereference	both branches read the same thread-local error code with no write between
-src/engine/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	both passes walk the same const packed list, so t is non-null or OOM returned
+src/sampling/sampler_penalties.c	clang-analyzer-unix.cstring.NullArg	both passes walk the same const packed list, so t is non-null or OOM returned
 src/engine/session.c	clang-analyzer-core.uninitialized.Assign	session_fail returns its non-OK code; variadics are not inlined by the analyzer
 src/archs/transformer/forward/moe.c	clang-analyzer-core.UndefinedBinaryOperatorResult	sel[0, n) is written in full; group q reads sel[q*per, q*per + per) with q < g and g*per == n (n % g == 0 checked), which the analyzer does not connect

@@ -1,7 +1,7 @@
 /*
- * src/engine/sampler.h — token sampling on top of LM logits.
+ * src/sampling/sampler.h — token sampling on top of LM logits.
  *
- * Layer: ENGINE. Pure FP32 operations on host arrays; no backend
+ * Layer: SAMPLING. Pure FP32 operations on host arrays; no backend
  * involvement. Caller passes the logit vector; sampler returns the
  * chosen token ID.
  *

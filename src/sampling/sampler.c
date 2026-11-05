@@ -1,7 +1,7 @@
 /*
- * src/engine/sampler.c — argmax + temperature + top-k + top-p sampling.
+ * src/sampling/sampler.c — argmax + temperature + top-k + top-p sampling.
  *
- * Layer: ENGINE.
+ * Layer: SAMPLING.
  *
  * Numerical stability: softmax uses the max-subtract trick to avoid
  * overflow. Reductions accumulate in double.

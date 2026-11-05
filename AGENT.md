@@ -300,7 +300,7 @@ gcc-15 -std=c23 -O3 -DNDEBUG -fopenmp -Wall -Wextra -Wpedantic -Werror \
        -march=armv8.2-a+fp16+dotprod \
        -DGEIST_BACKEND_CPU_NEON=1 -DGEIST_BACKEND_CPU_SCALAR=1 \
        -Iinclude -I. -Isrc/base -Isrc/quant -Isrc/backends/common \
-       -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine \
+       -Isrc/formats/gguf -Isrc/formats/ptqtp -Isrc/io -Isrc/engine -Isrc/sampling \
        -Isrc/archs/audio_conformer -Isrc/archs/vision_siglip -Ithird_party/stb \
        -c <changed>.c -o /dev/null
 ```

@@ -62,7 +62,7 @@
 #include <geist.h>
 #include <geist_backend.h>
 
-#include "../../../engine/sampler.h"
+#include "../../../sampling/sampler.h"
 #include "quant.h"
 #include "checked.h"
 #include "env.h"
