@@ -29,6 +29,14 @@ static int scenario(size_t M, size_t N, size_t K) {
     const size_t NB = K / W8A8_BLOCK_ELEMS;
     uint32_t     s  = 0xB16B00B5u;
 
+    /* The kernels' [static] bounds need every dimension >= 1. Stating it
+     * also keeps gcc-14 -O1 (plain or -fsanitize=thread, #443) from threading
+     * the zero-trip path of the quantize loop below into M == 0, where it
+     * sees Yg = malloc(0) against w8a8_gemm's out[static n_tokens * n_rows]
+     * and reports -Wstringop-overflow. No scenario passes a zero dimension. */
+    if (M == 0 || N == 0 || NB == 0)
+        return 1;
+
     uint8_t *W  = malloc(N * NB * W8A8_BLOCK_ELEMS);
     float   *ws = malloc(N * NB * sizeof(float));
     float   *wo = malloc(N * NB * sizeof(float));
