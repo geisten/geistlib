@@ -1,24 +1,34 @@
 /*
  * src/archs/transformer/families/deepseek2.c - the DeepSeek-V2 / V3 family
- * unit (GGUF architecture "deepseek2", #242).
+ * unit (GGUF architecture "deepseek2", #242, #375).
  *
  * Layer: ARCHITECTURE.
  *
- * As llama.cpp's graph for the architecture (deepseek2.cpp) runs a file
- * with the unsplit attn_kv_b (every DeepSeek-V2-Lite GGUF converted before
- * 2025): multi-head latent attention, decompressed to plain multi-head
- * attention per token:
+ * Multi-head latent attention as llama.cpp's graph for the architecture
+ * (deepseek2.cpp) runs it, in the form the file was converted for:
  *   q       = q_proj(x)                      (V3: q_b(rmsnorm(q_a(x))))
- *   kv_a    = kv_a_mqa(x) = [latent | k_pe]
- *   [k_nope | v] per head = kv_b(rmsnorm(latent))
- *   k       = [k_pe | k_nope], k_pe shared by every head
+ *   kv_a    = kv_a_mqa(x) = [latent | k_pe],  lat = rmsnorm(latent)
  * RoPE (interleaved pairs, NORM) on the 64 pe dims only, YaRN with
- * DeepSeek's log multiplier folded into the q scale (mscale^2 / sqrt(192)),
- * the rope tables themselves unscaled. The loader moves each q head's and
- * kv_a's pe rows first, deinterleaved (config.rope_il_n), so the cache holds
- * [pe | nope] heads of 192 that the shared partial-RoPE blocks rotate; V
- * heads (128) are zero-padded to 192 and the first 128 dims of each output
- * head go to o_proj.
+ * DeepSeek's log multiplier folded into the q scale (mscale^2 /
+ * sqrt(nope + pe)), the rope tables themselves unscaled. The loader moves
+ * each q head's and kv_a's pe rows first, deinterleaved (config.rope_il_n),
+ * so the shared partial-RoPE blocks rotate the leading pe dims of a head.
+ *
+ * Decompressed (the unsplit attn_kv_b of DeepSeek-V2-Lite files converted
+ * before 2025): [k_nope | v] per head = kv_b(lat), the cache holds per head
+ * k = [k_pe | k_nope] (192) and v zero-padded to it, and the first
+ * mla_v_dim of each output head go to o_proj. Assembled on the host.
+ *
+ * Absorbed (config.mla_absorbed: attention.key_length_mla and the split
+ * attn_k_b / attn_v_b, every DeepSeek-V3 / R1, Kimi K2 and GigaChat3 file,
+ * #375): llama.cpp's is_mla path. One KV head of [k_pe | lat] (576) for K
+ * and for V, each q head [q_pe | k_b[h] q_nope] attends it (MQA), and
+ * v_b[h] takes the latent dims of its output head to mla_v_dim, so o_proj
+ * reads the same [heads * mla_v_dim] as above. The cache holds 576 floats
+ * per token and layer twice (K, and V = K before RoPE, of which only the
+ * latent dims are read) instead of 2 * heads * 192. k_b, v_b and the
+ * assembly run on the host, per head on the CPU backend's kernels; a GPU
+ * backend refuses the layout (#376).
  *
  * FFN: the first leading_dense_block_count layers are dense SwiGLU; the
  * others a router over expert_count experts (softmax, or sigmoid with a
@@ -27,9 +37,6 @@
  *
  *   h_post_attn = h_in + o_proj(mla(attn_norm(h_in)))
  *   h_out       = dense: blk_ffn_swiglu;  else: blk_moe_ffn + shared(ffn_norm(h_post_attn))
- *
- * Refused: files with the split attn_k_b / attn_v_b (absorbed MLA), which
- * this decompressed path does not read.
  *
  * Removing the family is this file and its line in family_list.h
  * (make check-static builds it alone, #345).
@@ -43,9 +50,12 @@
 
 #include "gguf_dequant.h"
 #include "gguf_reader.h"
+#include "checked.h"
 #include "heap.h"
+#include "par.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -91,6 +101,18 @@ static void populate_deepseek2(struct gguf_ctx *gguf, struct transformer_arch_st
         c->mla_rope = u;
     if (family_meta_u32(gguf, ARCH, nullptr, "attention.value_length", &u))
         c->mla_v_dim = u;
+    c->mla_k_dim = family_head_dim(st, ARCH);
+    /* llama.cpp's is_mla: both MLA head sizes in the file. Then key_length
+     * and value_length are the absorbed cache's (rope + rank, rank). One of
+     * them alone leaves mla_k_dim 0, which populate_layers refuses. */
+    uint32_t   kmla = 0, vmla = 0;
+    const bool has_k = family_meta_u32(gguf, ARCH, nullptr, "attention.key_length_mla", &kmla);
+    const bool has_v = family_meta_u32(gguf, ARCH, nullptr, "attention.value_length_mla", &vmla);
+    if (has_k || has_v) {
+        c->mla_absorbed = has_k && has_v;
+        c->mla_k_dim    = c->mla_absorbed ? kmla : 0;
+        c->mla_v_dim    = c->mla_absorbed ? vmla : 0;
+    }
     c->rope_interleaved   = true; /* LLAMA_ROPE_TYPE_NORM */
     c->rope_partial_block = true; /* the pe dims form their own block */
     c->rope_il_n          = c->mla_rope;
@@ -100,7 +122,7 @@ static void populate_deepseek2(struct gguf_ctx *gguf, struct transformer_arch_st
  * magnitude in the q scale. False for metadata it cannot follow. */
 static bool populate_yarn_deepseek2(struct gguf_ctx *g, struct transformer_arch_state *st) {
     struct geist_arch_config *c  = &st->config;
-    const float               hd = (float) family_head_dim(st, ARCH);
+    const float               hd = (float) c->mla_k_dim; /* q.k before any absorption */
     char                      k[96];
     size_t                    len = 0;
     snprintf(k, sizeof k, "%s.rope.scaling.type", ARCH);
@@ -145,10 +167,17 @@ static bool populate_layers_deepseek2(struct transformer_arch_state *st) {
     (void) family_meta_u32(g, ARCH, nullptr, "expert_feed_forward_length", &eff);
     (void) family_meta_f32(g, ARCH, nullptr, "rope.freq_base", &base);
     const size_t lead = n_dense_lead(st);
-    if (hd == 0 || c->mla_kv_rank == 0 || c->mla_rope == 0 || c->mla_rope % 2 != 0 ||
-        c->mla_rope >= hd || c->mla_v_dim == 0 || c->mla_v_dim > hd || ff == 0 || eff == 0 ||
-        st->n_q_heads == 0 || st->n_kv_heads != st->n_q_heads || lead > st->n_layers ||
-        !family_moe_ok(c)) {
+    const size_t kd   = c->mla_k_dim;
+    if (hd == 0 || kd == 0 || c->mla_kv_rank == 0 || c->mla_rope == 0 || c->mla_rope % 2 != 0 ||
+        c->mla_rope >= kd || c->mla_v_dim == 0 || ff == 0 || eff == 0 || st->n_q_heads == 0 ||
+        lead > st->n_layers || !family_moe_ok(c)) {
+        return false;
+    }
+    /* Absorbed: one KV head of [k_pe | latent]. Decompressed: a K head per
+     * q head, V padded to it. */
+    const bool absorbed_ok = hd == c->mla_kv_rank + c->mla_rope && st->n_kv_heads == 1;
+    const bool plain_ok    = kd == hd && c->mla_v_dim <= hd && st->n_kv_heads == st->n_q_heads;
+    if (c->mla_absorbed ? !absorbed_ok : !plain_ok) {
         return false;
     }
     for (size_t i = 0; i < st->n_layers; i++) {
@@ -181,23 +210,90 @@ static float *host_vector(struct transformer_arch_state          *st,
     return out;
 }
 
+/* The 3-D tensor `name` must be [ne0, ne1, ne2] (GGUF order): k_b's
+ * per-head [nope, rank] is transposed against kv_b's rows (llama.cpp's
+ * converter), which the element count alone would not tell. */
+[[nodiscard]] static enum geist_status check_dims3(
+        struct transformer_arch_state *st, const char *name, size_t ne0, size_t ne1, size_t ne2) {
+    const struct gguf_tensor_t *t = gguf_get_tensor((struct gguf_ctx *) st->gguf, name);
+    if (t != nullptr && t->n_dims == 3 && t->dims[0] == ne0 && t->dims[1] == ne1 &&
+        t->dims[2] == ne2)
+        return GEIST_OK;
+    geist_backend_set_error(st->backend,
+                            GEIST_E_FORMAT,
+                            "%s: '%s' is missing or not [%zu, %zu, %zu]",
+                            ARCH,
+                            name,
+                            ne0,
+                            ne1,
+                            ne2);
+    return GEIST_E_FORMAT;
+}
+
+/* Absorbed MLA's per-head k_b [rank, nope] and v_b [mla_v_dim, rank], each
+ * with a kernel of the CPU backend's that the host calls per head. */
+[[nodiscard]] static enum geist_status wire_absorbed(struct transformer_arch_state    *st,
+                                                     struct gguf_ctx                  *gguf,
+                                                     struct transformer_layer_weights *L,
+                                                     size_t                            nope) {
+    const struct geist_arch_config *c     = &st->config;
+    const size_t                    heads = st->n_q_heads, rank = c->mla_kv_rank;
+    char                            kb[64], vb[64];
+    snprintf(kb, sizeof kb, "blk.%d.attn_k_b.weight", L->layer_idx);
+    snprintf(vb, sizeof vb, "blk.%d.attn_v_b.weight", L->layer_idx);
+    L->mla_n_heads      = heads; /* what the teardown walks */
+    enum geist_status s = check_dims3(st, kb, nope, rank, heads);
+    if (s == GEIST_OK)
+        s = check_dims3(st, vb, rank, c->mla_v_dim, heads);
+    if (s == GEIST_OK)
+        s = load_layer_slices(st, gguf, L, kb, heads, rank, nope, &L->mla_k_b, &L->mla_k_b_w);
+    if (s == GEIST_OK)
+        s = load_layer_slices(
+                st, gguf, L, vb, heads, c->mla_v_dim, rank, &L->mla_v_b, &L->mla_v_b_w);
+    for (size_t h = 0; s == GEIST_OK && h < heads; h++) {
+        const struct geist_weight *w[] = {&L->mla_k_b_w[h], &L->mla_v_b_w[h]};
+        for (size_t i = 0; i < 2 && s == GEIST_OK; i++) {
+            if (w[i]->linear_m1 == nullptr || w[i]->linear_mN == nullptr) {
+                geist_backend_set_error(st->backend,
+                                        GEIST_E_UNSUPPORTED,
+                                        "%s: %s has no row kernel for '%s'",
+                                        ARCH,
+                                        st->backend->desc->name,
+                                        i == 0 ? kb : vb);
+                s = GEIST_E_UNSUPPORTED;
+            }
+        }
+    }
+    return s;
+}
+
 [[nodiscard]] static enum geist_status wire_layer_deepseek2(struct transformer_arch_state    *st,
                                                             struct gguf_ctx                  *gguf,
                                                             struct transformer_layer_weights *L) {
     const struct geist_arch_config *c     = &st->config;
     const size_t                    d     = st->d_model;
-    const size_t                    hd    = L->head_dim;
+    const size_t                    kd    = c->mla_k_dim;
     const size_t                    heads = st->n_q_heads;
-    const size_t                    nope  = hd - c->mla_rope;
+    const size_t                    nope  = kd - c->mla_rope;
     char                            name[64];
     snprintf(name, sizeof name, "blk.%d.attn_k_b.weight", L->layer_idx);
-    if (gguf_get_tensor(gguf, name) != nullptr) {
+    if (!c->mla_absorbed && gguf_get_tensor(gguf, name) != nullptr) {
         geist_backend_set_error(st->backend,
                                 GEIST_E_UNSUPPORTED,
-                                "%s: '%s' is the split (absorbed) MLA layout; this build reads "
-                                "attn_kv_b",
+                                "%s: '%s' is the split (absorbed) MLA layout, but the file has no "
+                                "attention.key_length_mla / value_length_mla",
                                 ARCH,
                                 name);
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The host runs k_b / v_b per head on a CPU backend's kernels. */
+    if (c->mla_absorbed && strncmp(st->backend->desc->name, "cpu_", 4) != 0) {
+        geist_backend_set_error(st->backend,
+                                GEIST_E_UNSUPPORTED,
+                                "%s: the absorbed MLA layout (attn_k_b / attn_v_b) runs on the CPU "
+                                "backends only, not on %s (#376)",
+                                ARCH,
+                                st->backend->desc->name);
         return GEIST_E_UNSUPPORTED;
     }
 #define T(suffix) (snprintf(name, sizeof name, "blk.%d." suffix, L->layer_idx), name)
@@ -220,14 +316,14 @@ static float *host_vector(struct transformer_arch_state          *st,
                                           gguf,
                                           L,
                                           T("attn_q_b.weight"),
-                                          L->q_out,
+                                          heads * kd,
                                           c->mla_q_rank,
-                                          hd,
+                                          kd,
                                           &L->q_proj,
                                           &L->q_proj_w);
     } else {
         s = load_layer_matrix_rope_il(
-                st, gguf, L, T("attn_q.weight"), L->q_out, d, hd, &L->q_proj, &L->q_proj_w);
+                st, gguf, L, T("attn_q.weight"), heads * kd, d, kd, &L->q_proj, &L->q_proj_w);
     }
     const size_t kv_a = c->mla_kv_rank + c->mla_rope;
     if (s == GEIST_OK)
@@ -243,7 +339,9 @@ static float *host_vector(struct transformer_arch_state          *st,
     if (s == GEIST_OK)
         L->mla_kv_a_norm =
                 host_vector(st, gguf, L, "attn_kv_a_norm.weight", c->mla_kv_rank, true, &s);
-    if (s == GEIST_OK)
+    if (s == GEIST_OK && c->mla_absorbed)
+        s = wire_absorbed(st, gguf, L, nope);
+    else if (s == GEIST_OK)
         s = load_layer_matrix(st,
                               gguf,
                               L,
@@ -346,20 +444,32 @@ deepseek2_session_alloc(struct transformer_arch_session *sess) {
     const struct transformer_arch_state *st = sess->model;
     const struct geist_arch_config      *c  = &st->config;
     const size_t                         m  = sess->m_max;
-    const size_t      nope = st->layers[0].head_dim - c->mla_rope, heads = st->n_q_heads;
+    const size_t nope = c->mla_k_dim - c->mla_rope, heads = st->n_q_heads, rank = c->mla_kv_rank;
+    const bool   ab     = c->mla_absorbed;
     enum geist_status s = moe_session_alloc(sess);
+    /* Absorbed: mla_kv holds q before the absorption, mla_hx / mla_hy a
+     * head's rows in and out of k_b and v_b; the latent goes straight to
+     * scratch_k. */
+    const size_t hx = nope > rank ? nope : rank, hy = rank > c->mla_v_dim ? rank : c->mla_v_dim;
     const struct {
         size_t                n;
         struct geist_buffer **out;
     } bufs[] = {
-            {c->mla_kv_rank + c->mla_rope, &sess->mla_kv_a},
-            {c->mla_kv_rank, &sess->mla_lat},
-            {heads * (nope + c->mla_v_dim), &sess->mla_kv},
+            {rank + c->mla_rope, &sess->mla_kv_a},
+            {ab ? 0 : rank, &sess->mla_lat},
+            {heads * (ab ? c->mla_k_dim : nope + c->mla_v_dim), &sess->mla_kv},
             {c->mla_q_rank, &sess->mla_q_a},
+            {ab ? heads * hx : 0, &sess->mla_hx},
+            {ab ? heads * hy : 0, &sess->mla_hy},
     };
-    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0] && s == GEIST_OK; i++)
-        if (bufs[i].n > 0)
-            s = transformer_scratch_alloc(st->backend, m * bufs[i].n * sizeof(float), bufs[i].out);
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0] && s == GEIST_OK; i++) {
+        size_t bytes = 0;
+        if (bufs[i].n == 0)
+            continue;
+        if (ckd_mul(&bytes, m, bufs[i].n) || ckd_mul(&bytes, bytes, sizeof(float)))
+            return GEIST_E_OOM;
+        s = transformer_scratch_alloc(st->backend, bytes, bufs[i].out);
+    }
     return s;
 }
 
@@ -370,9 +480,22 @@ static void deepseek2_session_free(struct transformer_arch_session *sess) {
     transformer_buffer_release(be, &sess->mla_lat);
     transformer_buffer_release(be, &sess->mla_kv);
     transformer_buffer_release(be, &sess->mla_q_a);
+    transformer_buffer_release(be, &sess->mla_hx);
+    transformer_buffer_release(be, &sess->mla_hy);
 }
 
 /* ---- Forward ---------------------------------------------------------- */
+
+/* rmsnorm(src) * w into dst over the latent's n dims, in double as the
+ * decompressed path always did. */
+static void latent_norm(size_t n, float eps, const float *src, const float *w, float *dst) {
+    double ss = 0.0;
+    for (size_t i = 0; i < n; i++)
+        ss += (double) src[i] * src[i];
+    const float r = 1.0f / sqrtf((float) (ss / (double) n) + eps);
+    for (size_t i = 0; i < n; i++)
+        dst[i] = src[i] * r * w[i];
+}
 
 /* kv_a's latent normalised into mla_lat, then K and V of every head from
  * kv_b's output: k = [k_pe | k_nope], v = [v | 0]. On the host. */
@@ -386,20 +509,12 @@ static void deepseek2_session_free(struct transformer_arch_session *sess) {
     const size_t vd = c->mla_v_dim, heads = st->n_q_heads, kv_a = rank + pe;
 
     /* The latent: rows [pe, kv_a) of kv_a after the load's reorder. */
-    float       *a  = (float *) v->buffer_map(sess->mla_kv_a);
-    float       *lt = (float *) v->buffer_map(sess->mla_lat);
-    const float *nw = L->mla_kv_a_norm;
+    float *a  = (float *) v->buffer_map(sess->mla_kv_a);
+    float *lt = (float *) v->buffer_map(sess->mla_lat);
     if (a == nullptr || lt == nullptr)
         return GEIST_E_BACKEND;
-    for (size_t t = 0; t < ctx->seq; t++) {
-        const float *src = a + t * kv_a + pe;
-        double       ss  = 0.0;
-        for (size_t i = 0; i < rank; i++)
-            ss += (double) src[i] * src[i];
-        const float r = 1.0f / sqrtf((float) (ss / (double) rank) + ctx->eps);
-        for (size_t i = 0; i < rank; i++)
-            lt[t * rank + i] = src[i] * r * nw[i];
-    }
+    for (size_t t = 0; t < ctx->seq; t++)
+        latent_norm(rank, ctx->eps, a + t * kv_a + pe, L->mla_kv_a_norm, lt + t * rank);
     v->buffer_unmap(sess->mla_lat);
     v->buffer_unmap(sess->mla_kv_a);
     enum geist_status s =
@@ -443,6 +558,148 @@ static void deepseek2_session_free(struct transformer_arch_session *sess) {
     return GEIST_OK;
 }
 
+/* ---- Absorbed MLA (#375) ----------------------------------------------- *
+ * Per head h, over the m rows of the step: y = W[h] x, x gathered from
+ * `src` (row stride src_row floats, the head's dims at src_off + h *
+ * src_head), into mla_hx; y in mla_hy. Heads run in parallel, each on one
+ * thread with the backend's row kernel (inside a parallel region the
+ * kernel's own parallel-for runs inline), so a head's bytes do not depend
+ * on the thread count. */
+struct mla_heads_job {
+    const struct geist_weight *w; /* [heads] */
+    struct geist_backend      *be;
+    size_t                     m, heads, n_in, n_out, src_row, src_head, src_off;
+    const float               *src;
+    float                     *hx, *hy;
+    atomic_bool                failed;
+};
+
+static void mla_heads_items(void *p, size_t h0, size_t h1) {
+    struct mla_heads_job *j = p;
+    for (size_t h = h0; h < h1; h++) {
+        float                     *x = j->hx + h * j->m * j->n_in;
+        float                     *y = j->hy + h * j->m * j->n_out;
+        const struct geist_weight *w = &j->w[h];
+        for (size_t t = 0; t < j->m; t++)
+            memcpy(x + t * j->n_in,
+                   j->src + t * j->src_row + j->src_off + h * j->src_head,
+                   j->n_in * sizeof(float));
+        if (j->m == 1 && w->linear_m1 != nullptr)
+            w->linear_m1(x, w, j->be, y);
+        else if (j->m > 1 && w->linear_mN != nullptr)
+            w->linear_mN(j->m, x, w, j->be, y);
+        else
+            atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+    }
+}
+
+[[nodiscard]] static enum geist_status mla_heads(struct mla_heads_job *j) {
+    atomic_init(&j->failed, false);
+    geist_par_for(j->heads, mla_heads_items, j);
+    return atomic_load_explicit(&j->failed, memory_order_relaxed) ? GEIST_E_UNSUPPORTED : GEIST_OK;
+}
+
+/* K = V = [k_pe | rmsnorm(latent)] (one KV head; RoPE follows on K) and
+ * every q head [q_pe | k_b[h] q_nope], from kv_a and q (mla_kv). */
+[[nodiscard]] static enum geist_status mla_absorb_qkv(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_state    *st   = ctx->st;
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    const struct geist_arch_config   *c    = &st->config;
+    const struct geist_backend_vtbl  *v    = ctx->v;
+    const size_t rank = c->mla_kv_rank, pe = c->mla_rope, hd = ctx->hd, kd = c->mla_k_dim;
+    const size_t heads = st->n_q_heads, m = ctx->seq;
+    struct geist_buffer *const bufs[] = {sess->mla_kv_a,
+                                         sess->mla_kv,
+                                         sess->scratch_q,
+                                         sess->scratch_k,
+                                         sess->scratch_v,
+                                         sess->mla_hx,
+                                         sess->mla_hy};
+    float                     *p[sizeof bufs / sizeof bufs[0]];
+    bool                       ok = true;
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++)
+        ok = (p[i] = (float *) v->buffer_map(bufs[i])) != nullptr && ok;
+    enum geist_status s = ok ? GEIST_OK : GEIST_E_BACKEND;
+    if (s == GEIST_OK) {
+        const float *a = p[0], *qr = p[1];
+        float       *q = p[2], *k = p[3], *val = p[4];
+        for (size_t t = 0; t < m; t++) {
+            float *kt = k + t * hd;
+            memcpy(kt, a + t * hd, pe * sizeof(float));
+            latent_norm(rank, ctx->eps, a + t * hd + pe, L->mla_kv_a_norm, kt + pe);
+            memcpy(val + t * hd, kt, hd * sizeof(float));
+        }
+        struct mla_heads_job j = {.w        = L->mla_k_b_w,
+                                  .be       = ctx->be,
+                                  .m        = m,
+                                  .heads    = heads,
+                                  .n_in     = kd - pe,
+                                  .n_out    = rank,
+                                  .src_row  = heads * kd,
+                                  .src_head = kd,
+                                  .src_off  = pe,
+                                  .src      = qr,
+                                  .hx       = p[5],
+                                  .hy       = p[6]};
+        s                      = mla_heads(&j);
+        for (size_t t = 0; s == GEIST_OK && t < m; t++) {
+            for (size_t h = 0; h < heads; h++) {
+                float *qh = q + (t * heads + h) * hd;
+                memcpy(qh, qr + (t * heads + h) * kd, pe * sizeof(float));
+                memcpy(qh + pe, p[6] + (h * m + t) * rank, rank * sizeof(float));
+            }
+        }
+        if (s != GEIST_OK)
+            geist_backend_set_error(ctx->be, s, "%s: k_b has no row kernel", ARCH);
+    }
+    for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++)
+        if (p[i] != nullptr)
+            v->buffer_unmap(bufs[i]);
+    return s;
+}
+
+/* Each output head's latent dims [pe, hd) through v_b[h], packed into
+ * scratch_attn as [seq, heads * mla_v_dim] for o_proj. */
+[[nodiscard]] static enum geist_status mla_absorb_out(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_session *sess = ctx->sess;
+    const struct geist_arch_config  *c    = &ctx->st->config;
+    const struct geist_backend_vtbl *v    = ctx->v;
+    const size_t      heads = ctx->st->n_q_heads, m = ctx->seq, hd = ctx->hd, vd = c->mla_v_dim;
+    float            *o  = (float *) v->buffer_map(sess->scratch_attn);
+    float            *hx = (float *) v->buffer_map(sess->mla_hx);
+    float            *hy = (float *) v->buffer_map(sess->mla_hy);
+    enum geist_status s =
+            o != nullptr && hx != nullptr && hy != nullptr ? GEIST_OK : GEIST_E_BACKEND;
+    if (s == GEIST_OK) {
+        struct mla_heads_job j = {.w        = ctx->L->mla_v_b_w,
+                                  .be       = ctx->be,
+                                  .m        = m,
+                                  .heads    = heads,
+                                  .n_in     = c->mla_kv_rank,
+                                  .n_out    = vd,
+                                  .src_row  = heads * hd,
+                                  .src_head = hd,
+                                  .src_off  = c->mla_rope,
+                                  .src      = o,
+                                  .hx       = hx,
+                                  .hy       = hy};
+        s                      = mla_heads(&j);
+        /* Every head has read its rows: o is free to take the packed ones. */
+        for (size_t t = 0; s == GEIST_OK && t < m; t++)
+            for (size_t h = 0; h < heads; h++)
+                memcpy(o + (t * heads + h) * vd, hy + (h * m + t) * vd, vd * sizeof(float));
+        if (s != GEIST_OK)
+            geist_backend_set_error(ctx->be, s, "%s: v_b has no row kernel", ARCH);
+    }
+    struct geist_buffer *const bufs[] = {sess->scratch_attn, sess->mla_hx, sess->mla_hy};
+    const float *const         ptrs[] = {o, hx, hy};
+    for (size_t i = 0; i < 3; i++)
+        if (ptrs[i] != nullptr)
+            v->buffer_unmap(bufs[i]);
+    return s;
+}
+
 /* Each step runs only while s is GEIST_OK. */
 [[nodiscard]] static enum geist_status
 deepseek2_attention_block(struct transformer_layer_forward_ctx *ctx) {
@@ -450,6 +707,8 @@ deepseek2_attention_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_layer_weights *L    = ctx->L;
     const struct geist_arch_config   *c    = &ctx->st->config;
     struct geist_buffer              *x    = sess->scratch_normed;
+    /* Absorbed: q before the absorption goes to mla_kv. */
+    struct geist_buffer *q = c->mla_absorbed ? sess->mla_kv : sess->scratch_q;
 
     enum geist_status s = blk_attn_norm(ctx, x);
     if (s == GEIST_OK && c->mla_q_rank > 0) {
@@ -457,20 +716,20 @@ deepseek2_attention_block(struct transformer_layer_forward_ctx *ctx) {
         if (s == GEIST_OK)
             s = blk_rmsnorm(ctx, c->mla_q_rank, sess->mla_q_a, &L->mla_q_a_norm, sess->mla_q_a);
         if (s == GEIST_OK)
-            s = blk_linear(ctx, sess->mla_q_a, &L->q_proj, &L->q_proj_w, sess->scratch_q);
+            s = blk_linear(ctx, sess->mla_q_a, &L->q_proj, &L->q_proj_w, q);
     } else if (s == GEIST_OK) {
-        s = blk_linear(ctx, x, &L->q_proj, &L->q_proj_w, sess->scratch_q);
+        s = blk_linear(ctx, x, &L->q_proj, &L->q_proj_w, q);
     }
     if (s == GEIST_OK)
         s = blk_linear(ctx, x, &L->mla_kv_a, &L->mla_kv_a_w, sess->mla_kv_a);
     if (s == GEIST_OK)
-        s = mla_kv(ctx);
+        s = c->mla_absorbed ? mla_absorb_qkv(ctx) : mla_kv(ctx);
     if (s == GEIST_OK)
         s = blk_rope_qk(ctx, c->attn_q_scale);
     if (s == GEIST_OK)
         s = blk_attend(ctx, true);
     if (s == GEIST_OK)
-        s = mla_pack_out(ctx);
+        s = c->mla_absorbed ? mla_absorb_out(ctx) : mla_pack_out(ctx);
     if (s == GEIST_OK)
         s = blk_linear(ctx, sess->scratch_attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
     return s == GEIST_OK ? blk_attn_residual(ctx, nullptr) : s;

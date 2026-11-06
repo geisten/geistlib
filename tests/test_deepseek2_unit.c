@@ -1,11 +1,15 @@
 /*
- * test_deepseek2_unit - the DeepSeek-V2 family on in-memory models (#242).
+ * test_deepseek2_unit - the DeepSeek-V2 family on in-memory models (#242,
+ * #375).
  *
  * mf_deepseek2_gguf writes a three-layer DeepSeek-V2 with F32 weights in the
  * unsplit attn_kv_b layout: one dense lead layer, then two MoE layers of 8
  * experts (2 per token) plus two shared experts; multi-head latent attention
  * with a 32-dim latent, heads of 16 nope + 8 rope dims and 16-dim values;
- * YaRN with DeepSeek's log multiplier.
+ * YaRN with DeepSeek's log multiplier. With `split` the same weights come
+ * as llama.cpp's converter writes them since 2025 (attn_k_b / attn_v_b, one
+ * KV head of 40 dims), which geist runs in the absorbed form; the reference
+ * rebuilds kv_b from k_b and v_b.
  *
  * The reference is this file's own forward pass in double, written from
  * llama.cpp's graph for the architecture (deepseek2.cpp, its non-absorbed
@@ -24,7 +28,13 @@
  *     experts or (V3) without groups moves the logits by more than 1e-2;
  *   - every backend in the build: chunked and single-token prefill agree,
  *     a reset repeats its logits bit for bit, and the logits match
- *     cpu_scalar (cpu_neon and Metal within 1e-3, others cosine 0.999).
+ *     cpu_scalar (cpu_neon and Metal within 1e-3, others cosine 0.999);
+ *   - split (absorbed, #375), both shapes: the same within 1e-5 of the
+ *     reference, and within 1e-5 of the unsplit file's logits on
+ *     cpu_scalar; a GPU backend refuses the layout (#376). A third split
+ *     shape with a 520-dim latent (a 528-dim KV head, past the quantized
+ *     caches' 512) runs on every CPU backend, an INT8 KV request getting
+ *     the F16 cache instead.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -46,6 +56,7 @@
 
 enum { VOCAB = 96, N_PROMPT = 21, LAYERS = 3, LEAD = 1, D = 64, HEADS = 4 };
 enum { NOPE = 16, ROPE = 8, HK = NOPE + ROPE, VD = 16, RANK = 32, QRANK = 24, FF = 48 };
+enum { RANK_WIDE = 520, RANK_MAX = RANK_WIDE }; /* the wide shape's latent */
 enum { EXPERTS = 8, USED = 2, EFF = 16, SHARED = 2, SFF = SHARED * EFF };
 
 static const struct mf_deepseek2 LITE = {.layers    = LAYERS,
@@ -72,6 +83,11 @@ static struct mf_deepseek2 v3_geom(void) {
     g.topk_group          = 2;
     g.w_scale             = 2.5f;
     g.seed                = 43;
+    return g;
+}
+
+static struct mf_deepseek2 split_of(struct mf_deepseek2 g) {
+    g.split = true;
     return g;
 }
 
@@ -110,7 +126,28 @@ struct ref_model {
     return t != nullptr ? gguf_dequant_to_fp32(t) : nullptr;
 }
 
-static void ref_load(struct gguf_ctx *g, struct ref_model *m) {
+/* kv_b [heads * (NOPE + VD), rank] from the split k_b [NOPE, rank, heads]
+ * and v_b [rank, VD, heads] (GGUF order), as llama.cpp's converter split
+ * it; nullptr when the file has neither. */
+static float *kv_b_of_split(struct gguf_ctx *g, size_t rank, int l) {
+    float *kb = tensor(g, "blk.%d.attn_k_b.weight", l),
+          *vb = tensor(g, "blk.%d.attn_v_b.weight", l);
+    float *kv = kb != nullptr && vb != nullptr ? malloc(HEADS * (NOPE + VD) * rank * sizeof *kv)
+                                               : nullptr;
+    for (size_t h = 0; kv != nullptr && h < HEADS; h++) {
+        for (size_t r = 0; r < rank; r++) {
+            for (size_t i = 0; i < NOPE; i++)
+                kv[(h * (NOPE + VD) + i) * rank + r] = kb[i + NOPE * (r + rank * h)];
+            for (size_t j = 0; j < VD; j++)
+                kv[(h * (NOPE + VD) + NOPE + j) * rank + r] = vb[r + rank * (j + VD * h)];
+        }
+    }
+    free(kb);
+    free(vb);
+    return kv;
+}
+
+static void ref_load(struct gguf_ctx *g, size_t rank, struct ref_model *m) {
     m->embd     = tensor(g, "token_embd.weight");
     m->out      = tensor(g, "output.weight");
     m->out_norm = tensor(g, "output_norm.weight");
@@ -124,19 +161,21 @@ static void ref_load(struct gguf_ctx *g, struct ref_model *m) {
         r->wkv_a            = tensor(g, "blk.%d.attn_kv_a_mqa.weight", l);
         r->kv_a_norm        = tensor(g, "blk.%d.attn_kv_a_norm.weight", l);
         r->wkv_b            = tensor(g, "blk.%d.attn_kv_b.weight", l);
-        r->wo               = tensor(g, "blk.%d.attn_output.weight", l);
-        r->ffn_norm         = tensor(g, "blk.%d.ffn_norm.weight", l);
-        r->wg               = tensor(g, "blk.%d.ffn_gate.weight", l);
-        r->wu               = tensor(g, "blk.%d.ffn_up.weight", l);
-        r->wd               = tensor(g, "blk.%d.ffn_down.weight", l);
-        r->wr               = tensor(g, "blk.%d.ffn_gate_inp.weight", l);
-        r->sel              = tensor(g, "blk.%d.exp_probs_b.bias", l);
-        r->eg               = tensor(g, "blk.%d.ffn_gate_exps.weight", l);
-        r->eu               = tensor(g, "blk.%d.ffn_up_exps.weight", l);
-        r->ed               = tensor(g, "blk.%d.ffn_down_exps.weight", l);
-        r->sg               = tensor(g, "blk.%d.ffn_gate_shexp.weight", l);
-        r->su               = tensor(g, "blk.%d.ffn_up_shexp.weight", l);
-        r->sd               = tensor(g, "blk.%d.ffn_down_shexp.weight", l);
+        if (r->wkv_b == nullptr)
+            r->wkv_b = kv_b_of_split(g, rank, l);
+        r->wo       = tensor(g, "blk.%d.attn_output.weight", l);
+        r->ffn_norm = tensor(g, "blk.%d.ffn_norm.weight", l);
+        r->wg       = tensor(g, "blk.%d.ffn_gate.weight", l);
+        r->wu       = tensor(g, "blk.%d.ffn_up.weight", l);
+        r->wd       = tensor(g, "blk.%d.ffn_down.weight", l);
+        r->wr       = tensor(g, "blk.%d.ffn_gate_inp.weight", l);
+        r->sel      = tensor(g, "blk.%d.exp_probs_b.bias", l);
+        r->eg       = tensor(g, "blk.%d.ffn_gate_exps.weight", l);
+        r->eu       = tensor(g, "blk.%d.ffn_up_exps.weight", l);
+        r->ed       = tensor(g, "blk.%d.ffn_down_exps.weight", l);
+        r->sg       = tensor(g, "blk.%d.ffn_gate_shexp.weight", l);
+        r->su       = tensor(g, "blk.%d.ffn_up_shexp.weight", l);
+        r->sd       = tensor(g, "blk.%d.ffn_down_shexp.weight", l);
     }
 }
 
@@ -209,7 +248,8 @@ static void ref_forward(const struct ref_model    *m,
     const bool    yarn = !g->no_yarn;
     const double  ms   = yarn && !k.no_mscale ? 1.0 + 0.0707 * log(40.0) : 1.0;
     const double  kq   = ms * ms / sqrt((double) HK);
-    double        h[D], x[D], q[HEADS * HK], qa[QRANK], kva[RANK + ROPE], lat[RANK];
+    const size_t  rank = g->kv_rank;
+    double        h[D], x[D], q[HEADS * HK], qa[QRANK], kva[RANK_MAX + ROPE], lat[RANK_MAX];
     double        kv[HEADS * (NOPE + VD)], att[HEADS * VD], o[D], y[D];
     for (size_t p = 0; p < N_PROMPT; p++) {
         const float *e = m->embd + (size_t) prompt_id(p) * D;
@@ -225,14 +265,14 @@ static void ref_forward(const struct ref_model    *m,
             } else {
                 matvec(HEADS * HK, D, r->wq, x, q);
             }
-            matvec(RANK + ROPE, D, r->wkv_a, x, kva);
-            rope(kva + RANK, p, yarn, k); /* k_pe: the trailing dims */
-            rmsnorm(RANK, kva, r->kv_a_norm, lat);
-            matvec(HEADS * (NOPE + VD), RANK, r->wkv_b, lat, kv);
+            matvec(rank + ROPE, D, r->wkv_a, x, kva);
+            rope(kva + rank, p, yarn, k); /* k_pe: the trailing dims */
+            rmsnorm(rank, kva, r->kv_a_norm, lat);
+            matvec(HEADS * (NOPE + VD), rank, r->wkv_b, lat, kv);
             for (size_t hh = 0; hh < HEADS; hh++) {
                 rope(q + hh * HK + NOPE, p, yarn, k);
                 memcpy(kc[l][p][hh], kv + hh * (NOPE + VD), NOPE * sizeof(double));
-                memcpy(kc[l][p][hh] + NOPE, kva + RANK, ROPE * sizeof(double));
+                memcpy(kc[l][p][hh] + NOPE, kva + rank, ROPE * sizeof(double));
                 memcpy(vc[l][p][hh], kv + hh * (NOPE + VD) + NOPE, VD * sizeof(double));
             }
             for (size_t hh = 0; hh < HEADS; hh++) {
@@ -384,19 +424,44 @@ static double cosine(const float a[static VOCAB], const float b[static VOCAB]) {
     return ab / sqrt(aa * bb > 0.0 ? aa * bb : 1.0);
 }
 
-static int check_backend(const char *name, const struct mf_deepseek2 *g, float out[static VOCAB]) {
+/* How far one prompt's logits may move with the rows a step carries, or
+ * with the KV cache's precision. cpu_x86 runs these F32 weights as W8A8:
+ * its one-row and many-row kernels round q differently in the last bit,
+ * and its int8 activations turn such a bit into a step of the int8 grid
+ * wherever a value sits on a rounding edge, which moves the logits by up
+ * to its distance from cpu_scalar (rel. L2 0.02). Which shapes hit an edge
+ * is chance: the 520-dim latent's F16 cache does (1.1e-2). */
+static double rows_tol(const char *name) {
+    return strcmp(name, "cpu_x86") == 0 ? 2e-2 : 1e-4;
+}
+
+/* The fixture's logits on backend `name` with KV cache `kv` (FP32 for
+ * GEIST_KV_AUTO); -1: no such backend, or a GPU refusing the split layout
+ * (#376), as it must. */
+static int check_backend(const char                *name,
+                         const struct mf_deepseek2 *g,
+                         enum geist_kv_mode         kv,
+                         float                      out[static VOCAB]) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
         printf("skip %s: not in this build\n", name);
         return -1;
     }
-    struct tf_buf         b     = mf_deepseek2_gguf(g);
-    struct geist_model   *m     = nullptr;
-    struct geist_session *s     = nullptr;
-    int                   fails = 0;
-    float                 chunked[VOCAB], single[VOCAB], again[VOCAB];
-    if (geist_model_load_from_memory(b.b, b.n, be, &m) != GEIST_OK ||
-        geist_session_create(m, be, &OPTS, &s) != GEIST_OK) {
+    struct tf_buf             b     = mf_deepseek2_gguf(g);
+    struct geist_model       *m     = nullptr;
+    struct geist_session     *s     = nullptr;
+    int                       fails = 0;
+    float                     chunked[VOCAB], single[VOCAB], again[VOCAB];
+    struct geist_session_opts o = OPTS;
+    o.kv_mode                   = kv != GEIST_KV_AUTO ? kv : OPTS.kv_mode;
+    const bool gpu              = strncmp(name, "cpu_", 4) != 0;
+    if (geist_model_load_from_memory(b.b, b.n, be, &m) != GEIST_OK && g->split && gpu) {
+        const char *e = geist_backend_errmsg(be);
+        printf("%s refuses the split layout: %s\n", name, e != nullptr ? e : "?");
+        fails = geist_expect(e != nullptr && strstr(e, "absorbed") != nullptr,
+                             "a GPU backend refuses the absorbed layout, saying so");
+        fails = fails != 0 ? fails : -1;
+    } else if (m == nullptr || geist_session_create(m, be, &o, &s) != GEIST_OK) {
         fprintf(stderr, "  %s: %s\n", name, geist_last_create_error());
         fails += geist_expect(false, "the deepseek2 fixture loads");
     } else if (!logits_after(s, N_PROMPT, chunked) || !logits_after(s, 1, single) ||
@@ -410,7 +475,7 @@ static int check_backend(const char *name, const struct mf_deepseek2 *g, float o
             diff  = fmax(diff, fabs((double) chunked[i] - single[i]));
         }
         printf("%s: chunks vs one at a time: max|d| %.3g of scale %.3g\n", name, diff, scale);
-        fails += geist_expect(diff <= 1e-4 * scale, "chunks and single tokens agree");
+        fails += geist_expect(diff <= rows_tol(name) * scale, "chunks and single tokens agree");
         fails += geist_expect(memcmp(chunked, again, sizeof chunked) == 0,
                               "a reset session reproduces its logits bit for bit");
         memcpy(out, chunked, sizeof chunked);
@@ -422,7 +487,17 @@ static int check_backend(const char *name, const struct mf_deepseek2 *g, float o
     return fails;
 }
 
-static int check_shape(const char *what, const struct mf_deepseek2 *g) {
+static double rel_l2_f(const float a[static VOCAB], const float b[static VOCAB]) {
+    double num = 0.0, den = 0.0;
+    for (size_t j = 0; j < VOCAB; j++) {
+        num += ((double) a[j] - b[j]) * ((double) a[j] - b[j]);
+        den += (double) b[j] * b[j];
+    }
+    return sqrt(num / (den > 0.0 ? den : 1.0));
+}
+
+/* `scalar_out`, when non-null, receives cpu_scalar's logits. */
+static int check_shape(const char *what, const struct mf_deepseek2 *g, float *scalar_out) {
     printf("== %s\n", what);
     struct tf_buf    b   = mf_deepseek2_gguf(g);
     const char      *err = nullptr;
@@ -434,12 +509,14 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g) {
     }
     struct ref_model rm = {0};
     static double    ref[VOCAB], alt[VOCAB];
-    ref_load(gc, &rm);
+    ref_load(gc, g->kv_rank, &rm);
     ref_forward(&rm, g, (struct knobs) {0}, ref);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
-    const int sc = check_backend("cpu_scalar", g, scalar);
+    const int sc = check_backend("cpu_scalar", g, GEIST_KV_AUTO, scalar);
     fails += sc != 0 ? geist_expect(false, "cpu_scalar runs the fixture") : 0;
+    if (sc == 0 && scalar_out != nullptr)
+        memcpy(scalar_out, scalar, sizeof scalar);
     if (sc == 0) {
         const double d = rel_l2_d(scalar, ref);
         printf("cpu_scalar vs the double reference: relative L2 %.3g\n", d);
@@ -468,17 +545,12 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g) {
     free(b.b);
     const char *const more[] = {"cpu_neon", "cpu_x86", "metal", "vulkan"};
     for (size_t i = 0; i < sizeof more / sizeof more[0]; i++) {
-        const int r = check_backend(more[i], g, other);
+        const int r = check_backend(more[i], g, GEIST_KV_AUTO, other);
         if (r < 0)
             continue;
         fails += r;
         if (r == 0 && sc == 0) {
-            double num = 0.0, den = 0.0;
-            for (size_t j = 0; j < VOCAB; j++) {
-                num += ((double) other[j] - scalar[j]) * ((double) other[j] - scalar[j]);
-                den += (double) scalar[j] * scalar[j];
-            }
-            const double d = sqrt(num / den), c = cosine(other, scalar);
+            const double d = rel_l2_f(other, scalar), c = cosine(other, scalar);
             printf("%s vs cpu_scalar: relative L2 %.3g, cosine %.6f\n", more[i], d, c);
             const bool exact = strcmp(more[i], "cpu_neon") == 0 || strcmp(more[i], "metal") == 0;
             fails += geist_expect(exact ? d <= 1e-3 : c >= 0.999,
@@ -488,10 +560,48 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g) {
     return fails;
 }
 
+/* The split file against the unsplit one with the same weights (#375). */
+static int check_split(const char *what, const struct mf_deepseek2 *g) {
+    static float plain[VOCAB], split[VOCAB];
+    char         title[128];
+    snprintf(title, sizeof title, "%s, split (absorbed MLA)", what);
+    const struct mf_deepseek2 sg    = split_of(*g);
+    int                       fails = check_shape(what, g, plain);
+    fails += check_shape(title, &sg, split);
+    const double d = rel_l2_f(split, plain);
+    printf("cpu_scalar split vs unsplit: relative L2 %.3g\n", d);
+    fails += geist_expect(d <= 1e-5, "the split and the unsplit file give the same logits");
+    return fails;
+}
+
+/* A latent of RANK_WIDE: one KV head of 528 dims, past the quantized
+ * caches; an INT8 request gets the F16 cache. */
+static int check_wide(void) {
+    struct mf_deepseek2 g = split_of(LITE);
+    g.kv_rank             = RANK_WIDE;
+    int fails = check_shape("V2-Lite shape, split, 520-dim latent (528-dim KV head)", &g, nullptr);
+    static float f32[VOCAB], int8[VOCAB];
+    const char  *cpus[] = {"cpu_scalar", "cpu_neon", "cpu_x86"};
+    for (size_t i = 0; i < sizeof cpus / sizeof cpus[0]; i++) {
+        if (check_backend(cpus[i], &g, GEIST_KV_FP32, f32) != 0)
+            continue;
+        const int r = check_backend(cpus[i], &g, GEIST_KV_INT8, int8);
+        fails += geist_expect(r == 0, "an INT8 KV request runs the wide head");
+        if (r == 0) {
+            const double d = rel_l2_f(int8, f32);
+            printf("%s INT8 request (F16 cache) vs FP32 KV: relative L2 %.3g\n", cpus[i], d);
+            fails += geist_expect(d > 0.0 && d <= fmax(1e-3, rows_tol(cpus[i])),
+                                  "the INT8 request gets the F16 cache");
+        }
+    }
+    return fails;
+}
+
 int main(void) {
     setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
-    int                       fails = check_shape("V2-Lite shape", &LITE);
+    int                       fails = check_split("V2-Lite shape", &LITE);
     const struct mf_deepseek2 v3    = v3_geom();
-    fails += check_shape("V3 shape (q_a/q_b, sigmoid router, groups, scale)", &v3);
+    fails += check_split("V3 shape (q_a/q_b, sigmoid router, groups, scale)", &v3);
+    fails += check_wide();
     return fails ? GEIST_TEST_FAIL : GEIST_TEST_PASS;
 }

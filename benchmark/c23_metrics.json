@@ -45,11 +45,11 @@
    "what": "switch statements with a default: label of their own"
   },
   "void_pp_cast": {
-   "max": 319,
+   "max": 322,
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
-   "max": 1262,
+   "max": 1264,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {

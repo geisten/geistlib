@@ -86,6 +86,20 @@ compute_weight_arena_capacity(const struct geist_backend          *be,
                                                    struct geist_tensor             **out_views,
                                                    struct geist_weight             **out_weights);
 
+/* load_layer_experts without the shared slot and the experts' placement:
+ * the 3-D tensor `name` as n_slices projections [n_out][n_in] (absorbed
+ * MLA's per-head attn_k_b / attn_v_b, #375), each resolved on the state's
+ * backend. The caller records n_slices for the layer teardown. */
+[[nodiscard]] enum geist_status load_layer_slices(struct transformer_arch_state    *st,
+                                                  struct gguf_ctx                  *gguf,
+                                                  struct transformer_layer_weights *L,
+                                                  const char                       *name,
+                                                  size_t                            n_slices,
+                                                  size_t                            n_out,
+                                                  size_t                            n_in,
+                                                  struct geist_tensor             **out_views,
+                                                  struct geist_weight             **out_weights);
+
 /* A mixture-of-experts FFN's tensors under the architecture prefix `arch`:
  * the router, the experts and, with config.moe_n_shared, the shared expert
  * (slot moe_n_experts) and its gate vector (host). On a GPU backend the

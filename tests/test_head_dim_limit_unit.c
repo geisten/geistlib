@@ -1,19 +1,20 @@
 /*
- * test_head_dim_limit_unit — a GGUF asking for head_dim > 512 is refused at
+ * test_head_dim_limit_unit — a GGUF asking for head_dim > 576 is refused at
  * load, not run.
  *
  * head_dim is model metadata (llama: embedding_length / head_count). The
- * forward pass holds one attention head in stack arrays of
- * TRANSFORMER_HEAD_DIM_MAX (512) elements and sizes its scratch for it; a
- * larger head_dim would write past int8_t q_q8[512] in the INT8 KV
- * attention (forward/attention.c), so the loader refuses it and says
- * why. (The engine reports any failed arch state create as
- * GEIST_E_IO; the backend's error message carries the reason.)
+ * quantized KV caches hold one attention head in stack arrays of
+ * TRANSFORMER_HEAD_DIM_MAX (512) elements; a session of a model with wider
+ * heads (absorbed MLA's 576, #375) gets the F16 or F32 cache instead, whose
+ * attention takes any head_dim. Past TRANSFORMER_HEAD_DIM_MAX_WIDE (576)
+ * the loader refuses the model and says why. (The engine reports any failed
+ * arch state create as GEIST_E_IO; the backend's error message carries the
+ * reason.)
  *
  * Minimal in-memory llama GGUFs (metadata plus one dummy tensor, like
  * test_arch_gate_unit): head_dim 1024 must be refused naming head_dim;
- * head_dim 512, the limit itself, must get past that check (it then fails
- * for the missing weights, which is not what this test is about).
+ * head_dim 512 and 576, the limits, must get past that check (they then
+ * fail for the missing weights, which is not what this test is about).
  */
 #include "test_helpers.h"
 
@@ -99,14 +100,16 @@ int main(void) {
             geist_model_destroy(m);
         }
     }
-    {
-        const size_t            n = build_gguf(buf, 512);
+    static const uint32_t pass[] = {512, 576};
+    for (size_t i = 0; i < sizeof pass / sizeof pass[0]; i++) {
+        const size_t            n = build_gguf(buf, pass[i]);
         struct geist_model     *m = nullptr;
         const enum geist_status s = geist_model_load_from_memory(buf, n, be, &m);
         const char             *e = geist_backend_errmsg(be);
         /* No weights in this GGUF: the load fails later, for that reason. */
+        printf("head_dim %u: %s\n", pass[i], e != nullptr ? e : "(no error)");
         fails += geist_expect(e == nullptr || strstr(e, "head_dim") == nullptr,
-                              "head_dim 512 passes the head_dim check");
+                              "head_dim 512 and 576 pass the head_dim check");
         if (s == GEIST_OK && m != nullptr) {
             geist_model_destroy(m);
         }

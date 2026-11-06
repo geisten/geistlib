@@ -288,16 +288,20 @@ enum geist_status load_layer_matrix_rope_il(struct transformer_arch_state    *st
     return load_layer_proj_rope_il(st, gguf, L, name, n_out, n_in, group, 0, out_view, out_weight);
 }
 
-enum geist_status load_layer_experts(struct transformer_arch_state    *st,
-                                     struct gguf_ctx                  *gguf,
-                                     struct transformer_layer_weights *L,
-                                     const char                       *name,
-                                     const char                       *shared,
-                                     size_t                            n_experts,
-                                     size_t                            n_out,
-                                     size_t                            n_in,
-                                     struct geist_tensor             **out_views,
-                                     struct geist_weight             **out_weights) {
+/* load_layer_experts and load_layer_slices: the 3-D tensor `name` as
+ * n_experts projections (+ `shared`, nullable, as one more), each resolved
+ * on the state's backend unless `resolve` is false. */
+[[nodiscard]] static enum geist_status load_slices(struct transformer_arch_state    *st,
+                                                   struct gguf_ctx                  *gguf,
+                                                   struct transformer_layer_weights *L,
+                                                   const char                       *name,
+                                                   const char                       *shared,
+                                                   size_t                            n_experts,
+                                                   size_t                            n_out,
+                                                   size_t                            n_in,
+                                                   bool                              resolve,
+                                                   struct geist_tensor             **out_views,
+                                                   struct geist_weight             **out_weights) {
     struct geist_backend            *be = st->backend;
     const struct geist_backend_vtbl *v  = be->desc->vtbl;
     *out_views                          = nullptr;
@@ -322,7 +326,7 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
     if (!dm.supported || t->nbytes % n_experts != 0) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
-                                "transformer: experts '%s' (%s) cannot be split into %zu",
+                                "transformer: '%s' (%s) cannot be split into %zu slices",
                                 name,
                                 gguf_dtype_name(t->dtype),
                                 n_experts);
@@ -336,7 +340,6 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
     struct geist_weight *weights = heap_calloc_array_aligned(struct geist_weight, slots);
     *out_views                   = views;
     *out_weights                 = weights;
-    L->moe_n_experts             = slots; /* what the layer teardown walks */
     if (views == nullptr || weights == nullptr) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: no memory for experts '%s'", name);
         return GEIST_E_OOM;
@@ -381,10 +384,7 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
                 .n_out      = (int32_t) n_out,
                 .dtype      = (uint16_t) dme.dtype,
         };
-        /* On a GPU the experts' home is the state's CPU backend (#78), and
-         * moe_resolve_cold resolves there only the experts that got no GPU
-         * copy (#164): the placement comes first. */
-        if (st->moe_cpu != nullptr) {
+        if (!resolve) {
             continue;
         }
         if (be->desc->vtbl->resolve_weight == nullptr) {
@@ -395,7 +395,7 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
         if (s == GEIST_E_UNSUPPORTED) {
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
-                                    "transformer: %s has no %s linear for experts '%s'",
+                                    "transformer: %s has no %s linear for '%s'",
                                     be->desc->name,
                                     gguf_dtype_name(t->dtype),
                                     name);
@@ -408,6 +408,46 @@ enum geist_status load_layer_experts(struct transformer_arch_state    *st,
     if (bufs != nullptr)
         v->buffer_unmap(bufs);
     return s;
+}
+
+enum geist_status load_layer_experts(struct transformer_arch_state    *st,
+                                     struct gguf_ctx                  *gguf,
+                                     struct transformer_layer_weights *L,
+                                     const char                       *name,
+                                     const char                       *shared,
+                                     size_t                            n_experts,
+                                     size_t                            n_out,
+                                     size_t                            n_in,
+                                     struct geist_tensor             **out_views,
+                                     struct geist_weight             **out_weights) {
+    L->moe_n_experts = n_experts + (shared != nullptr); /* what the layer teardown walks */
+    /* On a GPU the experts' home is the state's CPU backend (#78), and
+     * moe_resolve_cold resolves there only the experts that got no GPU
+     * copy (#164): the placement comes first. */
+    return load_slices(st,
+                       gguf,
+                       L,
+                       name,
+                       shared,
+                       n_experts,
+                       n_out,
+                       n_in,
+                       st->moe_cpu == nullptr,
+                       out_views,
+                       out_weights);
+}
+
+enum geist_status load_layer_slices(struct transformer_arch_state    *st,
+                                    struct gguf_ctx                  *gguf,
+                                    struct transformer_layer_weights *L,
+                                    const char                       *name,
+                                    size_t                            n_slices,
+                                    size_t                            n_out,
+                                    size_t                            n_in,
+                                    struct geist_tensor             **out_views,
+                                    struct geist_weight             **out_weights) {
+    return load_slices(
+            st, gguf, L, name, nullptr, n_slices, n_out, n_in, true, out_views, out_weights);
 }
 
 enum geist_status moe_wire_layer(struct transformer_arch_state    *st,
