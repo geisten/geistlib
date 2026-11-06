@@ -145,6 +145,9 @@ geist_ffn_activation_select(size_t act_len, enum geist_ffn_activation_kind dflt,
 /* A family refuses more experts than this at load (blk_moe_ffn lists the
  * active experts of a layer on the stack). */
 constexpr int GEIST_MOE_MAX_EXPERTS = 512;
+/* GEIST_MOE_ACT_SWIGLU_OAI's constants (llama.cpp's for GPT-OSS). */
+constexpr float GEIST_SWIGLU_OAI_ALPHA = 1.702f;
+constexpr float GEIST_SWIGLU_OAI_LIMIT = 7.0f;
 
 struct geist_arch_config {
     /* ---- Numerics. */

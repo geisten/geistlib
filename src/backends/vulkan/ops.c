@@ -2607,17 +2607,22 @@ struct vk_push_topk {
     uint32_t n, k, norm, flag, ls, lo, io, wo;
 };
 
-[[nodiscard]] static enum geist_status vk_moe_route(struct geist_backend      *be,
-                                                    size_t                     m,
-                                                    size_t                     n,
-                                                    size_t                     k,
-                                                    bool                       norm,
-                                                    const struct geist_tensor *t_lg,
-                                                    struct geist_buffer       *ids,
-                                                    size_t                     flag_offset,
-                                                    struct geist_tensor       *t_w) {
+[[nodiscard]] static enum geist_status vk_moe_route(struct geist_backend              *be,
+                                                    const struct geist_moe_route_args *a,
+                                                    const struct geist_tensor         *t_lg,
+                                                    struct geist_buffer               *ids,
+                                                    size_t                             flag_offset,
+                                                    struct geist_tensor               *t_w) {
     VkDescriptorBufferInfo bi[3];
     uint32_t               lo, wo, ls, n32, k32, m32, io, fo;
+    if (a == nullptr)
+        return GEIST_E_INVALID_ARG;
+    /* moe_topk.comp: softmax gating, no router bias (#373: GPT-OSS's
+     * routes on the host here). */
+    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX || a->bias != nullptr)
+        return GEIST_E_UNSUPPORTED;
+    const size_t m = a->m, n = a->n, k = a->k;
+    const bool   norm = a->norm;
     if (m == 0) {
         return GEIST_OK;
     }

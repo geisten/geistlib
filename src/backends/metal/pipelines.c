@@ -274,7 +274,9 @@ static const struct metal_pipeline_row metal_moe_rows[] = {
         METAL_PIPE(moe, "moe_mv_q4k", moe_mv_q4k),
         METAL_PIPE(moe, "moe_mv_q6k", moe_mv_q6k),
         METAL_PIPE(moe, "moe_mv_q80", moe_mv_q80),
+        METAL_PIPE(moe, "moe_mv_mx4", moe_mv_mx4),
         METAL_PIPE(moe, "moe_mv_f32", moe_mv_f32),
+        METAL_PIPE(moe, "moe_glu", moe_glu),
         METAL_PIPE(moe, "moe_wsum", moe_wsum),
 };
 
@@ -618,7 +620,9 @@ static const struct metal_library_row metal_moe_libs[] = {
                   metal_mv_q4k_body,
                   metal_mv_q6k_body,
                   metal_mv_q80_body,
-                  metal_moe_source),
+                  metal_mv_mx4_body,
+                  metal_moe_source,
+                  metal_moe2_source),
 };
 
 /* Compiled with language version 4.0 (metal_tensor_options). */

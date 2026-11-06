@@ -360,8 +360,8 @@ static void moe_act_cols(enum geist_moe_act act,
         u[i] += ub[i];
     if (act == GEIST_MOE_ACT_SWIGLU_OAI) {
         /* llama.cpp's ggml_swiglu_oai, alpha 1.702, limit 7. */
-        constexpr float alpha = 1.702f;
-        constexpr float limit = 7.0f;
+        constexpr float alpha = GEIST_SWIGLU_OAI_ALPHA;
+        constexpr float limit = GEIST_SWIGLU_OAI_LIMIT;
         for (size_t i = lo; i < hi; i++) {
             const float gc = g[i] < limit ? g[i] : limit;
             const float uc = u[i] < -limit ? -limit : u[i] > limit ? limit : u[i];
@@ -865,10 +865,16 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         memset(cold, 0, seq * d * sizeof(float));
         for (size_t i = 0; i < n_sel; i++) {
             const uint32_t sel = sess->moe_rows[i];
-            if (is_hot[sess->moe_ids[sel]])
+            const float    wt  = sess->moe_wts[sel];
+            float         *dst = cold + (sel / k) * d;
+            if (is_hot[sess->moe_ids[sel]]) {
+                /* #373: a hot expert's down bias, weighted, joins the
+                 * host's part; the device adds its outputs without it. */
+                const float *db = moe_bias(j, L->moe_down_b, sess->moe_ids[sel], d);
+                for (size_t c = 0; db != nullptr && c < d; c++)
+                    dst[c] += wt * db[c];
                 continue;
-            const float  wt  = sess->moe_wts[sel];
-            float       *dst = cold + (sel / k) * d;
+            }
             const float *src = sess->moe_y + i * d;
             for (size_t c = 0; c < d; c++)
                 dst[c] += wt * src[c];
