@@ -1,6 +1,6 @@
 #!/bin/sh
-# moe_revision_ab.sh MODEL NEW [CYCLES] — tools/bench_revision_ab.py of NEW
-# against origin/main on Qwen3-30B-A3B Q4_K_M with Metal (512-token prompt,
+# moe_revision_ab.sh MODEL NEW [CYCLES [URL SHA256]] — tools/bench_revision_ab.py
+# of NEW against origin/main on a MoE GGUF (default Qwen3-30B-A3B Q4_K_M) with Metal (512-token prompt,
 # 128 decoded tokens, cool gate on): the MoE no-regression gate of #471
 # (#373), which mac-ab.yml cannot run (MoE models are not in the
 # cross-engine protocol). The model comes by URL + sha256 into the host
@@ -12,8 +12,8 @@ NEW=${1:?NEW revision, e.g. origin/agent/issue-373}
 CYCLES=${2:-10}
 OUT=${PROBE_OUT:-probe-out}
 mkdir -p "$OUT"
-URL=https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf
-SHA=0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5
+URL=${3:-https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf}
+SHA=${4:-0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5}
 {
     sw_vers
     sysctl -n machdep.cpu.brand_string
