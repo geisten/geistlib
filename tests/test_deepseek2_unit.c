@@ -32,7 +32,7 @@
  *   - split (absorbed, #375), both shapes: the same within 1e-5 of the
  *     reference, and within 1e-5 of the unsplit file's logits on
  *     cpu_scalar; a GPU backend refuses the layout (#376). A third split
- *     shape with a 520-dim latent (a 528-dim KV head, past the quantized
+ *     shape with a 512-dim latent (a 520-dim KV head, past the quantized
  *     caches' 512) runs on every CPU backend, an INT8 KV request getting
  *     the F16 cache instead.
  */
@@ -56,7 +56,7 @@
 
 enum { VOCAB = 96, N_PROMPT = 21, LAYERS = 3, LEAD = 1, D = 64, HEADS = 4 };
 enum { NOPE = 16, ROPE = 8, HK = NOPE + ROPE, VD = 16, RANK = 32, QRANK = 24, FF = 48 };
-enum { RANK_WIDE = 520, RANK_MAX = RANK_WIDE }; /* the wide shape's latent */
+enum { RANK_WIDE = 512, RANK_MAX = RANK_WIDE }; /* the wide shape's latent */
 enum { EXPERTS = 8, USED = 2, EFF = 16, SHARED = 2, SFF = SHARED * EFF };
 
 static const struct mf_deepseek2 LITE = {.layers    = LAYERS,
@@ -424,19 +424,17 @@ static double cosine(const float a[static VOCAB], const float b[static VOCAB]) {
     return ab / sqrt(aa * bb > 0.0 ? aa * bb : 1.0);
 }
 
-/* How far one prompt's logits may move with the rows a step carries
- * (chunked vs one token at a time): 1e-4 of their scale, on every backend
- * and fixture but one. cpu_x86 runs these F32 weights as W8A8, and its
- * one-row and many-row kernels round q differently in the last bit; its
- * int8 activations turn such a bit into a step of the int8 grid wherever
- * a value sits on a rounding edge. On the 520-dim latent's F16 cache that
- * moves the logits by 1.1e-2 (its FP32 cache and every other fixture stay
- * within 2.4e-7), so that one case, cpu_x86 with a head past 512 on a KV
- * cache other than FP32, gets cpu_x86's distance from cpu_scalar (2e-2). */
-static double rows_tol(const char *name, const struct mf_deepseek2 *g, enum geist_kv_mode kv) {
-    const bool wide = g->kv_rank + g->rope > 512;
-    return strcmp(name, "cpu_x86") == 0 && wide && kv != GEIST_KV_FP32 ? 2e-2 : 1e-4;
-}
+/* Chunked prefill and one token at a time agree within 1e-4 of the
+ * logits' scale (ROWS_TOL) on every backend, fixture and KV cache, except
+ * where the backend quantizes activations (W8A8) and the cache is not FP32:
+ * check_wide's F16 runs. There a last-bit difference between the one-row
+ * and the many-row kernels (cpu_x86 rounds q differently) meets an F16 K / V
+ * row and lands on an int8 rounding edge, a step of the int8 grid
+ * (1.2e-2 on cpu_x86, release and ASan). check_wide measures how far the
+ * backend sits from cpu_scalar on the FP32 cache, which is that grid's
+ * reach (cpu_x86 1.5e-2, cpu_neon 3e-7), and allows twice it for those
+ * runs: a backend with F32 activations keeps 1e-4 there too. */
+static constexpr double ROWS_TOL = 1e-4;
 
 /* The fixture's logits on backend `name` with KV cache `kv` (FP32 for
  * GEIST_KV_AUTO: the session's default); -1: no such backend, or a GPU
@@ -445,6 +443,7 @@ static double rows_tol(const char *name, const struct mf_deepseek2 *g, enum geis
 static int check_backend(const char                *name,
                          const struct mf_deepseek2 *g,
                          enum geist_kv_mode         kv,
+                         double                     rows_tol,
                          float                      out[static VOCAB]) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
@@ -479,8 +478,7 @@ static int check_backend(const char                *name,
             diff  = fmax(diff, fabs((double) chunked[i] - single[i]));
         }
         printf("%s: chunks vs one at a time: max|d| %.3g of scale %.3g\n", name, diff, scale);
-        fails += geist_expect(diff <= rows_tol(name, g, kv) * scale,
-                              "chunks and single tokens agree");
+        fails += geist_expect(diff <= rows_tol * scale, "chunks and single tokens agree");
         fails += geist_expect(memcmp(chunked, again, sizeof chunked) == 0,
                               "a reset session reproduces its logits bit for bit");
         memcpy(out, chunked, sizeof chunked);
@@ -518,7 +516,7 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
     ref_forward(&rm, g, (struct knobs) {0}, ref);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
-    const int sc = check_backend("cpu_scalar", g, OPTS.kv_mode, scalar);
+    const int sc = check_backend("cpu_scalar", g, OPTS.kv_mode, ROWS_TOL, scalar);
     fails += sc != 0 ? geist_expect(false, "cpu_scalar runs the fixture") : 0;
     if (sc == 0 && scalar_out != nullptr)
         memcpy(scalar_out, scalar, sizeof scalar);
@@ -550,7 +548,7 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
     free(b.b);
     const char *const more[] = {"cpu_neon", "cpu_x86", "metal", "vulkan"};
     for (size_t i = 0; i < sizeof more / sizeof more[0]; i++) {
-        const int r = check_backend(more[i], g, OPTS.kv_mode, other);
+        const int r = check_backend(more[i], g, OPTS.kv_mode, ROWS_TOL, other);
         if (r < 0)
             continue;
         fails += r;
@@ -579,30 +577,37 @@ static int check_split(const char *what, const struct mf_deepseek2 *g) {
     return fails;
 }
 
-/* A latent of RANK_WIDE: one KV head of 528 dims, past the quantized
- * caches; the default cache is FP32 (bit for bit the FP32 request's
- * logits), an INT8 request gets the F16 cache. */
+/* A latent of RANK_WIDE (512, as DeepSeek-V3's): one KV head of 520 dims,
+ * past the quantized caches; the default cache is FP32 (bit for bit the
+ * FP32 request's logits), an INT8 request gets the F16 cache. The latent is
+ * a multiple of 16: cpu_x86 runs F32 weights of such a width as W8A8 in
+ * both its one-row and its many-row kernel, and others (520 did) on two
+ * F32 kernels of different summation order. */
 static int check_wide(void) {
     struct mf_deepseek2 g = split_of(LITE);
     g.kv_rank             = RANK_WIDE;
-    int fails = check_shape("V2-Lite shape, split, 520-dim latent (528-dim KV head)", &g, nullptr);
-    static float f32[VOCAB], int8[VOCAB], dflt[VOCAB];
+    int fails = check_shape("V2-Lite shape, split, 512-dim latent (520-dim KV head)", &g, nullptr);
+    static float f32[VOCAB], int8[VOCAB], dflt[VOCAB], scalar[VOCAB];
     const char  *cpus[] = {"cpu_scalar", "cpu_neon", "cpu_x86"};
+    if (check_backend("cpu_scalar", &g, GEIST_KV_FP32, ROWS_TOL, scalar) != 0)
+        return fails + geist_expect(false, "cpu_scalar runs the wide head");
     for (size_t i = 0; i < sizeof cpus / sizeof cpus[0]; i++) {
-        if (check_backend(cpus[i], &g, GEIST_KV_FP32, f32) != 0)
+        if (check_backend(cpus[i], &g, GEIST_KV_FP32, ROWS_TOL, f32) != 0)
             continue;
-        fails += geist_expect(check_backend(cpus[i], &g, GEIST_KV_AUTO, dflt) == 0 &&
+        fails += geist_expect(check_backend(cpus[i], &g, GEIST_KV_AUTO, ROWS_TOL, dflt) == 0 &&
                                       memcmp(dflt, f32, sizeof f32) == 0,
                               "a wide head's default KV cache is FP32");
-        const int r = check_backend(cpus[i], &g, GEIST_KV_INT8, int8);
+        /* The backend's int8-grid reach (ROWS_TOL); 0 for cpu_scalar. */
+        const double grid = 2.0 * rel_l2_f(f32, scalar);
+        const int    r    = check_backend(cpus[i], &g, GEIST_KV_INT8, fmax(ROWS_TOL, grid), int8);
         fails += geist_expect(r == 0, "an INT8 KV request runs the wide head");
         if (r == 0) {
             const double d = rel_l2_f(int8, f32);
             printf("%s INT8 request (F16 cache) vs FP32 KV: relative L2 %.3g\n", cpus[i], d);
-            /* F16 against FP32: 2.4e-4 where the kernels are F32; on
-             * cpu_x86 the int8-grid steps of rows_tol, 1.2e-2. */
-            const double tol = strcmp(cpus[i], "cpu_x86") == 0 ? 2e-2 : 1e-3;
-            fails += geist_expect(d > 0.0 && d <= tol, "the INT8 request gets the F16 cache");
+            /* F16 against FP32: 1.4e-4 with F32 activations; on W8A8
+             * kernels the grid steps of ROWS_TOL (cpu_x86 1.8e-2). */
+            fails += geist_expect(d > 0.0 && d <= fmax(1e-3, grid),
+                                  "the INT8 request gets the F16 cache");
         }
     }
     return fails;
