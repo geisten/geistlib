@@ -686,6 +686,14 @@ struct transformer_moe_gpu {
     _Atomic uint64_t     n_routed;                    /* layer steps that took that route */
     _Atomic uint64_t     n_device;                    /* layer steps that took that route */
     _Atomic uint64_t     rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
+    /* #373: the expert FFN has biases or SWIGLU_OAI (GPT-OSS): its
+     * activation runs as fused->glu, the down bias where the outputs are
+     * summed, and the grouped / #162 decode paths, which have neither, are
+     * off. bias [n_layers * 4]: each layer's router bias [n_experts] and
+     * its experts' gate and up [n_experts * inter] and down [n_experts *
+     * d_model] biases on `be` (nullptr: none). */
+    bool                  ext;
+    struct geist_buffer **bias;
 };
 
 struct transformer_arch_state {

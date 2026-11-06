@@ -470,6 +470,56 @@ struct geist_hadamard_args {
     bool                       inverse;
 };
 
+/* How fused->moe_route turns a row of router logits into weights (#373),
+ * llama.cpp's expert_gating_func. The selection is the k largest (biased)
+ * logits in both.
+ *   SOFTMAX         the selected ones' softmax probabilities over all n,
+ *                   renormalised over the k when norm.
+ *   SOFTMAX_WEIGHT  the softmax over the k selected logits alone (GPT-OSS).
+ * @stability EXPERIMENTAL */
+enum geist_moe_route_gating : uint32_t {
+    GEIST_MOE_ROUTE_SOFTMAX        = 0,
+    GEIST_MOE_ROUTE_SOFTMAX_WEIGHT = 1,
+};
+static_assert(sizeof(enum geist_moe_route_gating) == sizeof(uint32_t));
+
+/* The router fused->moe_route runs: m rows of n logits, k picks per row.
+ * bias, when not nullptr, is F32 DENSE [n], added to every row's logits
+ * before anything else reads them (GPT-OSS's ffn_gate_inp.bias). A backend
+ * returns GEIST_E_UNSUPPORTED for a gating or bias it does not run.
+ * @stability EXPERIMENTAL */
+struct geist_moe_route_args {
+    size_t                       m, n, k;
+    enum geist_moe_route_gating  gating;
+    bool                         norm;
+    const struct geist_tensor   *bias;
+};
+
+/* The gated linear unit fused->glu runs (#373): a = x + x_bias, b = z +
+ * z_bias, then
+ *   SILU        silu(a) * b (silu_mul's);
+ *   SWIGLU_OAI  a' = min(a, limit), b' = clamp(b, -limit, limit),
+ *               a' * sigmoid(alpha * a') * (b' + 1) (ggml_swiglu_oai;
+ *               GPT-OSS: alpha 1.702, limit 7).
+ * @stability EXPERIMENTAL */
+enum geist_glu_act : uint32_t {
+    GEIST_GLU_SILU       = 0,
+    GEIST_GLU_SWIGLU_OAI = 1,
+};
+static_assert(sizeof(enum geist_glu_act) == sizeof(uint32_t));
+
+/* x_bias / z_bias: nullptr, or F32 DENSE rows of the width of x, one per
+ * expert: row r of x takes bias row ids[r] (uint32 at the start of `ids`,
+ * written on the device earlier in the batch), or row 0 when ids is
+ * nullptr (one expert's rows). @stability EXPERIMENTAL */
+struct geist_glu_args {
+    enum geist_glu_act         act;
+    float                      alpha, limit;
+    const struct geist_tensor *x_bias;
+    const struct geist_tensor *z_bias;
+    const struct geist_buffer *ids;
+};
+
 /* Every slot here is an OPTIMIZATION: the arch must be able to produce the
  * same result from core + primitives. nullptr = always decomposed; a
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
@@ -503,6 +553,18 @@ struct geist_backend_fused {
                                   const struct geist_tensor *x,
                                   const struct geist_tensor *z,
                                   struct geist_tensor       *y);
+
+    /* y = act(x + x_bias, z + z_bias) as geist_glu_args says, row by row:
+     * the expert FFN's activation with its biases (#373). x, z and y F32
+     * DENSE of one shape [rows, n]; y may alias x. Its decomposed twin is
+     * the host's (moe_act_cols). nullptr = a mixture of experts whose
+     * experts need it (biases, SWIGLU_OAI) keeps them off this device.
+     * EXPERIMENTAL. */
+    enum geist_status (*glu)(struct geist_backend         *be,
+                             const struct geist_glu_args  *a,
+                             const struct geist_tensor    *x,
+                             const struct geist_tensor    *z,
+                             struct geist_tensor          *y);
 
     /* y[t,j] = gelu_tanh(x[t,j]) * z[t,j] * scale[j].
      * GEGLU+AWQ fusion for transformer FFNs. scale is per-channel
@@ -876,14 +938,13 @@ struct geist_backend_fused {
      * expert of a layer resolved here, the layer's routing, experts and
      * weighted sum run without the host. EXPERIMENTAL.
      *
-     * moe_route: for t in [0, m), the k largest of logits[t][0, n) --
-     * ranked by (logit descending, id ascending), the host's
-     * moe_route_topk -- as uint32 ids[t * k + j] at the start of `ids`,
-     * and their softmax probabilities over all n as w[t * k + j] (F32
-     * DENSE [m * k]), renormalised over the k when norm.
-     * A row with a non-finite logit sets the uint32 at byte flag_offset of
-     * `ids` to 1 (never cleared here) and still writes k ids < n. logits is
-     * F32 [m, n] (row stride >= n).
+     * moe_route: for t in [0, a->m), the a->k largest of row t's a->n
+     * logits plus a->bias -- ranked by (logit descending, id ascending),
+     * the host's moe_route -- as uint32 ids[t * k + j] at the start of
+     * `ids`, and their weights as a->gating says as w[t * k + j] (F32
+     * DENSE [m * k]). A row with a non-finite (biased) logit sets the
+     * uint32 at byte flag_offset of `ids` to 1 (never cleared here) and
+     * still writes k ids < n. logits is F32 [m, n] (row stride >= n).
      *
      * linear_t_ids: y[s] = W_e x[r] for s in [0, m * k), e = ids[s], r = s
      * (x_per_slot) or s / k. `experts` holds the n experts' weights back to
@@ -892,18 +953,17 @@ struct geist_backend_fused {
      * [m or m * k, n_in], y F32 [m * k, n_out].
      *
      * moe_weighted_sum: out[t][c] = add[t][c] + sum_{j < k} w[t * k + j] *
-     * y[t * k + j][c] for t in [0, m), c in [0, d), the sum in j order. w F32
-     * [m * k], y F32 [m * k, d], add and out F32 [m, d]; out may alias add.
+     * (y[t * k + j][c] + bias[ids[t * k + j]][c]) for t in [0, m), c in
+     * [0, d), the sum in j order. w F32 [m * k], y F32 [m * k, d], add and
+     * out F32 [m, d]; out may alias add. bias (the experts' output biases,
+     * F32 DENSE [n, d]) and ids may be nullptr: no bias.
      *
      * Plan-bound: supported(GEIST_FUSED_MOE_DEVICE) with m the most tokens
      * and gate_w / up_w / down_w expert 0's weights answers for all three.
      * nullptr = the host routes. */
-    enum geist_status (*moe_route)(struct geist_backend      *be,
-                                   size_t                     m,
-                                   size_t                     n,
-                                   size_t                     k,
-                                   bool                       norm,
-                                   const struct geist_tensor *logits,
+    enum geist_status (*moe_route)(struct geist_backend              *be,
+                                   const struct geist_moe_route_args *a,
+                                   const struct geist_tensor         *logits,
                                    struct geist_buffer       *ids,
                                    size_t                     flag_offset,
                                    struct geist_tensor       *w);
@@ -924,6 +984,8 @@ struct geist_backend_fused {
                                           const struct geist_tensor *w,
                                           const struct geist_tensor *y,
                                           const struct geist_tensor *add,
+                                          const struct geist_tensor *bias,
+                                          const struct geist_buffer *ids,
                                           struct geist_tensor       *out);
 
     /* Mixture-of-experts decode with the experts split between a GPU and

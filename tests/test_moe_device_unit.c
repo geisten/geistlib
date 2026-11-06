@@ -3,22 +3,32 @@
  * fused->moe_route, fused->linear_t_ids and fused->moe_weighted_sum on the
  * backends that have them (Metal), against host references.
  *
- * moe_route against moe_route_topk (the host's router, the reference both
+ * moe_route against moe_route (the host's router, the reference both
  * engines' routing is measured by) on #48's edge cases: random logits, ties
  * in the scores (ranked by id), k = n, an all-zero row, renormalised and
- * not; ids exact, weights within 1e-6. A non-finite logit sets the flag word
- * after the ids and still writes ids below n.
+ * not; and (#373) with a router bias, SOFTMAX_WEIGHT gating (GPT-OSS: the
+ * softmax over the selected logits alone, which the host computes in
+ * double) and both; ids exact, weights within 1e-6. A non-finite logit sets
+ * the flag word after the ids and still writes ids below n.
  *
- * linear_t_ids, for F32, Q4_K, Q6_K and Q8_0: 10 experts back to back in one
- * buffer, the ids of two tokens' three slots (one expert twice, the last
- * expert), x one row per token (gate/up) and one row per slot (down);
+ * linear_t_ids, for F32, Q4_K, Q6_K, Q8_0 and MXFP4: 10 experts back to back
+ * in one buffer, the ids of two tokens' three slots (one expert twice, the
+ * last expert), x one row per token (gate/up) and one row per slot (down);
  * against fused->linear_t of each slot's expert alone, to 1e-5 of the
- * output scale (the same matvec bodies). supported(GEIST_FUSED_MOE_DEVICE)
- * says yes for these dtypes at m = 1 and at m = 8 (a batched decode's rows,
- * #245), no at m = 0.
+ * output scale (the same matvec bodies; MXFP4's decode GEMV is another
+ * kernel, the same arithmetic). MXFP4 also against a double-precision
+ * product of the reference decoder's weights (dequant_mxfp4_row), to 1e-5
+ * of the scale. supported(GEIST_FUSED_MOE_DEVICE) says yes for these dtypes
+ * at m = 1 and at m = 8 (a batched decode's rows, #245), no at m = 0.
+ *
+ * glu (#373): silu and swiglu_oai (alpha 1.702, limit 7, inputs past the
+ * limit), without biases, with bias rows by the routed ids and with one
+ * expert's bias row for all rows, y aliasing x; against the formula in
+ * double, to 1e-5 of the scale.
  *
  * moe_weighted_sum: two tokens of three slots onto their rows of `add`,
- * against the host sum to 1e-5 of its scale.
+ * without and (#373) with the experts' output biases by the ids, against
+ * the host sum in double to 1e-5 of its scale.
  *
  * SKIPs when no backend in the build has the ops.
  */
@@ -26,6 +36,8 @@
 
 #include "../src/archs/transformer/forward/blocks.h"
 #include "test_helpers.h"
+
+#include "quant.h"
 
 #include <geist.h>
 #include <geist_backend.h>
@@ -64,32 +76,49 @@ static struct geist_tensor vec(struct geist_buffer *b, size_t off, size_t n) {
 }
 
 /* Routes `rows` rows of `n` logits with k on the device and checks each
- * against moe_route_topk. */
+ * against the host's moe_route with the same gating and bias (nullptr:
+ * none). */
 static int check_route(struct geist_backend *be,
                        const char           *what,
                        size_t                rows,
                        size_t                n,
                        size_t                k,
                        bool                  norm,
+                       bool                  sel_softmax,
+                       const float          *bias,
                        const float          *logits,
                        bool                  expect_bad) {
     const struct geist_backend_vtbl  *v  = be->desc->vtbl;
     const struct geist_backend_fused *f  = be->desc->fused;
-    struct geist_buffer              *bl = nullptr, *bi = nullptr, *bw = nullptr;
+    struct geist_buffer              *bl = nullptr, *bi = nullptr, *bw = nullptr, *bb = nullptr;
     int                               fails = 0;
     const size_t                      nk    = rows * k;
     if (v->buffer_create(be, rows * n * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bl) != GEIST_OK ||
         v->buffer_create(be, (nk + 1) * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) != GEIST_OK ||
-        v->buffer_create(be, nk * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bw) != GEIST_OK)
+        v->buffer_create(be, nk * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bw) != GEIST_OK ||
+        v->buffer_create(be, n * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bb) != GEIST_OK)
         return geist_expect(false, "route buffers");
     uint32_t zero[64 + 1] = {0};
     fails += geist_expect(
             v->buffer_upload(bl, rows * n * 4, (const uint8_t *) logits) == GEIST_OK &&
-                    v->buffer_upload(bi, (nk + 1) * 4, (const uint8_t *) zero) == GEIST_OK,
+                    v->buffer_upload(bi, (nk + 1) * 4, (const uint8_t *) zero) == GEIST_OK &&
+                    (bias == nullptr ||
+                     v->buffer_upload(bb, n * 4, (const uint8_t *) bias) == GEIST_OK),
             "route upload");
-    struct geist_tensor tl = mat(bl, 0, rows, n), tw = vec(bw, 0, nk);
-    fails += geist_expect(f->moe_route(be, rows, n, k, norm, &tl, bi, nk * 4, &tw) == GEIST_OK,
-                          what);
+    struct geist_tensor               tl = mat(bl, 0, rows, n), tw = vec(bw, 0, nk);
+    struct geist_tensor               tb = vec(bb, 0, n);
+    const struct geist_moe_route_args ra = {.m      = rows,
+                                            .n      = n,
+                                            .k      = k,
+                                            .gating = sel_softmax ? GEIST_MOE_ROUTE_SOFTMAX_WEIGHT
+                                                                  : GEIST_MOE_ROUTE_SOFTMAX,
+                                            .norm   = norm,
+                                            .bias   = bias != nullptr ? &tb : nullptr};
+    const struct moe_router           hr = {.gating = sel_softmax ? GEIST_MOE_GATING_SOFTMAX_WEIGHT
+                                                                  : GEIST_MOE_GATING_SOFTMAX,
+                                            .norm   = norm,
+                                            .bias   = bias};
+    fails += geist_expect(f->moe_route(be, &ra, &tl, bi, nk * 4, &tw) == GEIST_OK, what);
     uint32_t ids[64 + 1];
     float    w[64];
     fails += geist_expect(v->buffer_download((nk + 1) * 4, (uint8_t *) ids, bi) == GEIST_OK &&
@@ -105,7 +134,7 @@ static int check_route(struct geist_backend *be,
                 fails += geist_expect(ids[r * k + j] < n, "ids stay below n");
             continue;
         }
-        fails += geist_expect(moe_route_topk(n, k, norm, logits + r * n, ref_ids, ref_w),
+        fails += geist_expect(moe_route(n, k, &hr, logits + r * n, ref_ids, ref_w),
                               "host reference");
         for (size_t j = 0; j < k; j++) {
             if (ids[r * k + j] != ref_ids[j] || fabsf(w[r * k + j] - ref_w[j]) > 1e-6f) {
@@ -126,6 +155,7 @@ static int check_route(struct geist_backend *be,
     v->buffer_destroy(be, bl);
     v->buffer_destroy(be, bi);
     v->buffer_destroy(be, bw);
+    v->buffer_destroy(be, bb);
     return fails;
 }
 
@@ -140,14 +170,24 @@ static int test_route(struct geist_backend *be) {
         lg[32 + i] = 0.0f; /* all zero */
     for (size_t i = 0; i < 16; i++)
         lg[48 + i] = (float) rng_u8() / 8.0f - 16.0f;
-    fails += check_route(be, "route k=4 renormalised", 4, 16, 4, true, lg, false);
-    fails += check_route(be, "route k=4 softmax", 4, 16, 4, false, lg, false);
-    fails += check_route(be, "route k=n", 4, 16, 16, true, lg, false);
-    fails += check_route(be, "route k=1", 4, 16, 1, false, lg, false);
+    float bias[16];
+    for (size_t i = 0; i < 16; i++)
+        bias[i] = (float) rng_u8() / 64.0f - 2.0f;
+    fails += check_route(be, "route k=4 renormalised", 4, 16, 4, true, false, nullptr, lg, false);
+    fails += check_route(be, "route k=4 softmax", 4, 16, 4, false, false, nullptr, lg, false);
+    fails += check_route(be, "route k=n", 4, 16, 16, true, false, nullptr, lg, false);
+    fails += check_route(be, "route k=1", 4, 16, 1, false, false, nullptr, lg, false);
+    fails += check_route(be, "route with a bias", 4, 16, 4, false, false, bias, lg, false);
+    fails += check_route(
+            be, "route softmax over the selected", 4, 16, 4, false, true, nullptr, lg, false);
+    fails += check_route(
+            be, "route GPT-OSS (bias, selected)", 4, 16, 4, false, true, bias, lg, false);
+    fails += check_route(be, "route selected, k=1", 4, 16, 1, false, true, bias, lg, false);
     float bad[16];
     memcpy(bad, lg, sizeof bad);
     bad[5] = NAN;
-    fails += check_route(be, "route with a NaN", 1, 16, 4, true, bad, true);
+    fails += check_route(be, "route with a NaN", 1, 16, 4, true, false, nullptr, bad, true);
+    fails += check_route(be, "route with a NaN and a bias", 1, 16, 4, false, true, bias, bad, true);
     return fails;
 }
 
@@ -169,6 +209,10 @@ static void fill(uint8_t *dst, const struct qfmt *q, size_t rows) {
         uint8_t *blk = dst + b * q->bytes;
         for (size_t i = 0; i < q->bytes; i++)
             blk[i] = rng_u8();
+        if (q->dtype == GEIST_DTYPE_MXFP4) {
+            blk[0] = (uint8_t) (120 + rng_u8() % 12); /* E8M0: 2^-8 .. 2^3 */
+            continue;
+        }
         uint8_t *d = q->trailing_d ? blk + q->bytes - 2 : blk;
         d[0]       = 0x00; /* fp16(1.0) */
         d[1]       = 0x3C;
@@ -272,6 +316,25 @@ static int test_ids(struct geist_backend *be, const struct qfmt *q) {
                err,
                scale);
         fails += geist_expect(scale > 0.0 && err <= 1e-5 * scale, "linear_t_ids matches linear_t");
+        if (q->dtype != GEIST_DTYPE_MXFP4)
+            continue;
+        /* MXFP4: the exact weights (the reference decoder) times x, in double. */
+        static float wrow[N_IN];
+        double       errd = 0.0, scd = 0.0;
+        for (size_t s2 = 0; s2 < M * K; s2++) {
+            const size_t r = per_slot ? s2 : s2 / K;
+            for (size_t o = 0; o < N_OUT; o++) {
+                dequant_mxfp4_row(N_IN, al + ids[s2] * wb + o * (N_IN / 32) * 17, wrow);
+                double ref = 0.0;
+                for (size_t i = 0; i < N_IN; i++)
+                    ref += (double) wrow[i] * (double) xs[r * N_IN + i];
+                errd = fmax(errd, fabs(ref - (double) yg[s2 * N_OUT + o]));
+                scd  = fmax(scd, fabs(ref));
+            }
+        }
+        printf("  MXFP4 linear_t_ids vs double: max |d| %.3g of scale %.3g\n", errd, scd);
+        fails += geist_expect(scd > 0.0 && errd <= 1e-5 * scd,
+                              "MXFP4 linear_t_ids matches the double reference");
     }
 out:
     struct geist_buffer *bs[] = {bw, bx, by, b1, bi};
@@ -282,12 +345,15 @@ out:
     return fails;
 }
 
-static int test_sum(struct geist_backend *be) {
+static int test_sum(struct geist_backend *be, bool with_bias) {
     const struct geist_backend_vtbl  *v = be->desc->vtbl;
     const struct geist_backend_fused *f = be->desc->fused;
     enum { D = 72 };
-    float                y[M * K * D], w[M * K], add[M * D], out[M * D];
-    struct geist_buffer *by = nullptr, *bw = nullptr, *ba = nullptr;
+    static const uint32_t ids[M * K] = {7, 2, 2, 0, 9, 5};
+    float                 y[M * K * D], w[M * K], add[M * D], out[M * D], bias[N_EXP * D];
+    struct geist_buffer  *by = nullptr, *bw = nullptr, *ba = nullptr, *bb = nullptr, *bi = nullptr;
+    for (size_t i = 0; i < N_EXP * D; i++)
+        bias[i] = (float) rng_u8() / 64.0f - 2.0f;
     for (size_t i = 0; i < M * K * D; i++)
         y[i] = (float) rng_u8() / 32.0f - 4.0f;
     for (size_t i = 0; i < M * K; i++)
@@ -302,12 +368,27 @@ static int test_sum(struct geist_backend *be) {
                             GEIST_OK &&
                     v->buffer_upload(by, sizeof y, (const uint8_t *) y) == GEIST_OK &&
                     v->buffer_upload(bw, sizeof w, (const uint8_t *) w) == GEIST_OK &&
-                    v->buffer_upload(ba, sizeof add, (const uint8_t *) add) == GEIST_OK,
+                    v->buffer_upload(ba, sizeof add, (const uint8_t *) add) == GEIST_OK &&
+                    v->buffer_create(be, sizeof bias, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bb) ==
+                            GEIST_OK &&
+                    v->buffer_create(be, sizeof ids, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) ==
+                            GEIST_OK &&
+                    v->buffer_upload(bb, sizeof bias, (const uint8_t *) bias) == GEIST_OK &&
+                    v->buffer_upload(bi, sizeof ids, (const uint8_t *) ids) == GEIST_OK,
             "sum buffers");
     if (fails == 0) {
         struct geist_tensor ty = mat(by, 0, M * K, D), tw = vec(bw, 0, M * K),
-                            ta = mat(ba, 0, M, D);
-        fails += geist_expect(f->moe_weighted_sum(be, M, K, D, &tw, &ty, &ta, &ta) == GEIST_OK,
+                            ta = mat(ba, 0, M, D), tb = mat(bb, 0, N_EXP, D);
+        fails += geist_expect(f->moe_weighted_sum(be,
+                                                  M,
+                                                  K,
+                                                  D,
+                                                  &tw,
+                                                  &ty,
+                                                  &ta,
+                                                  with_bias ? &tb : nullptr,
+                                                  with_bias ? bi : nullptr,
+                                                  &ta) == GEIST_OK,
                               "moe_weighted_sum (out = add)");
         fails += geist_expect(v->buffer_download(sizeof out, (uint8_t *) out, ba) == GEIST_OK,
                               "download");
@@ -316,15 +397,103 @@ static int test_sum(struct geist_backend *be) {
             for (size_t c = 0; c < D; c++) {
                 double ref = add[t * D + c];
                 for (size_t j = 0; j < K; j++)
-                    ref += (double) w[t * K + j] * (double) y[(t * K + j) * D + c];
+                    ref += (double) w[t * K + j] *
+                           ((double) y[(t * K + j) * D + c] +
+                            (with_bias ? (double) bias[ids[t * K + j] * D + c] : 0.0));
                 err   = fmax(err, fabs(ref - (double) out[t * D + c]));
                 scale = fmax(scale, fabs(ref));
             }
-        printf("  moe_weighted_sum: max |d| %.3g of scale %.3g\n", err, scale);
+        printf("  moe_weighted_sum%s: max |d| %.3g of scale %.3g\n",
+               with_bias ? " with biases" : "",
+               err,
+               scale);
         fails += geist_expect(err <= 1e-5 * scale, "moe_weighted_sum matches the host");
     }
-    struct geist_buffer *bs[] = {by, bw, ba};
-    for (size_t i = 0; i < 3; i++)
+    struct geist_buffer *bs[] = {by, bw, ba, bb, bi};
+    for (size_t i = 0; i < 5; i++)
+        if (bs[i] != nullptr)
+            v->buffer_destroy(be, bs[i]);
+    return fails;
+}
+
+/* fused->glu against the formula in double: act 0 silu, 1 swiglu_oai;
+ * bias 0 none, 1 by the routed ids, 2 one expert's row (e = 3) for all. */
+static int test_glu(struct geist_backend *be, int act, int bias) {
+    const struct geist_backend_vtbl  *v = be->desc->vtbl;
+    const struct geist_backend_fused *f = be->desc->fused;
+    enum { R = M * K, C = 200 };
+    static const uint32_t ids[R] = {7, 2, 2, 0, 9, 5};
+    static float          g[R * C], u[R * C], gb[N_EXP * C], ub[N_EXP * C], y[R * C];
+    struct geist_buffer *bg = nullptr, *bu = nullptr, *bgb = nullptr, *bub = nullptr, *bi = nullptr;
+    for (size_t i = 0; i < R * C; i++) {
+        g[i] = (float) rng_u8() / 12.0f - 10.0f; /* past the limit both ways */
+        u[i] = (float) rng_u8() / 12.0f - 10.0f;
+    }
+    for (size_t i = 0; i < N_EXP * C; i++) {
+        gb[i] = (float) rng_u8() / 64.0f - 2.0f;
+        ub[i] = (float) rng_u8() / 64.0f - 2.0f;
+    }
+    int fails = geist_expect(
+            v->buffer_create(be, sizeof g, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bg) == GEIST_OK &&
+                    v->buffer_create(be, sizeof u, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bu) ==
+                            GEIST_OK &&
+                    v->buffer_create(be, sizeof gb, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bgb) ==
+                            GEIST_OK &&
+                    v->buffer_create(be, sizeof ub, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bub) ==
+                            GEIST_OK &&
+                    v->buffer_create(be, sizeof ids, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) ==
+                            GEIST_OK &&
+                    v->buffer_upload(bg, sizeof g, (const uint8_t *) g) == GEIST_OK &&
+                    v->buffer_upload(bu, sizeof u, (const uint8_t *) u) == GEIST_OK &&
+                    v->buffer_upload(bgb, sizeof gb, (const uint8_t *) gb) == GEIST_OK &&
+                    v->buffer_upload(bub, sizeof ub, (const uint8_t *) ub) == GEIST_OK &&
+                    v->buffer_upload(bi, sizeof ids, (const uint8_t *) ids) == GEIST_OK,
+            "glu buffers");
+    if (fails == 0) {
+        enum { E1 = 3 };
+        struct geist_tensor tg = mat(bg, 0, R, C), tu = mat(bu, 0, R, C);
+        struct geist_tensor tgb = bias == 2 ? mat(bgb, E1 * C * 4, 1, C) : mat(bgb, 0, N_EXP, C);
+        struct geist_tensor tub = bias == 2 ? mat(bub, E1 * C * 4, 1, C) : mat(bub, 0, N_EXP, C);
+        const struct geist_glu_args a = {.act    = act ? GEIST_GLU_SWIGLU_OAI : GEIST_GLU_SILU,
+                                         .alpha  = 1.702f,
+                                         .limit  = 7.0f,
+                                         .x_bias = bias ? &tgb : nullptr,
+                                         .z_bias = bias ? &tub : nullptr,
+                                         .ids    = bias == 1 ? bi : nullptr};
+        fails += geist_expect(f->glu(be, &a, &tg, &tu, &tg) == GEIST_OK, "glu (y = x)");
+        fails += geist_expect(v->buffer_download(sizeof y, (uint8_t *) y, bg) == GEIST_OK,
+                              "glu download");
+        double err = 0.0, scale = 0.0;
+        for (size_t r = 0; r < R; r++) {
+            const size_t e = bias == 1 ? ids[r] : E1;
+            for (size_t c = 0; c < C; c++) {
+                double x = g[r * C + c], z = u[r * C + c], ref;
+                if (bias) {
+                    x += gb[e * C + c];
+                    z += ub[e * C + c];
+                }
+                if (act) {
+                    x   = fmin(x, 7.0);
+                    z   = fmax(-7.0, fmin(z, 7.0));
+                    ref = x / (1.0 + exp(-1.702 * x)) * (z + 1.0);
+                } else {
+                    ref = x / (1.0 + exp(-x)) * z;
+                }
+                err   = fmax(err, fabs(ref - (double) y[r * C + c]));
+                scale = fmax(scale, fabs(ref));
+            }
+        }
+        printf("  glu %s, %s: max |d| %.3g of scale %.3g\n",
+               act ? "swiglu_oai" : "silu",
+               bias == 0   ? "no bias"
+               : bias == 1 ? "bias rows by id"
+                           : "one expert's bias",
+               err,
+               scale);
+        fails += geist_expect(scale > 0.0 && err <= 1e-5 * scale, "glu matches the double formula");
+    }
+    struct geist_buffer *bs[] = {bg, bu, bgb, bub, bi};
+    for (size_t i = 0; i < 5; i++)
         if (bs[i] != nullptr)
             v->buffer_destroy(be, bs[i]);
     return fails;
@@ -351,10 +520,15 @@ int main(void) {
                 {GEIST_DTYPE_Q4_K, 256, 144, false, "Q4_K"},
                 {GEIST_DTYPE_Q6_K, 256, 210, true, "Q6_K"},
                 {GEIST_DTYPE_Q8_0, 32, 34, false, "Q8_0"},
+                {GEIST_DTYPE_MXFP4, 32, 17, false, "MXFP4"},
         };
         for (size_t i = 0; i < sizeof qs / sizeof qs[0]; i++)
             fails += test_ids(be, &qs[i]);
-        fails += test_sum(be);
+        fails += test_sum(be, false);
+        fails += test_sum(be, true);
+        for (int act = 0; act < 2 && f->glu != nullptr; act++)
+            for (int bias = 0; bias < 3; bias++)
+                fails += test_glu(be, act, bias);
         geist_backend_destroy(be);
     }
     if (ran == 0) {
@@ -362,6 +536,6 @@ int main(void) {
         return 0;
     }
     if (fails == 0)
-        printf("PASS: device routing, id-indexed expert matvecs, weighted sum\n");
+        printf("PASS: device routing, id-indexed expert matvecs, glu, weighted sum\n");
     return fails == 0 ? 0 : 1;
 }
