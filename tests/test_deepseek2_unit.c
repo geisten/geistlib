@@ -424,15 +424,18 @@ static double cosine(const float a[static VOCAB], const float b[static VOCAB]) {
     return ab / sqrt(aa * bb > 0.0 ? aa * bb : 1.0);
 }
 
-/* How far one prompt's logits may move with the rows a step carries, or
- * with the KV cache's precision. cpu_x86 runs these F32 weights as W8A8:
- * its one-row and many-row kernels round q differently in the last bit,
- * and its int8 activations turn such a bit into a step of the int8 grid
- * wherever a value sits on a rounding edge, which moves the logits by up
- * to its distance from cpu_scalar (rel. L2 0.02). Which shapes hit an edge
- * is chance: the 520-dim latent's F16 cache does (1.1e-2). */
-static double rows_tol(const char *name) {
-    return strcmp(name, "cpu_x86") == 0 ? 2e-2 : 1e-4;
+/* How far one prompt's logits may move with the rows a step carries
+ * (chunked vs one token at a time): 1e-4 of their scale, on every backend
+ * and fixture but one. cpu_x86 runs these F32 weights as W8A8, and its
+ * one-row and many-row kernels round q differently in the last bit; its
+ * int8 activations turn such a bit into a step of the int8 grid wherever
+ * a value sits on a rounding edge. On the 520-dim latent's F16 cache that
+ * moves the logits by 1.1e-2 (its FP32 cache and every other fixture stay
+ * within 2.4e-7), so that one case, cpu_x86 with a head past 512 on a KV
+ * cache other than FP32, gets cpu_x86's distance from cpu_scalar (2e-2). */
+static double rows_tol(const char *name, const struct mf_deepseek2 *g, enum geist_kv_mode kv) {
+    const bool wide = g->kv_rank + g->rope > 512;
+    return strcmp(name, "cpu_x86") == 0 && wide && kv != GEIST_KV_FP32 ? 2e-2 : 1e-4;
 }
 
 /* The fixture's logits on backend `name` with KV cache `kv` (FP32 for
@@ -476,7 +479,8 @@ static int check_backend(const char                *name,
             diff  = fmax(diff, fabs((double) chunked[i] - single[i]));
         }
         printf("%s: chunks vs one at a time: max|d| %.3g of scale %.3g\n", name, diff, scale);
-        fails += geist_expect(diff <= rows_tol(name) * scale, "chunks and single tokens agree");
+        fails += geist_expect(diff <= rows_tol(name, g, kv) * scale,
+                              "chunks and single tokens agree");
         fails += geist_expect(memcmp(chunked, again, sizeof chunked) == 0,
                               "a reset session reproduces its logits bit for bit");
         memcpy(out, chunked, sizeof chunked);
@@ -595,8 +599,10 @@ static int check_wide(void) {
         if (r == 0) {
             const double d = rel_l2_f(int8, f32);
             printf("%s INT8 request (F16 cache) vs FP32 KV: relative L2 %.3g\n", cpus[i], d);
-            fails += geist_expect(d > 0.0 && d <= fmax(1e-3, rows_tol(cpus[i])),
-                                  "the INT8 request gets the F16 cache");
+            /* F16 against FP32: 2.4e-4 where the kernels are F32; on
+             * cpu_x86 the int8-grid steps of rows_tol, 1.2e-2. */
+            const double tol = strcmp(cpus[i], "cpu_x86") == 0 ? 2e-2 : 1e-3;
+            fails += geist_expect(d > 0.0 && d <= tol, "the INT8 request gets the F16 cache");
         }
     }
     return fails;
