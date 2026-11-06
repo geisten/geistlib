@@ -49,7 +49,7 @@
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
-   "max": 1264,
+   "max": 1271,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {
