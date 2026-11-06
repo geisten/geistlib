@@ -294,28 +294,33 @@ kv_row(const void *base, bool f16, size_t at, size_t head_dim, float *row) {
     return row;
 }
 
-/* The reference above, on either cache: K/V rows are float, or with `f16`
+/* The reference above, on either cache, for the (query, head) rows idx in
+ * [i0, i1), idx = t * n_q_heads + h: K/V rows are float, or with `f16`
  * IEEE half widened to float row by row into `row` (head_dim floats). The
- * arithmetic is the F32 reference's either way. */
-static void attention_kv_ref(size_t       n_q,
-                             size_t       n_kv,
-                             size_t       q_offset,
-                             size_t       n_q_heads,
-                             size_t       n_kv_heads,
-                             size_t       head_dim,
-                             size_t       sliding_window,
-                             const float *q,
-                             const void  *k,
-                             const void  *v,
-                             bool         f16,
-                             float       *row,
-                             float       *out) {
+ * arithmetic is the F32 reference's either way, and a row's does not
+ * depend on which others run with it. */
+static void attention_kv_rows(size_t       i0,
+                              size_t       i1,
+                              size_t       n_kv,
+                              size_t       q_offset,
+                              size_t       n_q_heads,
+                              size_t       n_kv_heads,
+                              size_t       head_dim,
+                              size_t       sliding_window,
+                              const float *q,
+                              const void  *k,
+                              const void  *v,
+                              bool         f16,
+                              float       *row,
+                              float       *out) {
     const float  scale         = 1.0f; /* Gemma 4: scaling encoded via Q/K-norms. */
     const size_t kv_group_size = n_q_heads / n_kv_heads;
 
-    for (size_t t = 0; t < n_q; t++) {
-        size_t q_pos = q_offset + t;
-        size_t s_lo  = 0;
+    for (size_t idx = i0; idx < i1; idx++) {
+        const size_t t     = idx / n_q_heads;
+        const size_t h     = idx - t * n_q_heads;
+        size_t       q_pos = q_offset + t;
+        size_t       s_lo  = 0;
         if (sliding_window > 0 && q_pos + 1 > sliding_window) {
             s_lo = q_pos + 1 - sliding_window;
         }
@@ -323,7 +328,7 @@ static void attention_kv_ref(size_t       n_q,
         if (s_hi >= n_kv)
             s_hi = n_kv - 1;
 
-        for (size_t h = 0; h < n_q_heads; h++) {
+        {
             size_t       kv_h = h / kv_group_size;
             const float *qv   = q + (t * n_q_heads + h) * head_dim;
             float       *outv = out + (t * n_q_heads + h) * head_dim;
@@ -378,6 +383,68 @@ static void attention_kv_ref(size_t       n_q,
             }
         }
     }
+}
+
+static void attention_kv_ref(size_t       n_q,
+                             size_t       n_kv,
+                             size_t       q_offset,
+                             size_t       n_q_heads,
+                             size_t       n_kv_heads,
+                             size_t       head_dim,
+                             size_t       sliding_window,
+                             const float *q,
+                             const void  *k,
+                             const void  *v,
+                             bool         f16,
+                             float       *row,
+                             float       *out) {
+    attention_kv_rows(0,
+                      n_q * n_q_heads,
+                      n_kv,
+                      q_offset,
+                      n_q_heads,
+                      n_kv_heads,
+                      head_dim,
+                      sliding_window,
+                      q,
+                      k,
+                      v,
+                      f16,
+                      row,
+                      out);
+}
+
+bool attention_kv_items(size_t       i0,
+                        size_t       i1,
+                        size_t       n_kv,
+                        size_t       q_offset,
+                        size_t       n_q_heads,
+                        size_t       n_kv_heads,
+                        size_t       head_dim,
+                        size_t       sliding_window,
+                        bool         f16,
+                        const float *q,
+                        const void  *k,
+                        const void  *v,
+                        float       *out) {
+    float row[ATTN_F16_HEAD_DIM_MAX];
+    if (f16 && head_dim > ATTN_F16_HEAD_DIM_MAX)
+        return false;
+    attention_kv_rows(i0,
+                      i1,
+                      n_kv,
+                      q_offset,
+                      n_q_heads,
+                      n_kv_heads,
+                      head_dim,
+                      sliding_window,
+                      q,
+                      k,
+                      v,
+                      f16,
+                      row,
+                      out);
+    return true;
 }
 
 void attention_sinks_items(size_t       i0,

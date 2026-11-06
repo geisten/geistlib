@@ -23,9 +23,10 @@
  *     unroll; any other head_dim up to AX_HEAD_DIM_MAX runs the same code
  *     with the length at run time.
  * The plan (ax_plan_for) is measured for this kernel. Shapes it does not
- * take (a KV group that does not divide the query heads, head_dim above
- * AX_HEAD_DIM_MAX: the architecture refuses both at load) run the
- * gemma4_kernels.c reference. Like it, nothing grows with the context and
+ * take (a KV group that does not divide the query heads, which the
+ * architecture refuses at load, or head_dim above AX_HEAD_DIM_MAX, as
+ * absorbed MLA's 576, #375) run the gemma4_kernels.c reference, the latter
+ * its rows on the threads. Like it, nothing grows with the context and
  * nothing is allocated per call: the split decode's partial results go to
  * the calling thread's workspace, grown once.
  * Any thread count gives the same bits: the work items are independent,
@@ -42,7 +43,7 @@
 #include "attention_driver.h"
 #include "backend_state.h"
 
-#include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, attention_mqa_causal_kv */
+#include "gemma4_kernels.h" /* ATTN_EXP_FLOOR, attention_kv_items */
 #include "host_ops.h"       /* geist_host_attn_views */
 
 #include <geist.h>
@@ -51,6 +52,7 @@
 #include <immintrin.h>
 #include <math.h>
 #include <stdalign.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -485,10 +487,48 @@ static void ax_run_item(size_t                per_pass,
     }
 }
 
+/* Heads past AX_HEAD_DIM_MAX (absorbed MLA's 576, #375): the shared
+ * reference's rows, the (query, head) pairs split over the threads. */
+struct ax_wide_job {
+    const struct geist_host_attn *a;
+    size_t                        q_offset, window;
+    atomic_bool                   failed;
+};
+
+static void ax_wide_rows(void *ctx, size_t i0, size_t i1) {
+    struct ax_wide_job           *j = ctx;
+    const struct geist_host_attn *a = j->a;
+    if (!attention_kv_items(i0,
+                            i1,
+                            a->n_kv,
+                            j->q_offset,
+                            a->n_q_heads,
+                            a->n_kv_heads,
+                            a->head_dim,
+                            j->window,
+                            a->f16,
+                            a->q,
+                            a->k,
+                            a->v,
+                            a->out))
+        atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+}
+
+[[nodiscard]] static enum geist_status
+ax_wide(struct geist_backend *be, const struct geist_host_attn *a, size_t q_offset, size_t window) {
+    struct ax_wide_job j = {.a = a, .q_offset = q_offset, .window = window};
+    atomic_init(&j.failed, false);
+    geist_par_for(a->n_q * a->n_q_heads, ax_wide_rows, &j);
+    if (!atomic_load_explicit(&j.failed, memory_order_relaxed))
+        return GEIST_OK;
+    geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "cpu_x86 attention: F16 head_dim");
+    return GEIST_E_UNSUPPORTED;
+}
+
 /* The kernel on validated views (host_ops.h): K and V of `elem` bytes
  * (F32, or F16 widened as they load). Shapes this kernel does not take
- * (head_dim past AX_HEAD_DIM_MAX: the architecture refuses it at load) run
- * the shared reference. */
+ * (head_dim past AX_HEAD_DIM_MAX) run the shared reference's rows on the
+ * threads (ax_wide). */
 #if defined(AF_F16)
 [[nodiscard]] enum geist_status cpu_x86_attention_f16(struct geist_backend         *be,
                                                       const struct geist_host_attn *a,
@@ -496,21 +536,7 @@ static void ax_run_item(size_t                per_pass,
                                                       size_t sliding_window) {
     const size_t elem = sizeof(uint16_t);
     if (a->head_dim > AX_HEAD_DIM_MAX) {
-        if (!attention_mqa_causal_kv_f16(a->n_q,
-                                         a->n_kv,
-                                         q_offset,
-                                         a->n_q_heads,
-                                         a->n_kv_heads,
-                                         a->head_dim,
-                                         sliding_window,
-                                         a->q,
-                                         a->k,
-                                         a->v,
-                                         a->out)) {
-            geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "cpu_x86 attention: F16 head_dim");
-            return GEIST_E_UNSUPPORTED;
-        }
-        return GEIST_OK;
+        return ax_wide(be, a, q_offset, sliding_window);
     }
 #else
 [[nodiscard]] enum geist_status cpu_x86_attention(struct geist_backend      *be,
@@ -531,18 +557,7 @@ static void ax_run_item(size_t                per_pass,
     const struct geist_host_attn *a    = &views;
     const size_t                  elem = sizeof(float);
     if (a->head_dim > AX_HEAD_DIM_MAX) {
-        attention_mqa_causal_kv(a->n_q,
-                                a->n_kv,
-                                q_offset,
-                                a->n_q_heads,
-                                a->n_kv_heads,
-                                a->head_dim,
-                                sliding_window,
-                                a->q,
-                                a->k,
-                                a->v,
-                                a->out);
-        return GEIST_OK;
+        return ax_wide(be, a, q_offset, sliding_window);
     }
 #endif
     /* A split decode's partial results, in the calling thread's workspace;
