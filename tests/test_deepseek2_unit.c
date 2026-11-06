@@ -436,7 +436,8 @@ static double rows_tol(const char *name) {
 }
 
 /* The fixture's logits on backend `name` with KV cache `kv` (FP32 for
- * GEIST_KV_AUTO); -1: no such backend, or a GPU refusing the split layout
+ * GEIST_KV_AUTO: the session's default); -1: no such backend, or a GPU
+ * refusing the split layout
  * (#376), as it must. */
 static int check_backend(const char                *name,
                          const struct mf_deepseek2 *g,
@@ -453,7 +454,7 @@ static int check_backend(const char                *name,
     int                       fails = 0;
     float                     chunked[VOCAB], single[VOCAB], again[VOCAB];
     struct geist_session_opts o = OPTS;
-    o.kv_mode                   = kv != GEIST_KV_AUTO ? kv : OPTS.kv_mode;
+    o.kv_mode                   = kv;
     const bool gpu              = strncmp(name, "cpu_", 4) != 0;
     if (geist_model_load_from_memory(b.b, b.n, be, &m) != GEIST_OK && g->split && gpu) {
         const char *e = geist_backend_errmsg(be);
@@ -513,7 +514,7 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
     ref_forward(&rm, g, (struct knobs) {0}, ref);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
-    const int sc = check_backend("cpu_scalar", g, GEIST_KV_AUTO, scalar);
+    const int sc = check_backend("cpu_scalar", g, OPTS.kv_mode, scalar);
     fails += sc != 0 ? geist_expect(false, "cpu_scalar runs the fixture") : 0;
     if (sc == 0 && scalar_out != nullptr)
         memcpy(scalar_out, scalar, sizeof scalar);
@@ -545,7 +546,7 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
     free(b.b);
     const char *const more[] = {"cpu_neon", "cpu_x86", "metal", "vulkan"};
     for (size_t i = 0; i < sizeof more / sizeof more[0]; i++) {
-        const int r = check_backend(more[i], g, GEIST_KV_AUTO, other);
+        const int r = check_backend(more[i], g, OPTS.kv_mode, other);
         if (r < 0)
             continue;
         fails += r;
@@ -575,16 +576,20 @@ static int check_split(const char *what, const struct mf_deepseek2 *g) {
 }
 
 /* A latent of RANK_WIDE: one KV head of 528 dims, past the quantized
- * caches; an INT8 request gets the F16 cache. */
+ * caches; the default cache is FP32 (bit for bit the FP32 request's
+ * logits), an INT8 request gets the F16 cache. */
 static int check_wide(void) {
     struct mf_deepseek2 g = split_of(LITE);
     g.kv_rank             = RANK_WIDE;
     int fails = check_shape("V2-Lite shape, split, 520-dim latent (528-dim KV head)", &g, nullptr);
-    static float f32[VOCAB], int8[VOCAB];
+    static float f32[VOCAB], int8[VOCAB], dflt[VOCAB];
     const char  *cpus[] = {"cpu_scalar", "cpu_neon", "cpu_x86"};
     for (size_t i = 0; i < sizeof cpus / sizeof cpus[0]; i++) {
         if (check_backend(cpus[i], &g, GEIST_KV_FP32, f32) != 0)
             continue;
+        fails += geist_expect(check_backend(cpus[i], &g, GEIST_KV_AUTO, dflt) == 0 &&
+                                      memcmp(dflt, f32, sizeof f32) == 0,
+                              "a wide head's default KV cache is FP32");
         const int r = check_backend(cpus[i], &g, GEIST_KV_INT8, int8);
         fails += geist_expect(r == 0, "an INT8 KV request runs the wide head");
         if (r == 0) {

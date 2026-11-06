@@ -2175,12 +2175,22 @@ resolve_kv_mode_requested(const struct geist_backend      *be,
 
 /* The requested mode, but never INT4 on a family where it misses the
  * quality bar (transformer_family.kv_int4_instead): that family gets its
- * replacement, and stderr says so once per process. */
+ * replacement, and stderr says so once per process. A model with heads
+ * wider than the quantized caches hold (`wide`, absorbed MLA, #375) prefers
+ * FP32 over its family's default: its F16 cache cost GigaChat3 0.6 % of
+ * perplexity on cpu_neon against FP32's -0.07 % (llama.cpp's F16 as the
+ * reference), ran 25-40 % slower there (no grouped F16 rows) and 4.5x
+ * slower in cpu_x86's prefill attention (the reference widens every K and
+ * V row once per head); its one KV head keeps the FP32 cache 2.7x smaller
+ * than the decompressed form's F16 one. */
 [[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
                                                         const struct transformer_family *family,
+                                                        bool                             wide,
                                                         const struct geist_session_opts *opts) {
-    const enum geist_kv_mode m = resolve_kv_mode_requested(
-            be, family != nullptr ? family->kv_auto : GEIST_KV_AUTO, opts);
+    const enum geist_kv_mode fam = wide                ? GEIST_KV_FP32
+                                   : family != nullptr ? family->kv_auto
+                                                       : GEIST_KV_AUTO;
+    const enum geist_kv_mode m   = resolve_kv_mode_requested(be, fam, opts);
     if (m != GEIST_KV_INT4 || family == nullptr || family->kv_int4_instead == GEIST_KV_AUTO) {
         return m;
     }
@@ -2204,12 +2214,13 @@ struct transformer_kv_layout
 transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts) {
     struct transformer_kv_layout kl = {};
-    /* KV-mode resolution: opts override > env > backend/platform default. */
-    enum geist_kv_mode mode = resolve_kv_mode(state->backend, state->family, opts);
     /* Heads wider than the quantized caches hold (absorbed MLA, #375) get
      * the F16 cache instead of a quantized one, as an MoE family's INT4
-     * request does (#48: routing amplifies KV quantization error). */
+     * request does (#48: routing amplifies KV quantization error), and FP32
+     * where nothing asks for a mode (resolve_kv_mode). */
     const bool wide = transformer_head_dim_max(state) > TRANSFORMER_HEAD_DIM_MAX;
+    /* KV-mode resolution: opts override > env > backend/platform default. */
+    enum geist_kv_mode mode = resolve_kv_mode(state->backend, state->family, wide, opts);
     if (wide && (mode == GEIST_KV_INT8 || mode == GEIST_KV_INT4 || mode == GEIST_KV_KIVI)) {
         static atomic_bool told = false;
         if (!atomic_exchange(&told, true)) {
