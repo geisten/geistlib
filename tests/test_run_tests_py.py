@@ -73,6 +73,35 @@ class RunTestsTest(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout)
         self.assertIn("match filter '_int' and 'nonexistent'", r.stdout)
 
+    def test_parallel_jobs_give_the_serial_verdicts(self):
+        fake_bin(self.bin, "test_bad_unit", 3, "boom")
+        serial = self.run_it(GEIST_EXPECTED_SKIPS=str(self.allow))
+        par = self.run_it(GEIST_EXPECTED_SKIPS=str(self.allow), GEIST_TEST_JOBS="3")
+        self.assertEqual(par.returncode, serial.returncode, par.stdout)
+        tally = "Ran 4 test(s)"
+        self.assertIn(tally, serial.stdout)
+        self.assertIn(tally, par.stdout)
+        for out in (serial.stdout, par.stdout):
+            self.assertIn("1 passed, 1 skipped, 2 failed, 0 error", out)
+            self.assertIn("--- test_bad_unit ---", out)  # failure details survive the workers
+            self.assertIn("UNEXPECTED SKIP", out)
+        self.assertEqual(self.run_it(GEIST_TEST_JOBS="0").returncode, 99)
+
+    def test_first_listed_tests_start_first(self):
+        # Each fake test appends its name to a log as it starts; with two jobs
+        # the first two starts are the GEIST_TEST_FIRST ones, last in the suite.
+        log = Path(self.tmp.name) / "starts.log"
+        for name in ("test_ok_unit", "test_listed_unit", "test_unlisted_unit", "test_y_unit", "test_z_unit"):
+            p = self.bin / name
+            p.write_text(f"#!/bin/sh\necho {name} >> '{log}'\nsleep 0.2\nexit 0\n")
+            p.chmod(0o755)
+        r = self.run_it(GEIST_TEST_JOBS="2", GEIST_TEST_FIRST="test_z_unit test_y_unit")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("Ran 5 test(s)", r.stdout)
+        starts = log.read_text().split()
+        self.assertEqual(sorted(starts[:2]), ["test_y_unit", "test_z_unit"], starts)
+        self.assertEqual(len(starts), 5, starts)  # each test once
+
     def test_missing_allowlist_is_a_harness_error(self):
         r = self.run_it(GEIST_EXPECTED_SKIPS=str(self.allow) + ".nope")
         self.assertEqual(r.returncode, 99)
