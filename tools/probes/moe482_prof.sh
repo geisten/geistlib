@@ -28,13 +28,19 @@ for dev in 1 0; do
             --decode-n 1 --warmup 2 --repeats 3 >"$OUT/prof_dev${dev}_rot${split}.txt" 2>&1 || true
     done
 done
+for dev in 1 0; do
+    sleep 20
+    GEIST_MOE_DEVICE_PREFILL=$dev GEIST_BENCH_BACKEND=metal GEIST_PROFILE_PREFILL=1 "$G" \
+        --gguf "$GGUF" --seq-lens "$SEQ" --decode-n 1 --warmup 2 --repeats 3 \
+        >"$OUT/prof_dev${dev}_host.txt" 2>&1 || true
+done
 {
     echo "## #482 kernel profile: $(basename "$GGUF") @ $SEQ, $(git -C "$WT" rev-parse --short HEAD)"
     for f in "$OUT"/prof_*.txt; do
         echo
         echo "### $(basename "$f")"
         echo '```'
-        grep -E 'prefill_tps|gpu|dispatch|wait|moe' "$f" | head -80
+        grep -vE '^[[:space:]]*$' "$f" | cut -c1-200 | head -120
         echo '```'
     done
 } >"$OUT/summary.md"
