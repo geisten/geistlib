@@ -31,9 +31,9 @@
             for (size_t i = 0; i < W8A8_BLOCK_ELEMS; i++) {
                 d_b += (int32_t) w_block[i] * (int32_t) a_block[i];
             }
-            acc_g += w_scales[b] * (float) d_b - w_offsets[b] * (float) sum_a_per_block[b];
+            acc_g = w8a8_block_step(acc_g, w_scales[b], w_offsets[b], d_b, sum_a_per_block[b]);
         }
-        acc += act_scales[g0 / W8A8_ACT_GROUP_BLOCKS] * acc_g;
+        acc = w8a8_group_step(acc, acc_g, act_scales[g0 / W8A8_ACT_GROUP_BLOCKS]);
     }
     return acc;
 }
