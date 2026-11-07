@@ -136,8 +136,12 @@ struct metal_buf_reg_entry {
     struct geist_buffer *buf;
 };
 
-/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 512. */
-constexpr int METAL_FLASH_SLOTS = 16;
+/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 576
+ * (absorbed MLA's [k_pe | latent] head, #376). */
+constexpr int METAL_FLASH_SLOTS = 18;
+
+/* The widest head the attention kernels take (#376). */
+constexpr size_t METAL_ATTN_HEAD_DIM_MAX = 576;
 
 /* Typed handles to the Objective-C objects the backend holds (#347). The
  * structs are declared and never defined: each pointer is the object's `id`

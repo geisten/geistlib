@@ -132,11 +132,12 @@ struct transformer_layer_weights {
     float              *attn_sinks;
     struct geist_tensor attn_sinks_t; /* the same, F32 DENSE on the backend */
     /* Multi-head latent attention (config.mla_kv_rank > 0, #242). */
-    struct geist_tensor mla_q_a;       /* [mla_q_rank, HIDDEN], when mla_q_rank > 0 */
-    struct geist_tensor mla_q_a_norm;  /* [mla_q_rank] */
-    struct geist_tensor mla_kv_a;      /* [mla_rope + mla_kv_rank, HIDDEN] */
-    float              *mla_kv_a_norm; /* [mla_kv_rank], host: the latent is normalised there */
-    struct geist_tensor mla_kv_b;      /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
+    struct geist_tensor mla_q_a;         /* [mla_q_rank, HIDDEN], when mla_q_rank > 0 */
+    struct geist_tensor mla_q_a_norm;    /* [mla_q_rank] */
+    struct geist_tensor mla_kv_a;        /* [mla_rope + mla_kv_rank, HIDDEN] */
+    float              *mla_kv_a_norm;   /* [mla_kv_rank], host: the latent is normalised there */
+    struct geist_tensor mla_kv_a_norm_t; /* the same on a GPU, which normalises it (#376) */
+    struct geist_tensor mla_kv_b;        /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
     struct geist_weight mla_q_a_w, mla_kv_a_w, mla_kv_b_w;
     /* Absorbed MLA (config.mla_absorbed, #375): the file's attn_k_b and
      * attn_v_b, one slice per head (mla_n_heads of them, all set or all
@@ -377,6 +378,9 @@ struct transformer_arch_session {
      * [n_q_heads, m_max, max(nope, mla_kv_rank)] and
      * [n_q_heads, m_max, max(mla_kv_rank, mla_v_dim)]. */
     struct geist_buffer *mla_hx, *mla_hy;
+    /* MLA on a GPU (#376): uint32 h for slot t * n_q_heads + h, the ids
+     * that run k_b / v_b per head as fused->linear_t_ids' experts. */
+    struct geist_buffer *mla_ids;
 
     /* ---- Memory backing for the buffers above.
      * scratch_arena: per-forward frame-arena, reset per layer.

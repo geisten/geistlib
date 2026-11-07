@@ -2521,6 +2521,11 @@ constexpr int METAL_DECQ_MAX_GROUPS = 256;
     if ((q_off | k_off | v_off) % 4u != 0u) {
         block_pipeline = nullptr;
     }
+    /* The per-key kernels below stop at 512: the scalar kernel takes a
+     * wider head the block kernel cannot. */
+    if (block_pipeline == nullptr && head_dim > 512u) {
+        return GEIST_E_UNSUPPORTED;
+    }
     if (block_pipeline == nullptr) {
         quad_pipeline = nullptr;
     }
@@ -3605,7 +3610,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "metal attention: shape mismatch");
         return GEIST_E_INVALID_ARG;
     }
-    if (head_dim > 512u) {
+    if (head_dim > METAL_ATTN_HEAD_DIM_MAX) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "metal attention: head_dim exceeds shader limit");
         return GEIST_E_UNSUPPORTED;
@@ -3625,8 +3630,10 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         return s;
     }
     struct metal_state *st = be->state;
+    /* Past 512 (#376) only the 32-key-block kernel is built. */
     if (q_rows == 1u &&
-        (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr)) &&
+        (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr) ||
+         metal_dec_pipeline(st, head_dim, kv_is_f16, false) != nullptr) &&
         k_rows >= 32u && st->attention_dec_f16_pipeline != nullptr &&
         st->attention_dec_combine_pipeline != nullptr) {
         s = metal_attention_dec_kv(be,
@@ -4858,9 +4865,11 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     const size_t ni = (size_t) w0->n_in, no = (size_t) w0->n_out;
     size_t xr = 0, xc = 0, xo = 0, xs = 0, yr = 0, yc = 0, yo = 0, ys = 0, nk = 0, rows = 0, wo = 0,
            need = 0;
+    /* x and y may be row views with a stride (absorbed MLA's per-head
+     * slices of q and of the attention output, #376). */
     if (ckd_mul(&nk, m, k) || ckd_mul(&rows, n, no) ||
-        !metal_tensor_is_f32_matrix(x, &xr, &xc, &xo, &xs) ||
-        !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
+        !metal_tensor_is_f32_rows(x, &xr, &xc, &xo, &xs) ||
+        !metal_tensor_is_f32_rows(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
         xc != ni || yr < nk || yc != no || ni % block != 0u ||
         !metal_moe_experts_offset(experts, dtype, rows, ni, &wo) || ids->owner != be->state ||
         ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||

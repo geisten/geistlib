@@ -599,15 +599,18 @@ static void run_staged_upload(struct geist_backend *mt) {
  * head_dim 256 and 512, sliding window) reads the F32 cache directly and
  * rounds as it loads; the flash cases (4- and 8-simdgroup kernels, a
  * ragged last 8-row tile, GQA, a sliding window) go through the f16
- * staging copy. The K/V views start mid-buffer at an odd element. */
-static void run_f32kv_attention_case(struct geist_backend *mt,
-                                     size_t                q_rows,
-                                     size_t                q_offset,
-                                     size_t                q_heads,
-                                     size_t                kv_heads,
-                                     size_t                hd,
-                                     size_t                window) {
-    enum { PAD = 7 };
+ * staging copy. The K/V views start mid-buffer at element PAD: an odd one
+ * (7), or 0 for a head past 512 (#376), whose decode only the 32-key-block
+ * kernel takes, at float4-aligned views (the scalar kernel, which reads an
+ * F32 cache unrounded, takes the others). */
+static void run_f32kv_attention_pad(struct geist_backend *mt,
+                                    size_t                PAD,
+                                    size_t                q_rows,
+                                    size_t                q_offset,
+                                    size_t                q_heads,
+                                    size_t                kv_heads,
+                                    size_t                hd,
+                                    size_t                window) {
     const struct geist_backend_vtbl *v       = mt->desc->vtbl;
     const size_t                     k_rows  = q_offset + q_rows;
     const size_t                     q_elems = q_rows * q_heads * hd;
@@ -687,6 +690,16 @@ static void run_f32kv_attention_case(struct geist_backend *mt,
     v->buffer_destroy(mt, b16);
     v->buffer_destroy(mt, bo32);
     v->buffer_destroy(mt, bo16);
+}
+
+static void run_f32kv_attention_case(struct geist_backend *mt,
+                                     size_t                q_rows,
+                                     size_t                q_offset,
+                                     size_t                q_heads,
+                                     size_t                kv_heads,
+                                     size_t                hd,
+                                     size_t                window) {
+    run_f32kv_attention_pad(mt, 7, q_rows, q_offset, q_heads, kv_heads, hd, window);
 }
 
 /* Largest |got - ref| of one decode row (the query at position k_rows - 1)
@@ -2069,6 +2082,18 @@ int main(void) {
     run_flash_ref_case(mt, ref, 1, 100, 4, 1, 96, 0);
     run_flash_ref_case(mt, ref, 1, 77, 2, 1, 512, 16);
     run_flash_ref_case(mt, ref, 1, 31, 8, 2, 128, 0);
+    /* Absorbed MLA (#376): one KV head of 576 (DeepSeek-V3, GigaChat3) and
+     * of 520 (a 512 latent, no block kernel): prefill flash, the scalar
+     * kernel under 64 keys, the decode block kernel and the scalar one. */
+    run_flash_ref_case(mt, ref, 45, 300, 16, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 70, 0, 4, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 9, 20, 4, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 1, 700, 32, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 1, 20, 16, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 21, 100, 4, 1, 520, 0);
+    run_flash_ref_case(mt, ref, 1, 100, 4, 1, 520, 0);
+    run_f32kv_attention_pad(mt, 0, 1, 99, 16, 1, 576, 0);
+    run_f32kv_attention_case(mt, 24, 100, 4, 1, 576, 0);
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
     /* #196 */

@@ -2673,15 +2673,16 @@ static const char metal_attn_source[] =
         "float*kc[[buffer(1)]],device const float*vc[[buffer(2)]],device "
         "float*y[[buffer(3)]],constant Attn&p[[buffer(4)]],uint2 "
         "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
-        " threadgroup float qv[512];threadgroup float pt[256];threadgroup float "
+        " threadgroup float qv[576];threadgroup float pt[256];threadgroup float "
         "red[256];threadgroup float mls[2];uint "
-        "r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint "
+        "r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>576u){return;}uint "
         "kvh=h/(p.q_heads/"
         "p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint "
         "i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint "
         "slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint "
         "shi=qpos<p.kv_len?qpos:p.kv_len-1u;float "
-        "a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_"
+        "a0=0.0f,a1=0.0f,a2=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_"
+        "barrier(mem_"
         "flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float "
         "sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint "
         "i=0u;i<hd;i++)d+=qv[i]*kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i];sc=d;}red[lid]=sc;"
@@ -2694,14 +2695,15 @@ static const char metal_attn_source[] =
         "threadgroup);for(uint "
         "st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_"
         "threadgroup);}float tsum=red[0];uint "
-        "tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float "
+        "tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;a2*=corr;for(uint j=0u;j<tw;j++){float "
         "pv=pt[j];uint "
         "vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*vc[vb+lid];if(lid+256u<"
-        "hd)a1+=pv*vc[vb+lid+256u];}threadgroup_barrier(mem_flags::mem_threadgroup);if(lid==0u){"
+        "hd)a1+=pv*vc[vb+lid+256u];if(lid+512u<hd)a2+=pv*vc[vb+lid+512u];}threadgroup_barrier(mem_"
+        "flags::mem_threadgroup);if(lid==0u){"
         "mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_threadgroup);}"
         "float inv=1.0f/mls[1];uint "
         "yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]"
-        "=a1*inv;\n"
+        "=a1*inv;if(lid+512u<hd)y[yb+lid+512u]=a2*inv;\n"
         "}\n";
 
 static const char metal_q4k_gate_up_n4_source[] =
@@ -2973,15 +2975,16 @@ static const char metal_attn_f16_source[] =
         "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device "
         "float*y[[buffer(3)]],constant Attn&p[[buffer(4)]],uint2 "
         "tg[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){\n"
-        " threadgroup float qv[512];threadgroup float pt[256];threadgroup float "
+        " threadgroup float qv[576];threadgroup float pt[256];threadgroup float "
         "red[256];threadgroup float mls[2];uint "
-        "r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>512u){return;}uint "
+        "r=tg.x,h=tg.y,hd=p.head_dim;if(r>=p.rows||h>=p.q_heads||hd>576u){return;}uint "
         "kvh=h/(p.q_heads/"
         "p.kv_heads),qpos=p.q_position+r,qb=p.q_offset+r*p.q_heads*hd+h*hd;for(uint "
         "i=lid;i<hd;i+=256u)qv[i]=q[qb+i];uint "
         "slo=(p.sliding_window>0u&&qpos+1u>p.sliding_window)?qpos+1u-p.sliding_window:0u;uint "
         "shi=qpos<p.kv_len?qpos:p.kv_len-1u;float "
-        "a0=0.0f,a1=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_barrier(mem_"
+        "a0=0.0f,a1=0.0f,a2=0.0f;if(lid==0u){mls[0]=-3.402823466e+38f;mls[1]=0.0f;}threadgroup_"
+        "barrier(mem_"
         "flags::mem_threadgroup);for(uint tb=slo;tb<=shi;tb+=256u){uint t=tb+lid;float "
         "sc=-3.402823466e+38f;if(t<=shi){float d=0.0f;for(uint "
         "i=0u;i<hd;i++)d+=qv[i]*float(kc[p.k_cache_offset+t*p.kv_heads*hd+kvh*hd+i]);sc=d;}red[lid]"
@@ -2994,14 +2997,15 @@ static const char metal_attn_f16_source[] =
         "threadgroup);for(uint "
         "st=128u;st>0u;st>>=1u){if(lid<st)red[lid]+=red[lid+st];threadgroup_barrier(mem_flags::mem_"
         "threadgroup);}float tsum=red[0];uint "
-        "tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;for(uint j=0u;j<tw;j++){float "
+        "tw=shi-tb+1u<256u?shi-tb+1u:256u;a0*=corr;a1*=corr;a2*=corr;for(uint j=0u;j<tw;j++){float "
         "pv=pt[j];uint "
         "vb=p.v_cache_offset+(tb+j)*p.kv_heads*hd+kvh*hd;if(lid<hd)a0+=pv*float(vc[vb+lid]);if(lid+"
-        "256u<hd)a1+=pv*float(vc[vb+lid+256u]);}threadgroup_barrier(mem_flags::mem_threadgroup);if("
+        "256u<hd)a1+=pv*float(vc[vb+lid+256u]);if(lid+512u<hd)a2+=pv*float(vc[vb+lid+512u]);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);if("
         "lid==0u){mls[0]=mnew;mls[1]=mls[1]*corr+tsum;}threadgroup_barrier(mem_flags::mem_"
         "threadgroup);}float inv=1.0f/mls[1];uint "
         "yb=p.y_offset+r*p.q_heads*hd+h*hd;if(lid<hd)y[yb+lid]=a0*inv;if(lid+256u<hd)y[yb+lid+256u]"
-        "=a1*inv;\n"
+        "=a1*inv;if(lid+512u<hd)y[yb+lid+512u]=a2*inv;\n"
         "}\n";
 
 /* Decode-specialized fused qnorm+rope+attention (rows==1, f16 KV): tokens are
@@ -3226,7 +3230,9 @@ static const char metal_attn_flash_source_b[] =
         "template [[host_name(\"attention_flash_d448\")]] kernel attention_flash_t "
         "attention_flash<448,8>;\n"
         "template [[host_name(\"attention_flash_d512\")]] kernel attention_flash_t "
-        "attention_flash<512,8>;\n";
+        "attention_flash<512,8>;\n"
+        "template [[host_name(\"attention_flash_d576\")]] kernel attention_flash_t "
+        "attention_flash<576,8>;\n";
 
 /* Split-KV decode flash for 256 < head_dim <= 512 (the gemma-3n
  * full-attention layers): 16-chunk QK/PV lane unroll (a0..a15),
@@ -3429,7 +3435,7 @@ static const char metal_attn_decv_source[] =
         "#define DV(D,NE) template [[host_name(\"attention_decv_d\" #D \"_f16\")]] kernel "
         "attention_decv_t attention_decv<D,NE,half>;template [[host_name(\"attention_decv_d\" #D "
         "\"_f32kv\")]] kernel attention_decv32_t attention_decv<D,NE,float>;\n"
-        "DV(64,4)\nDV(128,4)\nDV(256,2)\nDV(512,4)\n";
+        "DV(64,4)\nDV(128,4)\nDV(256,2)\nDV(512,4)\nDV(576,4)\n";
 
 static const char metal_attn_decq_source[] =
         /* #196: one 32-key block per threadgroup of four simdgroups. Each

@@ -972,7 +972,8 @@ struct geist_backend_fused {
      * (x_per_slot) or s / k. `experts` holds the n experts' weights back to
      * back -- expert e's [n_out, n_in] from byte e * w0->raw_nbytes of it,
      * each laid out as w0 (expert 0's weight, resolved here) -- x is F32
-     * [m or m * k, n_in], y F32 [m * k, n_out].
+     * [m or m * k, n_in], y F32 [m * k, n_out], each with a row stride of
+     * at least its width (#376: per-head slices of a wider row).
      *
      * moe_weighted_sum: out[t][c] = add[t][c] + sum_{j < k} w[t * k + j] *
      * (y[t * k + j][c] + bias[ids[t * k + j]][c]) for t in [0, m), c in

@@ -26,9 +26,16 @@
  * v_b[h] takes the latent dims of its output head to mla_v_dim, so o_proj
  * reads the same [heads * mla_v_dim] as above. The cache holds 576 floats
  * per token and layer twice (K, and V = K before RoPE, of which only the
- * latent dims are read) instead of 2 * heads * 192. k_b, v_b and the
- * assembly run on the host, per head on the CPU backend's kernels; a GPU
- * backend refuses the layout (#376).
+ * latent dims are read) instead of 2 * heads * 192. On a CPU backend k_b,
+ * v_b and the assembly run on the host, per head on the backend's kernels.
+ *
+ * On a GPU (#376: a backend with prims->scale_f32 that takes row views
+ * and fused->linear_t_ids, Metal) both forms run on the device, no host
+ * round trip per layer: the latent's RMSNorm on its row view, K and V
+ * assembled by strided copies (scale_f32 times 1), and absorbed, k_b / v_b
+ * of every head as one linear_t_ids whose "experts" are the heads. A GPU
+ * without them refuses the absorbed layout and assembles the decompressed
+ * one on the host.
  *
  * FFN: the first leading_dense_block_count layers are dense SwiGLU; the
  * others a router over expert_count experts (softmax, or sigmoid with a
@@ -230,6 +237,14 @@ static float *host_vector(struct transformer_arch_state          *st,
     return GEIST_E_FORMAT;
 }
 
+/* MLA on the device (#376): a GPU backend with strided copies
+ * (prims->scale_f32 on row views) and id-indexed matvecs. */
+static bool mla_device(const struct transformer_arch_state *st) {
+    const struct geist_backend_descriptor *d = st->backend->desc;
+    return strncmp(d->name, "cpu_", 4) != 0 && d->prims->scale_f32 != nullptr &&
+           d->fused != nullptr && d->fused->linear_t_ids != nullptr;
+}
+
 /* Absorbed MLA's per-head k_b [rank, nope] and v_b [mla_v_dim, rank], each
  * with a kernel of the CPU backend's that the host calls per head. */
 [[nodiscard]] static enum geist_status wire_absorbed(struct transformer_arch_state    *st,
@@ -286,12 +301,13 @@ static float *host_vector(struct transformer_arch_state          *st,
                                 name);
         return GEIST_E_UNSUPPORTED;
     }
-    /* The host runs k_b / v_b per head on a CPU backend's kernels. */
-    if (c->mla_absorbed && strncmp(st->backend->desc->name, "cpu_", 4) != 0) {
+    /* A GPU runs k_b / v_b per head on the device or not at all. */
+    const bool gpu = strncmp(st->backend->desc->name, "cpu_", 4) != 0;
+    if (c->mla_absorbed && gpu && !mla_device(st)) {
         geist_backend_set_error(st->backend,
                                 GEIST_E_UNSUPPORTED,
-                                "%s: the absorbed MLA layout (attn_k_b / attn_v_b) runs on the CPU "
-                                "backends only, not on %s (#376)",
+                                "%s: the absorbed MLA layout (attn_k_b / attn_v_b) needs "
+                                "linear_t_ids and scale_f32 on a GPU, which %s lacks (#376)",
                                 ARCH,
                                 st->backend->desc->name);
         return GEIST_E_UNSUPPORTED;
@@ -339,6 +355,9 @@ static float *host_vector(struct transformer_arch_state          *st,
     if (s == GEIST_OK)
         L->mla_kv_a_norm =
                 host_vector(st, gguf, L, "attn_kv_a_norm.weight", c->mla_kv_rank, true, &s);
+    if (s == GEIST_OK && mla_device(st))
+        s = load_layer_norm(
+                st, gguf, L, T("attn_kv_a_norm.weight"), c->mla_kv_rank, &L->mla_kv_a_norm_t);
     if (s == GEIST_OK && c->mla_absorbed)
         s = wire_absorbed(st, gguf, L, nope);
     else if (s == GEIST_OK)
@@ -470,6 +489,25 @@ deepseek2_session_alloc(struct transformer_arch_session *sess) {
             return GEIST_E_OOM;
         s = transformer_scratch_alloc(st->backend, bytes, bufs[i].out);
     }
+    /* #376: on a GPU, slot t * heads + h runs head h's k_b / v_b. */
+    size_t n_ids = 0;
+    if (s == GEIST_OK && ab && mla_device(st)) {
+        const struct geist_backend_vtbl *v = st->backend->desc->vtbl;
+        if (ckd_mul(&n_ids, m, heads) || n_ids > UINT32_MAX)
+            return GEIST_E_OOM;
+        s             = v->buffer_create(st->backend,
+                                         n_ids * sizeof(uint32_t),
+                                         GEIST_BUFFER_IO,
+                                         GEIST_MEMORY_AUTO,
+                                         &sess->mla_ids);
+        uint32_t *ids = s == GEIST_OK ? v->buffer_map(sess->mla_ids) : nullptr;
+        if (s == GEIST_OK && ids == nullptr)
+            s = GEIST_E_BACKEND;
+        for (size_t i = 0; ids != nullptr && i < n_ids; i++)
+            ids[i] = (uint32_t) (i % heads);
+        if (ids != nullptr)
+            v->buffer_unmap(sess->mla_ids);
+    }
     return s;
 }
 
@@ -482,6 +520,10 @@ static void deepseek2_session_free(struct transformer_arch_session *sess) {
     transformer_buffer_release(be, &sess->mla_q_a);
     transformer_buffer_release(be, &sess->mla_hx);
     transformer_buffer_release(be, &sess->mla_hy);
+    if (sess->mla_ids != nullptr) {
+        be->desc->vtbl->buffer_destroy(be, sess->mla_ids);
+        sess->mla_ids = nullptr;
+    }
 }
 
 /* ---- Forward ---------------------------------------------------------- */
@@ -700,6 +742,159 @@ static void mla_heads_items(void *p, size_t h0, size_t h1) {
     return s;
 }
 
+/* ---- MLA on the device (#376) ------------------------------------------ */
+
+/* [rows, cols] F32 view of b from float `off`, its rows `stride` apart. */
+static struct geist_tensor
+rows_view(struct geist_buffer *b, size_t off, size_t rows, size_t cols, size_t stride) {
+    return (struct geist_tensor) {.buffer = b,
+                                  .offset = off * sizeof(float),
+                                  .dtype  = GEIST_DTYPE_F32,
+                                  .layout = GEIST_LAYOUT_DENSE,
+                                  .ndim   = 2,
+                                  .shape  = {(int64_t) rows, (int64_t) cols},
+                                  .stride = {(int64_t) stride, 1}};
+}
+
+/* dst = src * scale over two row views (1: a strided copy, 0: zeros). */
+[[nodiscard]] static enum geist_status dev_copy(struct transformer_layer_forward_ctx *ctx,
+                                                struct geist_tensor                   src,
+                                                struct geist_tensor                   dst,
+                                                float                                 scale) {
+    return ctx->prims->scale_f32(ctx->be, &src, scale, &dst);
+}
+
+/* The latent's RMSNorm on the device: rows [pe, pe + rank) of each of
+ * the m rows of `src` (row stride src_row) into `dst` (row stride
+ * dst_row, from float dst_off); src and dst may be the same view. */
+[[nodiscard]] static enum geist_status dev_latent_norm(struct transformer_layer_forward_ctx *ctx,
+                                                       struct geist_buffer                  *src,
+                                                       size_t               src_row,
+                                                       struct geist_buffer *dst,
+                                                       size_t               dst_off,
+                                                       size_t               dst_row) {
+    const struct geist_arch_config *c    = &ctx->st->config;
+    const size_t                    rank = c->mla_kv_rank;
+    struct geist_tensor             x    = rows_view(src, c->mla_rope, ctx->seq, rank, src_row);
+    struct geist_tensor             y    = rows_view(dst, dst_off, ctx->seq, rank, dst_row);
+    struct geist_tensor             w    = view_1d_at(ctx->L->mla_kv_a_norm_t.buffer,
+                                                      (size_t) ctx->L->mla_kv_a_norm_t.offset,
+                                                      (int64_t) rank);
+    return ctx->prims->rmsnorm(ctx->be, &x, &w, ctx->eps, &y);
+}
+
+/* Decompressed: kv_a's latent normalised into mla_lat, kv_b, then K =
+ * [k_pe | k_nope] and V = [v | 0] per head by strided copies. */
+[[nodiscard]] static enum geist_status mla_kv_dev(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_session  *sess = ctx->sess;
+    struct transformer_layer_weights *L    = ctx->L;
+    const struct geist_arch_config   *c    = &ctx->st->config;
+    const size_t      rank = c->mla_kv_rank, pe = c->mla_rope, hd = ctx->hd, nope = hd - pe;
+    const size_t      vd = c->mla_v_dim, heads = ctx->st->n_q_heads, kv_a = rank + pe, m = ctx->seq;
+    const size_t      kv = nope + vd, mh = m * heads;
+    enum geist_status s = dev_latent_norm(ctx, sess->mla_kv_a, kv_a, sess->mla_lat, 0, rank);
+    if (s == GEIST_OK)
+        s = blk_linear(ctx, sess->mla_lat, &L->mla_kv_b, &L->mla_kv_b_w, sess->mla_kv);
+    if (s == GEIST_OK)
+        s = dev_copy(ctx,
+                     rows_view(sess->mla_kv, 0, mh, nope, kv),
+                     rows_view(sess->scratch_k, pe, mh, nope, hd),
+                     1.0f);
+    /* k_pe, shared by the heads: one copy per head. */
+    for (size_t h = 0; h < heads && s == GEIST_OK; h++)
+        s = dev_copy(ctx,
+                     rows_view(sess->mla_kv_a, 0, m, pe, kv_a),
+                     rows_view(sess->scratch_k, h * hd, m, pe, heads * hd),
+                     1.0f);
+    if (s == GEIST_OK)
+        s = dev_copy(ctx,
+                     rows_view(sess->mla_kv, nope, mh, vd, kv),
+                     rows_view(sess->scratch_v, 0, mh, vd, hd),
+                     1.0f);
+    /* V's padding: zeros, from as many of the head's kv_b outputs. */
+    if (s == GEIST_OK && hd > vd)
+        s = dev_copy(ctx,
+                     rows_view(sess->mla_kv, 0, mh, hd - vd, kv),
+                     rows_view(sess->scratch_v, vd, mh, hd - vd, hd),
+                     0.0f);
+    return s;
+}
+
+/* Decompressed: the first mla_v_dim of each output head packed into
+ * mla_kv ([seq, heads * mla_v_dim], o_proj's input). */
+[[nodiscard]] static enum geist_status mla_pack_out_dev(struct transformer_layer_forward_ctx *ctx) {
+    const size_t mh = ctx->seq * ctx->st->n_q_heads, vd = ctx->st->config.mla_v_dim;
+    return dev_copy(ctx,
+                    rows_view(ctx->sess->scratch_attn, 0, mh, vd, ctx->hd),
+                    rows_view(ctx->sess->mla_kv, 0, mh, vd, vd),
+                    1.0f);
+}
+
+/* k_b or v_b of every head over the m * heads rows x into y: the heads
+ * are linear_t_ids' experts, slot t * heads + h taking head h (mla_ids). */
+[[nodiscard]] static enum geist_status mla_heads_dev(struct transformer_layer_forward_ctx *ctx,
+                                                     const struct geist_tensor            *w,
+                                                     const struct geist_weight            *w0,
+                                                     struct geist_tensor                   x,
+                                                     struct geist_tensor                   y) {
+    const size_t        heads = ctx->st->n_q_heads;
+    struct geist_tensor all   = w[0];
+    all.shape[0] *= (int64_t) heads;
+    const enum geist_status s = ctx->fused->linear_t_ids(
+            ctx->be, heads, ctx->seq, heads, true, w0, &all, ctx->sess->mla_ids, &x, &y);
+    if (s != GEIST_OK)
+        geist_backend_set_error(ctx->be,
+                                s,
+                                "%s: layer %d: %s per head on the device: %s",
+                                ARCH,
+                                ctx->layer_idx,
+                                w == ctx->L->mla_k_b ? "k_b" : "v_b",
+                                geist_backend_errmsg(ctx->be));
+    return s;
+}
+
+/* Absorbed: kv_a is in scratch_k already. K = [k_pe | rmsnorm(latent)],
+ * V = K before RoPE, q = [q_pe | k_b[h] q_nope] per head. */
+[[nodiscard]] static enum geist_status
+mla_absorb_qkv_dev(struct transformer_layer_forward_ctx *ctx) {
+    struct transformer_arch_session *sess = ctx->sess;
+    const struct geist_arch_config  *c    = &ctx->st->config;
+    const size_t      rank = c->mla_kv_rank, pe = c->mla_rope, hd = ctx->hd, kd = c->mla_k_dim;
+    const size_t      m = ctx->seq, mh = m * ctx->st->n_q_heads;
+    enum geist_status s = dev_latent_norm(ctx, sess->scratch_k, hd, sess->scratch_k, pe, hd);
+    if (s == GEIST_OK)
+        s = dev_copy(ctx,
+                     rows_view(sess->scratch_k, 0, m, hd, hd),
+                     rows_view(sess->scratch_v, 0, m, hd, hd),
+                     1.0f);
+    if (s == GEIST_OK)
+        s = dev_copy(ctx,
+                     rows_view(sess->mla_kv, 0, mh, pe, kd),
+                     rows_view(sess->scratch_q, 0, mh, pe, hd),
+                     1.0f);
+    if (s == GEIST_OK)
+        s = mla_heads_dev(ctx,
+                          ctx->L->mla_k_b,
+                          &ctx->L->mla_k_b_w[0],
+                          rows_view(sess->mla_kv, pe, mh, kd - pe, kd),
+                          rows_view(sess->scratch_q, pe, mh, rank, hd));
+    return s;
+}
+
+/* Absorbed: each output head's latent dims through v_b[h] into mla_hy
+ * ([seq, heads * mla_v_dim], o_proj's input). */
+[[nodiscard]] static enum geist_status
+mla_absorb_out_dev(struct transformer_layer_forward_ctx *ctx) {
+    const struct geist_arch_config *c  = &ctx->st->config;
+    const size_t                    mh = ctx->seq * ctx->st->n_q_heads, vd = c->mla_v_dim;
+    return mla_heads_dev(
+            ctx,
+            ctx->L->mla_v_b,
+            &ctx->L->mla_v_b_w[0],
+            rows_view(ctx->sess->scratch_attn, c->mla_rope, mh, c->mla_kv_rank, ctx->hd),
+            rows_view(ctx->sess->mla_hy, 0, mh, vd, vd));
+}
+
 /* Each step runs only while s is GEIST_OK. */
 [[nodiscard]] static enum geist_status
 deepseek2_attention_block(struct transformer_layer_forward_ctx *ctx) {
@@ -707,8 +902,14 @@ deepseek2_attention_block(struct transformer_layer_forward_ctx *ctx) {
     struct transformer_layer_weights *L    = ctx->L;
     const struct geist_arch_config   *c    = &ctx->st->config;
     struct geist_buffer              *x    = sess->scratch_normed;
-    /* Absorbed: q before the absorption goes to mla_kv. */
-    struct geist_buffer *q = c->mla_absorbed ? sess->mla_kv : sess->scratch_q;
+    const bool                        dev  = mla_device(ctx->st);
+    const bool                        ab   = c->mla_absorbed;
+    /* Absorbed: q before the absorption goes to mla_kv; on the device kv_a
+     * is K's row as it stands (one KV head of [k_pe | latent]). */
+    struct geist_buffer *q   = ab ? sess->mla_kv : sess->scratch_q;
+    struct geist_buffer *kva = ab && dev ? sess->scratch_k : sess->mla_kv_a;
+    /* o_proj's input: [seq, heads * mla_v_dim]. */
+    struct geist_buffer *att = !dev ? sess->scratch_attn : ab ? sess->mla_hy : sess->mla_kv;
 
     enum geist_status s = blk_attn_norm(ctx, x);
     if (s == GEIST_OK && c->mla_q_rank > 0) {
@@ -721,17 +922,19 @@ deepseek2_attention_block(struct transformer_layer_forward_ctx *ctx) {
         s = blk_linear(ctx, x, &L->q_proj, &L->q_proj_w, q);
     }
     if (s == GEIST_OK)
-        s = blk_linear(ctx, x, &L->mla_kv_a, &L->mla_kv_a_w, sess->mla_kv_a);
+        s = blk_linear(ctx, x, &L->mla_kv_a, &L->mla_kv_a_w, kva);
     if (s == GEIST_OK)
-        s = c->mla_absorbed ? mla_absorb_qkv(ctx) : mla_kv(ctx);
+        s = ab ? (dev ? mla_absorb_qkv_dev(ctx) : mla_absorb_qkv(ctx))
+               : (dev ? mla_kv_dev(ctx) : mla_kv(ctx));
     if (s == GEIST_OK)
         s = blk_rope_qk(ctx, c->attn_q_scale);
     if (s == GEIST_OK)
         s = blk_attend(ctx, true);
     if (s == GEIST_OK)
-        s = c->mla_absorbed ? mla_absorb_out(ctx) : mla_pack_out(ctx);
+        s = ab ? (dev ? mla_absorb_out_dev(ctx) : mla_absorb_out(ctx))
+               : (dev ? mla_pack_out_dev(ctx) : mla_pack_out(ctx));
     if (s == GEIST_OK)
-        s = blk_linear(ctx, sess->scratch_attn, &L->o_proj, &L->o_proj_w, sess->scratch_o);
+        s = blk_linear(ctx, att, &L->o_proj, &L->o_proj_w, sess->scratch_o);
     return s == GEIST_OK ? blk_attn_residual(ctx, nullptr) : s;
 }
 
