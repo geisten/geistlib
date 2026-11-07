@@ -111,6 +111,17 @@ EOF
     done
 fi
 if has ppl; then
+    # The M6's python3 is 3.9: tools/ppl_vs_llama.py's annotations need
+    # postponed evaluation there (eval_repl.py has it).
+    mkdir -p "$OUT/pt"
+    cp tools/eval_repl.py "$OUT/pt/"
+    python3 - tools/ppl_vs_llama.py "$OUT/pt/ppl_vs_llama.py" <<'PYEOF'
+import ast, sys
+src = open(sys.argv[1]).read()
+doc = ast.get_docstring(ast.parse(src), clean=False)
+end = src.index('"""', src.index('"""') + 3) + 3 if doc is not None else 0
+open(sys.argv[2], "w").write(src[:end] + "\nfrom __future__ import annotations\n" + src[end:])
+PYEOF
     {
         echo
         echo "| model | geist device prefill | geist host route | llama.cpp Metal |"
@@ -118,10 +129,10 @@ if has ppl; then
     } >>"$OUT/summary.md"
     for m in "$OL" "$DS" "$GC" "$GO"; do
         n=$(basename "$m" .gguf)
-        GEIST_BACKEND=metal python3 tools/ppl_vs_llama.py "$m" docs/OFFLOAD.md --llama-bin "$LBD" \
+        GEIST_BACKEND=metal python3 "$OUT/pt/ppl_vs_llama.py" "$m" docs/OFFLOAD.md --llama-bin "$LBD" \
             --ngl 99 --eval-geist "$B/tools/eval_geist" >"$OUT/${n}_ppl_1.json" 2>"$OUT/${n}_ppl_1.err"
         LP=$(python3 -c 'import json,sys;print(json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])["llama_ppl"])' "$OUT/${n}_ppl_1.json" 2>/dev/null || echo "")
-        GEIST_MOE_DEVICE_PREFILL=0 GEIST_BACKEND=metal python3 tools/ppl_vs_llama.py "$m" docs/OFFLOAD.md \
+        GEIST_MOE_DEVICE_PREFILL=0 GEIST_BACKEND=metal python3 "$OUT/pt/ppl_vs_llama.py" "$m" docs/OFFLOAD.md \
             --llama-bin "$LBD" --ngl 99 --eval-geist "$B/tools/eval_geist" ${LP:+--skip-llama "$LP"} \
             >"$OUT/${n}_ppl_0.json" 2>"$OUT/${n}_ppl_0.err"
         python3 - "$OUT" "$n" >>"$OUT/summary.md" <<'EOF'
