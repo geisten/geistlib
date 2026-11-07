@@ -2618,8 +2618,9 @@ struct vk_push_topk {
     if (a == nullptr)
         return GEIST_E_INVALID_ARG;
     /* moe_topk.comp: softmax gating, no router bias (#373: GPT-OSS's
-     * routes on the host here). */
-    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX || a->bias != nullptr)
+     * routes on the host here), none of DeepSeek's options (#376). */
+    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX || a->bias != nullptr || a->sel_bias != nullptr ||
+        a->n_group > 1 || (a->w_scale != 0.0f && a->w_scale != 1.0f))
         return GEIST_E_UNSUPPORTED;
     const size_t m = a->m, n = a->n, k = a->k;
     const bool   norm = a->norm;

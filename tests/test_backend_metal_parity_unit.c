@@ -1,11 +1,10 @@
 /*
  * test_backend_metal_parity_unit — numerical parity gate for the Metal
  * linear path (#181/#296): resolve_weight + linear_m1/linear_mN for Q4_0,
- * Q4_1, Q8_0, Q4_K, Q5_K, Q6_K and F32 weights, compared against cpu_scalar on the SAME
- * weight bytes. cpu_scalar dequantizes with an independent implementation
- * (src/formats/gguf), so agreement means the MSL dequant and the full
- * dispatch chain (pipeline creation, buffer registry, batching) are
- * correct.
+ * Q4_1, Q5_0 (#376), Q8_0, Q4_K, Q5_K, Q6_K and F32 weights, compared against cpu_scalar on the
+ * SAME weight bytes. cpu_scalar dequantizes with an independent implementation (src/formats/gguf),
+ * so agreement means the MSL dequant and the full dispatch chain (pipeline creation, buffer
+ * registry, batching) are correct.
  *
  * The Metal linear op falls back to a HOST compute path when a pointer is
  * not a registered backend buffer — a parity test on malloc memory would
@@ -42,6 +41,7 @@ static int g_fail = 0;
 enum {
     Q40_BB   = 18,
     Q41_BB   = 20,
+    Q50_BB   = 22,
     Q80_BB   = 34,
     Q4K_BB   = 144,
     Q5K_BB   = 176,
@@ -80,6 +80,9 @@ static void block_geom(int dtype, size_t *elems, size_t *bytes) {
         return;
     case GEIST_DTYPE_Q8_0:
         *elems = 32u, *bytes = Q80_BB;
+        return;
+    case GEIST_DTYPE_Q5_0:
+        *elems = 32u, *bytes = Q50_BB;
         return;
     case GEIST_DTYPE_IQ4_NL:
         *elems = 32u, *bytes = IQ4NL_BB;
@@ -170,7 +173,8 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
                     blk[sc] = (uint8_t) (0xCCu | (rng_u8() & 0x33u));
                 }
             } else if (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
-                       dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL) {
+                       dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL ||
+                       dtype == GEIST_DTYPE_Q5_0) {
                 blk[0] = 0x00; /* d = fp16(1.0) */
                 blk[1] = 0x3C;
                 if (dtype == GEIST_DTYPE_Q4_1) {
@@ -1885,6 +1889,14 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 97, 1);
     run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 97, 40);
     run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4tiny", 512, 3, 1);
+    /* Q5_0 (#376): n4 GEMV at m=1, the simdgroup GEMM above; 1408 is
+     * DeepSeek-V2-Lite's expert width (44 blocks). */
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 1408, 97, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 1408, 97, 40);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0tiny", 512, 3, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 33);

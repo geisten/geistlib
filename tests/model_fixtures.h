@@ -38,9 +38,9 @@ struct mf_llama {
     /* attn_q stored as F16 instead of F32 (backends that widen or refuse
      * half-precision projections). */
     bool f16_q;
-    /* ffn_down stored as Q5_0 (all-zero blocks; ffn a multiple of 32), a
-     * dtype the CPU backends run and metal does not. */
-    bool q5_0_down;
+    /* ffn_down stored as IQ2_S (all-zero blocks; ffn a multiple of 256), a
+     * dtype the CPU backends run and metal does not (Q5_0 was, until #376). */
+    bool iq2s_down;
     /* A separate output.weight (lm_head), so token_embd is a lookup-only
      * table; tied otherwise. */
     bool untied;
@@ -122,7 +122,7 @@ struct mf_tensor {
     enum mf_fill fill;
     float        scale;    /* MF_RAND values times this (mf_add: 1) */
     bool         f16;      /* stored as F16; F32 otherwise */
-    bool         q5_0;     /* stored as zero Q5_0 blocks (ne0 a multiple of 32) */
+    bool         iq2s;     /* stored as zero IQ2_S blocks (ne0 a multiple of 256) */
     uint64_t     kvb_pair; /* MF_KB: the value dims; MF_VB: nope */
 };
 
@@ -152,7 +152,7 @@ mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, con
     t->fill     = fill;
     t->scale    = 1.0f;
     t->f16      = false;
-    t->q5_0     = false;
+    t->iq2s     = false;
     t->kvb_pair = 0;
 }
 
@@ -160,13 +160,13 @@ static inline uint64_t mf_elems(const struct mf_tensor *t) {
     return t->ne0 * (t->ne1 != 0 ? t->ne1 : 1) * (t->ne2 != 0 ? t->ne2 : 1);
 }
 
-/* Bytes of a tensor's data: F32, F16, or 22 per 32 elements for Q5_0. */
+/* Bytes of a tensor's data: F32, F16, or 82 per 256 elements for IQ2_S. */
 static inline uint64_t mf_bytes(const struct mf_tensor *t) {
-    return t->q5_0 ? mf_elems(t) / 32 * 22 : mf_elems(t) * (t->f16 ? 2 : 4);
+    return t->iq2s ? mf_elems(t) / 256 * 82 : mf_elems(t) * (t->f16 ? 2 : 4);
 }
 
 /* The tensor infos, then the data, after the metadata: F32 (F16 or zero
- * Q5_0 blocks where the tensor says so), each tensor 32-byte aligned,
+ * IQ2_S blocks where the tensor says so), each tensor 32-byte aligned,
  * MF_RAND values drawn in tensor order from `seed`. Frees the list. */
 static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uint64_t seed) {
     uint64_t off = 0;
@@ -181,7 +181,7 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         if (t->ne2 != 0) {
             tf_u64(o, t->ne2);
         }
-        tf_u32(o, t->q5_0 ? 6 : t->f16 ? 1 : 0); /* Q5_0 : F16 : F32 */
+        tf_u32(o, t->iq2s ? 22 : t->f16 ? 1 : 0); /* IQ2_S : F16 : F32 */
         tf_u64(o, off);
         off += (mf_bytes(t) + 31) / 32 * 32;
     }
@@ -192,7 +192,7 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         while (o->n % 32 != 0) {
             tf_put(o, "", 1);
         }
-        if (t->q5_0) {
+        if (t->iq2s) {
             for (uint64_t b = 0; b < mf_bytes(t); b++) {
                 tf_put(o, "", 1);
             }
@@ -263,7 +263,7 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
         mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate.weight", l);
         mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up.weight", l);
         mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down.weight", l);
-        ts.t[ts.n - 1].q5_0 = c->q5_0_down;
+        ts.t[ts.n - 1].iq2s = c->iq2s_down;
     }
     const struct {
         const char *key;

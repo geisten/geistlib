@@ -9,9 +9,14 @@
  * not; and (#373) with a router bias, SOFTMAX_WEIGHT gating (GPT-OSS: the
  * softmax over the selected logits alone, which the host computes in
  * double) and both; ids exact, weights within 1e-6. A non-finite logit sets
- * the flag word after the ids and still writes ids below n.
+ * the flag word after the ids and still writes ids below n. (#376)
+ * DeepSeek's router: sigmoid gating with a selection bias, renormalised and
+ * not, a weight scale, softmax with a selection bias, and expert groups
+ * (V3: 8 groups of which 4 stay, here over 64 experts and over 16 with ties
+ * between groups), ids exact and weights within 1e-6 of the host's
+ * moe_route; the probe agrees.
  *
- * linear_t_ids, for F32, Q4_K, Q6_K, Q8_0 and MXFP4: 10 experts back to back
+ * linear_t_ids, for F32, Q4_K, Q6_K, Q8_0, MXFP4 and (#376) Q5_0: 10 experts back to back
  * in one buffer, the ids of two tokens' three slots (one expert twice, the
  * last expert), x one row per token (gate/up) and one row per slot (down);
  * against fused->linear_t of each slot's expert alone, to 1e-5 of the
@@ -75,49 +80,79 @@ static struct geist_tensor vec(struct geist_buffer *b, size_t off, size_t n) {
                                   .stride = {1}};
 }
 
+/* A router: gating, renormalisation, the router bias and (#376) the
+ * selection bias (nullptr: none), the weight scale and the groups. */
+struct route_opts {
+    enum geist_moe_route_gating gating;
+    bool                        norm;
+    const float                *bias, *sel;
+    float                       scale;
+    size_t                      n_group, topk_group;
+};
+
+static enum geist_moe_gating host_gating(enum geist_moe_route_gating g) {
+    switch (g) {
+    case GEIST_MOE_ROUTE_SOFTMAX:
+        return GEIST_MOE_GATING_SOFTMAX;
+    case GEIST_MOE_ROUTE_SOFTMAX_WEIGHT:
+        return GEIST_MOE_GATING_SOFTMAX_WEIGHT;
+    case GEIST_MOE_ROUTE_SIGMOID:
+        return GEIST_MOE_GATING_SIGMOID;
+    }
+    return GEIST_MOE_GATING_SOFTMAX;
+}
+
 /* Routes `rows` rows of `n` logits with k on the device and checks each
- * against the host's moe_route with the same gating and bias (nullptr:
- * none). */
-static int check_route(struct geist_backend *be,
-                       const char           *what,
-                       size_t                rows,
-                       size_t                n,
-                       size_t                k,
-                       bool                  norm,
-                       bool                  sel_softmax,
-                       const float          *bias,
-                       const float          *logits,
-                       bool                  expect_bad) {
-    const struct geist_backend_vtbl  *v  = be->desc->vtbl;
-    const struct geist_backend_fused *f  = be->desc->fused;
-    struct geist_buffer              *bl = nullptr, *bi = nullptr, *bw = nullptr, *bb = nullptr;
-    int                               fails = 0;
-    const size_t                      nk    = rows * k;
+ * against the host's moe_route with the same router. */
+static int check_route_opts(struct geist_backend    *be,
+                            const char              *what,
+                            size_t                   rows,
+                            size_t                   n,
+                            size_t                   k,
+                            const struct route_opts *o,
+                            const float             *logits,
+                            bool                     expect_bad) {
+    const struct geist_backend_vtbl  *v = be->desc->vtbl;
+    const struct geist_backend_fused *f = be->desc->fused;
+    struct geist_buffer *bl = nullptr, *bi = nullptr, *bw = nullptr, *bb = nullptr, *bs = nullptr;
+    int                  fails = 0;
+    const size_t         nk    = rows * k;
+    if (nk > 64)
+        return geist_expect(false, "route case fits the test's arrays");
     if (v->buffer_create(be, rows * n * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bl) != GEIST_OK ||
         v->buffer_create(be, (nk + 1) * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) != GEIST_OK ||
         v->buffer_create(be, nk * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bw) != GEIST_OK ||
-        v->buffer_create(be, n * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bb) != GEIST_OK)
+        v->buffer_create(be, n * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bb) != GEIST_OK ||
+        v->buffer_create(be, n * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bs) != GEIST_OK)
         return geist_expect(false, "route buffers");
     uint32_t zero[64 + 1] = {0};
     fails += geist_expect(
             v->buffer_upload(bl, rows * n * 4, (const uint8_t *) logits) == GEIST_OK &&
                     v->buffer_upload(bi, (nk + 1) * 4, (const uint8_t *) zero) == GEIST_OK &&
-                    (bias == nullptr ||
-                     v->buffer_upload(bb, n * 4, (const uint8_t *) bias) == GEIST_OK),
+                    (o->bias == nullptr ||
+                     v->buffer_upload(bb, n * 4, (const uint8_t *) o->bias) == GEIST_OK) &&
+                    (o->sel == nullptr ||
+                     v->buffer_upload(bs, n * 4, (const uint8_t *) o->sel) == GEIST_OK),
             "route upload");
     struct geist_tensor               tl = mat(bl, 0, rows, n), tw = vec(bw, 0, nk);
-    struct geist_tensor               tb = vec(bb, 0, n);
-    const struct geist_moe_route_args ra = {.m      = rows,
-                                            .n      = n,
-                                            .k      = k,
-                                            .gating = sel_softmax ? GEIST_MOE_ROUTE_SOFTMAX_WEIGHT
-                                                                  : GEIST_MOE_ROUTE_SOFTMAX,
-                                            .norm   = norm,
-                                            .bias   = bias != nullptr ? &tb : nullptr};
-    const struct moe_router           hr = {.gating = sel_softmax ? GEIST_MOE_GATING_SOFTMAX_WEIGHT
-                                                                  : GEIST_MOE_GATING_SOFTMAX,
-                                            .norm   = norm,
-                                            .bias   = bias};
+    struct geist_tensor               tb = vec(bb, 0, n), ts = vec(bs, 0, n);
+    const struct geist_moe_route_args ra = {.m          = rows,
+                                            .n          = n,
+                                            .k          = k,
+                                            .gating     = o->gating,
+                                            .norm       = o->norm,
+                                            .bias       = o->bias != nullptr ? &tb : nullptr,
+                                            .sel_bias   = o->sel != nullptr ? &ts : nullptr,
+                                            .w_scale    = o->scale,
+                                            .n_group    = o->n_group,
+                                            .topk_group = o->topk_group};
+    const struct moe_router           hr = {.gating     = host_gating(o->gating),
+                                            .norm       = o->norm,
+                                            .bias       = o->bias,
+                                            .sel_bias   = o->sel,
+                                            .w_scale    = o->scale,
+                                            .n_group    = o->n_group,
+                                            .topk_group = o->topk_group};
     fails += geist_expect(f->moe_route(be, &ra, &tl, bi, nk * 4, &tw) == GEIST_OK, what);
     uint32_t ids[64 + 1];
     float    w[64];
@@ -126,6 +161,7 @@ static int check_route(struct geist_backend *be,
                           "route download");
     fails += geist_expect((ids[nk] != 0) == expect_bad,
                           expect_bad ? "a non-finite logit sets the flag" : "no flag");
+    double dw = 0.0;
     for (size_t r = 0; r < rows && fails == 0; r++) {
         uint32_t ref_ids[64];
         float    ref_w[64];
@@ -137,6 +173,7 @@ static int check_route(struct geist_backend *be,
         fails += geist_expect(moe_route(n, k, &hr, logits + r * n, ref_ids, ref_w),
                               "host reference");
         for (size_t j = 0; j < k; j++) {
+            dw = fmax(dw, fabs((double) w[r * k + j] - ref_w[j]));
             if (ids[r * k + j] != ref_ids[j] || fabsf(w[r * k + j] - ref_w[j]) > 1e-6f) {
                 fprintf(stderr,
                         "  %s row %zu slot %zu: id %u w %.8f, host id %u w %.8f\n",
@@ -152,10 +189,124 @@ static int check_route(struct geist_backend *be,
             }
         }
     }
+    if (fails == 0 && !expect_bad)
+        printf("  %s: ids exact, max |dw| %.3g\n", what, dw);
     v->buffer_destroy(be, bl);
     v->buffer_destroy(be, bi);
     v->buffer_destroy(be, bw);
     v->buffer_destroy(be, bb);
+    v->buffer_destroy(be, bs);
+    return fails;
+}
+
+static int check_route(struct geist_backend *be,
+                       const char           *what,
+                       size_t                rows,
+                       size_t                n,
+                       size_t                k,
+                       bool                  norm,
+                       bool                  sel_softmax,
+                       const float          *bias,
+                       const float          *logits,
+                       bool                  expect_bad) {
+    const struct route_opts o = {.gating = sel_softmax ? GEIST_MOE_ROUTE_SOFTMAX_WEIGHT
+                                                       : GEIST_MOE_ROUTE_SOFTMAX,
+                                 .norm   = norm,
+                                 .bias   = bias};
+    return check_route_opts(be, what, rows, n, k, &o, logits, expect_bad);
+}
+
+/* #376: DeepSeek's router against the host's. */
+static int test_route_deepseek(struct geist_backend *be) {
+    enum { NE = 64 };
+    int   fails = 0;
+    float lg[4 * NE], sel[NE], ties[2 * 16], sel16[16];
+    for (size_t i = 0; i < 4 * NE; i++)
+        lg[i] = (float) rng_u8() / 32.0f - 4.0f;
+    for (size_t i = 0; i < NE; i++)
+        sel[i] = (float) rng_u8() / 512.0f - 0.25f;
+    /* Groups of 4 over 16 experts with equal group scores (the best two of
+     * groups 0 and 2 tie) and equal expert scores across groups. */
+    for (size_t i = 0; i < 16; i++) {
+        ties[i]      = (float) (i % 4) - 1.0f;
+        ties[16 + i] = i < 8 ? 1.0f : (float) rng_u8() / 64.0f - 2.0f;
+        sel16[i]     = 0.0f;
+    }
+    const struct {
+        const char       *what;
+        size_t            rows, n, k;
+        struct route_opts o;
+        const float      *logits;
+    } cases[] = {
+            {"sigmoid, selection bias, renormalised (GigaChat3)",
+             4,
+             NE,
+             4,
+             {.gating = GEIST_MOE_ROUTE_SIGMOID, .norm = true, .sel = sel},
+             lg},
+            {"sigmoid, selection bias, not renormalised",
+             4,
+             NE,
+             6,
+             {.gating = GEIST_MOE_ROUTE_SIGMOID, .sel = sel},
+             lg},
+            {"sigmoid, renormalised, scale 2.5",
+             4,
+             NE,
+             8,
+             {.gating = GEIST_MOE_ROUTE_SIGMOID, .norm = true, .scale = 2.5f},
+             lg},
+            {"softmax, selection bias, scale 16",
+             4,
+             NE,
+             6,
+             {.gating = GEIST_MOE_ROUTE_SOFTMAX, .sel = sel, .scale = 16.0f},
+             lg},
+            {"V3: sigmoid, bias, 8 groups keep 4, renormalised, scale 2.5",
+             4,
+             NE,
+             8,
+             {.gating     = GEIST_MOE_ROUTE_SIGMOID,
+              .norm       = true,
+              .sel        = sel,
+              .scale      = 2.5f,
+              .n_group    = 8,
+              .topk_group = 4},
+             lg},
+            {"softmax, 4 groups keep 2, k = 8 = all eligible",
+             4,
+             NE,
+             8,
+             {.gating = GEIST_MOE_ROUTE_SOFTMAX, .n_group = 4, .topk_group = 2},
+             lg},
+            {"groups with ties between groups and experts",
+             2,
+             16,
+             3,
+             {.gating = GEIST_MOE_ROUTE_SIGMOID, .sel = sel16, .n_group = 4, .topk_group = 2},
+             ties},
+            {"selected softmax with a selection bias",
+             4,
+             NE,
+             4,
+             {.gating = GEIST_MOE_ROUTE_SOFTMAX_WEIGHT, .sel = sel},
+             lg},
+    };
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        fails += check_route_opts(be,
+                                  cases[i].what,
+                                  cases[i].rows,
+                                  cases[i].n,
+                                  cases[i].k,
+                                  &cases[i].o,
+                                  cases[i].logits,
+                                  false);
+    }
+    float bad[NE];
+    memcpy(bad, lg, sizeof bad);
+    bad[17]                   = INFINITY;
+    const struct route_opts o = {.gating = GEIST_MOE_ROUTE_SIGMOID, .norm = true, .sel = sel};
+    fails += check_route_opts(be, "sigmoid with an infinity", 1, NE, 4, &o, bad, true);
     return fails;
 }
 
@@ -253,6 +404,25 @@ static int test_ids(struct geist_backend *be, const struct qfmt *q) {
     q0.m = 0;
     fails += geist_expect(f->supported(be, &q8) && !f->supported(be, &q0),
                           "supported(GEIST_FUSED_MOE_DEVICE) at m = 8, not at m = 0");
+    /* #376: the router it names; groups that do not divide the experts or
+     * an unknown gating are refused. */
+    const struct geist_moe_route_args v3         = {.n          = 256,
+                                                    .k          = 8,
+                                                    .gating     = GEIST_MOE_ROUTE_SIGMOID,
+                                                    .norm       = true,
+                                                    .w_scale    = 2.5f,
+                                                    .n_group    = 8,
+                                                    .topk_group = 4};
+    struct geist_moe_route_args       bad_groups = v3, bad_gating = v3;
+    bad_groups.n_group            = 7;
+    bad_gating.gating             = (enum geist_moe_route_gating) 9;
+    struct geist_fusion_query qv3 = qq, qbg = qq, qbt = qq;
+    qv3.moe_route = &v3;
+    qbg.moe_route = &bad_groups;
+    qbt.moe_route = &bad_gating;
+    fails += geist_expect(f->supported(be, &qv3) == (f->moe_route == nullptr ? false : true) &&
+                                  !f->supported(be, &qbg) && !f->supported(be, &qbt),
+                          "supported(GEIST_FUSED_MOE_DEVICE) answers for the router");
     float xs[M * K * N_IN];
     for (size_t i = 0; i < M * K * N_IN; i++)
         xs[i] = (float) rng_u8() / 64.0f - 2.0f;
@@ -515,12 +685,14 @@ int main(void) {
         printf("%s:\n", names[b]);
         ran++;
         fails += test_route(be);
+        fails += test_route_deepseek(be);
         static const struct qfmt qs[] = {
                 {GEIST_DTYPE_F32, 1, 4, false, "F32"},
                 {GEIST_DTYPE_Q4_K, 256, 144, false, "Q4_K"},
                 {GEIST_DTYPE_Q6_K, 256, 210, true, "Q6_K"},
                 {GEIST_DTYPE_Q8_0, 32, 34, false, "Q8_0"},
                 {GEIST_DTYPE_MXFP4, 32, 17, false, "MXFP4"},
+                {GEIST_DTYPE_Q5_0, 32, 22, false, "Q5_0"},
         };
         for (size_t i = 0; i < sizeof qs / sizeof qs[0]; i++)
             fails += test_ids(be, &qs[i]);

@@ -360,8 +360,57 @@ static const char metal_qsg_n4_q80_source[] =
         "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
         "sg[[simdgroup_index_in_threadgroup]]){mv_q80(x,w,y,p,tg.x,tg.y,ti,sg);}\n";
 
+/* Q5_0 (#376: DeepSeek-V2-Lite's Q4_K_M experts, whose 1408-wide down
+ * rows take Q5_0 where Q4_K needs 256): 22-byte blocks of d, the fifth bits
+ * qh (bit j for element j) and 16 bytes of low nibbles (elements j and
+ * j + 16), value d * (q - 16). mv_q50 is matvec_q40_n4's structure, a thread
+ * covering elements il..il+7 and il+16..il+23 of a block; with struct P
+ * (metal_qsg_common_source or metal_mv_hdr_source) in front, for the
+ * quant_sg and the MoE library alike. dq50 is the GEMM template's 16-element
+ * loader (il 0: elements 0..15, 1: 16..31). */
+static const char metal_mv_q50_body[] =
+        "static inline void mv_q50(device const float*x,device const uchar*w,device "
+        "float*y,constant P&p,uint tx,uint b,ushort ti,ushort sg){"
+        "uint fr=(tx*2u+uint(sg))*4u;if(fr>=p.no||b>=p.rows)return;"
+        "uint nb=p.ni>>5u,ix=uint(ti)>>1u,il=(uint(ti)&1u)*8u;"
+        "uint nr=min(p.no-fr,4u);"
+        "device const float*yb=x+p.xo+b*p.xs+ix*32u+il;"
+        "float sf[4]={0.0f,0.0f,0.0f,0.0f};"
+        "for(uint ib=ix;ib<nb;ib+=16u){"
+        "float yl[16];float sumy=0.0f;"
+        "for(uint i=0u;i<8u;i++){yl[i]=yb[i];yl[i+8u]=yb[i+16u];sumy+=yl[i]+yl[i+8u];}"
+        "for(uint rr=0u;rr<nr;rr++){"
+        "uint bo=p.wo+((fr+rr)*p.bpr+ib)*22u;"
+        "device const uchar*hb=w+bo+2u;device const uchar*qs=w+bo+6u+il;"
+        "uint qh=uint(hb[0])|(uint(hb[1])<<8u)|(uint(hb[2])<<16u)|(uint(hb[3])<<24u);"
+        "uint hl=qh>>il,hh=qh>>(il+16u);"
+        "float acc=0.0f;"
+        "for(uint i=0u;i<8u;i++){uint q=uint(qs[i]);"
+        "acc+=yl[i]*float((q&15u)|(((hl>>i)&1u)<<4u))+"
+        "yl[i+8u]*float((q>>4u)|(((hh>>i)&1u)<<4u));}"
+        "float d=float(*((device const half*)(w+bo)));"
+        "sf[rr]+=d*(acc-16.0f*sumy);}"
+        "yb+=512u;}"
+        "for(uint rr=0u;rr<4u;rr++){float a=simd_sum(sf[rr]);"
+        "if(ti==0&&fr+rr<p.no)y[p.yo+b*p.ys+fr+rr]=a;}}\n";
+
+static const char metal_qsg_q50_source[] =
+        "struct bq50{half d;uchar qh[4];uchar qs[16];};\n"
+        "static inline void dq50(device const bq50*xb,short il,thread half4x4&r){"
+        "float d=float(xb->d);"
+        "uint qh=uint(xb->qh[0])|(uint(xb->qh[1])<<8u)|(uint(xb->qh[2])<<16u)|"
+        "(uint(xb->qh[3])<<24u);ushort sh=ushort(4*il);uint hs=uint(16*il);"
+        "FOR_UNROLL(short i=0;i<16;i++){"
+        "uint v=((uint(xb->qs[i])>>sh)&15u)|(((qh>>(hs+uint(i)))&1u)<<4u);"
+        "r[i/4][i%4]=half(d*(float(v)-16.0f));}}\n"
+        "kernel void matvec_q50_n4(device const float*x[[buffer(0)]],device const "
+        "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],uint3 "
+        "tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_simdgroup]],ushort "
+        "sg[[simdgroup_index_in_threadgroup]]){mv_q50(x,w,y,p,tg.x,tg.y,ti,sg);}\n";
+
 /* GEMM instances of the shared 64x32 simdgroup tile, one array each to
  * stay under the 4095-char literal limit. */
+static const char metal_qsg_mm_q50_source[] = GEIST_METAL_MM_SG_KERNEL("q50", "bq50", "dq50", "2");
 static const char metal_qsg_mm_q40_source[] = GEIST_METAL_MM_SG_KERNEL("q40", "bq40", "dq40", "2");
 static const char metal_qsg_mm_q80_source[] = GEIST_METAL_MM_SG_KERNEL("q80", "bq80", "dq80", "2");
 static const char metal_qsg_mm_q40_fast_source[] =
@@ -4226,6 +4275,68 @@ static const char metal_moe_source[] =
                                "for(uint "
                                "i=ti;i<p.ni;i+=32u)a+=wv[i]*xv[i];a=simd_sum(a);if(ti==0)y[p.yo+s*"
                                "p.ys+r]=a;}\n";
+
+/* DeepSeek's router on the device (#376): moe_topk_g follows the host's
+ * moe_route step for step, one simdgroup per token row t, n <= 512.
+ *   scores sc[i] (q.gate 0 softmax over all n, 1 the biased logit, 2
+ *   sigmoid), selection scores sl[i] = sc[i] + sb[so + i] (q.hs);
+ *   q.ng > 1: a group's score the sum of its two best sl, the q.tg best
+ *   groups (ties: the lower group) eligible; the k best eligible sl (ties:
+ *   the lower id) into ids[t*k + j]; weights the unbiased sc of the picked
+ *   (gate 1: the softmax over them), over their sum clamped at 2^-14 when
+ *   q.norm, times q.scale. A non-finite logit, or fewer eligible experts
+ *   than k, sets ids[q.flag]; every id written is still below n. */
+static const char metal_moe_route_source[] = GEIST_METAL_MOE_MV(
+        "q50") "struct MRG{uint n,k,norm,flag,ls,lo,io,wo,gate,hb,bo,hs,so,ng,tg;float scale;};\n"
+               "kernel void moe_topk_g(device const float*lg[[buffer(0)]],device "
+               "uint*ids[[buffer(1)]],"
+               "device float*w[[buffer(2)]],constant MRG&q[[buffer(3)]],device const "
+               "float*bs[[buffer(4)]],"
+               "device const float*sb[[buffer(5)]],uint t[[threadgroup_position_in_grid]],"
+               "ushort ti[[thread_index_in_simdgroup]]){"
+               "threadgroup float sc[512],sl[512],gs[256];threadgroup uchar ok[512],gk[256];"
+               "device const float*l=lg+q.lo+t*q.ls;device const float*b=bs+q.bo;"
+               "float mx=-INFINITY;bool fin=true;"
+               "for(uint i=ti;i<q.n;i+=32u){float v=moe_lv(l,b,q.hb,i);fin=fin&&moe_fin(v);"
+               "mx=fin?max(mx,v):mx;}"
+               "fin=simd_all(fin);mx=simd_max(mx);if(!fin){if(ti==0)ids[q.flag]=1u;mx=0.0f;}"
+               "float z=0.0f;if(q.gate==0u&&fin){for(uint i=ti;i<q.n;i+=32u)"
+               "z+=exp(moe_lv(l,b,q.hb,i)-mx);z=simd_sum(z);}"
+               "for(uint i=ti;i<q.n;i+=32u){float v=moe_lv(l,b,q.hb,i),c=0.0f;"
+               "if(fin)c=q.gate==2u?1.0f/(1.0f+exp(-v)):q.gate==0u?exp(v-mx)/z:v;"
+               "sc[i]=c;sl[i]=c+(q.hs!=0u?sb[q.so+i]:0.0f);ok[i]=1;}"
+               "for(uint g=ti;g<256u;g+=32u)gk[g]=0;"
+               "simdgroup_barrier(mem_flags::mem_threadgroup);"
+               "if(q.ng>1u){const uint per=q.n/q.ng;"
+               "for(uint g=ti;g<q.ng;g+=32u){threadgroup const float*x=sl+g*per;"
+               "float a=x[0]>x[1]?x[0]:x[1],c=x[0]>x[1]?x[1]:x[0];"
+               "for(uint i=2u;i<per;i++){if(x[i]>a){c=a;a=x[i];}else if(x[i]>c)c=x[i];}gs[g]=a+c;}"
+               "simdgroup_barrier(mem_flags::mem_threadgroup);"
+               "for(uint j=0u;j<q.tg;j++){float bv=-INFINITY;uint bi=0xffffffffu;"
+               "for(uint "
+               "g=ti;g<q.ng;g+=32u)if(gk[g]==0&&(bi==0xffffffffu||gs[g]>bv)){bv=gs[g];bi=g;}"
+               "float m=simd_max(bi==0xffffffffu?-INFINITY:bv);"
+               "uint best=simd_min((bi!=0xffffffffu&&bv==m)?bi:0xffffffffu);"
+               "if(ti==0&&best!=0xffffffffu)gk[best]=1;simdgroup_barrier(mem_flags::mem_"
+               "threadgroup);}"
+               "for(uint i=ti;i<q.n;i+=32u)ok[i]=gk[i/per];"
+               "simdgroup_barrier(mem_flags::mem_threadgroup);}"
+               "for(uint j=0u;j<q.k;j++){float bv=-INFINITY;uint bi=0xffffffffu;"
+               "for(uint "
+               "i=ti;i<q.n;i+=32u)if(ok[i]!=0&&(bi==0xffffffffu||sl[i]>bv)){bv=sl[i];bi=i;}"
+               "float m=simd_max(bi==0xffffffffu?-INFINITY:bv);"
+               "uint best=simd_min((bi!=0xffffffffu&&bv==m)?bi:0xffffffffu);"
+               "if(ti==0){if(best==0xffffffffu){ids[q.flag]=1u;best=0u;}"
+               "ok[best]=0;ids[q.io+t*q.k+j]=best;}simdgroup_barrier(mem_flags::mem_threadgroup);}"
+               "if(ti!=0)return;device uint*id=ids+q.io+t*q.k;device float*wt=w+q.wo+t*q.k;"
+               "float m2=sc[id[0]],z2=0.0f,sum=0.0f;"
+               "if(q.gate==1u){for(uint j=1u;j<q.k;j++)m2=max(m2,sc[id[j]]);"
+               "for(uint j=0u;j<q.k;j++)z2+=exp(sc[id[j]]-m2);}"
+               "for(uint j=0u;j<q.k;j++){float "
+               "v=q.gate==1u?exp(sc[id[j]]-m2)/z2:sc[id[j]];wt[j]=v;sum+=v;}"
+               "const float den=q.norm!=0u?max(sum,6.103515625e-5f):1.0f;"
+               "const float scl=q.scale!=0.0f?q.scale:1.0f;"
+               "for(uint j=0u;j<q.k;j++)wt[j]=wt[j]/den*scl;}\n";
 
 /* metal_moe_source's second half: moe_glu and moe_wsum (#373). */
 static const char metal_moe2_source[] =

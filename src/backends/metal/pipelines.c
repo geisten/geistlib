@@ -142,6 +142,8 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(quant_sg, "cvt_f32_f16_kmaj8", cvt_kmaj),
         METAL_PIPE(quant_sg, "matvec_iq4nl_n4", iq4nl_n4),
         METAL_PIPE(quant_sg, "matmul_iq4nl_mm_sg", iq4nl_mm),
+        METAL_PIPE(quant_sg, "matvec_q50_n4", q50_n4),
+        METAL_PIPE(quant_sg, "matmul_q50_mm_sg", q50_mm),
         METAL_PIPE(quant_sg, "matvec_mx4_n4", mx4_n4),
         METAL_PIPE(quant_sg, "matmul_mx4_mm_sg", mx4_mm),
         METAL_PIPE(quant_sg, "matvec_iq4xs_n4", iq4xs_n4),
@@ -271,10 +273,12 @@ static const struct metal_pipeline_row metal_hadamard_rows[] = {
 
 static const struct metal_pipeline_row metal_moe_rows[] = {
         METAL_PIPE(moe, "moe_topk", moe_topk),
+        METAL_PIPE(moe, "moe_topk_g", moe_topk_g),
         METAL_PIPE(moe, "moe_mv_q4k", moe_mv_q4k),
         METAL_PIPE(moe, "moe_mv_q6k", moe_mv_q6k),
         METAL_PIPE(moe, "moe_mv_q80", moe_mv_q80),
         METAL_PIPE(moe, "moe_mv_mx4", moe_mv_mx4),
+        METAL_PIPE(moe, "moe_mv_q50", moe_mv_q50),
         METAL_PIPE(moe, "moe_mv_f32", moe_mv_f32),
         METAL_PIPE(moe, "moe_glu", moe_glu),
         METAL_PIPE(moe, "moe_wsum", moe_wsum),
@@ -469,6 +473,9 @@ static const struct metal_library_row metal_quant_libs[] = {
                   metal_qsg_mm_iq4xs_source,
                   metal_qsg_n4_mx4_source,
                   metal_qsg_mm_mx4_source,
+                  metal_mv_q50_body,
+                  metal_qsg_q50_source,
+                  metal_qsg_mm_q50_source,
                   metal_qsg_n4_q3k_source,
                   metal_qsg_n4_iq3s_source,
                   metal_qsg_mm_q3k_source,
@@ -621,8 +628,10 @@ static const struct metal_library_row metal_moe_libs[] = {
                   metal_mv_q6k_body,
                   metal_mv_q80_body,
                   metal_mv_mx4_body,
+                  metal_mv_q50_body,
                   metal_moe_source,
-                  metal_moe2_source),
+                  metal_moe2_source,
+                  metal_moe_route_source),
 };
 
 /* Compiled with language version 4.0 (metal_tensor_options). */
