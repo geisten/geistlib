@@ -615,7 +615,37 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
                               (cf->moe_gating == 0 || cf->moe_gating == GEIST_MOE_GATING_SOFTMAX) &&
                               cf->moe_n_group <= 1 &&
                               (cf->moe_w_scale == 0.0f || cf->moe_w_scale == 1.0f);
-    if (!ffn_ok || n_exp == 0 || l0 == n_layers || gv->resolve_weight == nullptr ||
+    /* #376: a model this placement took on with DeepSeek -- dense lead
+     * layers, or a router beyond softmax and GPT-OSS's -- goes to a GPU
+     * only where the device route runs its first expert layer (Metal);
+     * elsewhere (Vulkan, not verified with them) every expert stays on the
+     * CPU, as before. */
+    const bool deepseek_kind = l0 > 0 || Lb->moe_sel_b != nullptr ||
+                               cf->moe_gating == GEIST_MOE_GATING_SIGMOID || cf->moe_n_group > 1 ||
+                               (cf->moe_w_scale != 0.0f && cf->moe_w_scale != 1.0f);
+    bool       deepseek_ok   = !deepseek_kind;
+    if (deepseek_kind && l0 < n_layers && gf != nullptr && gf->supported != nullptr &&
+        gf->moe_route != nullptr && gf->linear_t_ids != nullptr) {
+        struct geist_tensor               sb = {0};
+        const struct geist_moe_route_args ra = {.m      = 1,
+                                                .n      = n_exp,
+                                                .k      = cf->moe_n_used,
+                                                .gating = moe_route_gating(cf),
+                                                .norm   = cf->moe_norm_topk,
+                                                .sel_bias =
+                                                        Lb->moe_sel_b != nullptr ? &sb : nullptr,
+                                                .w_scale    = cf->moe_w_scale,
+                                                .n_group    = cf->moe_n_group,
+                                                .topk_group = cf->moe_topk_group};
+        const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                .m         = 1,
+                                                .gate_w    = &Lb->moe_gate_w[0],
+                                                .up_w      = &Lb->moe_up_w[0],
+                                                .down_w    = &Lb->moe_down_w[0],
+                                                .moe_route = &ra};
+        deepseek_ok                          = gf->supported(gbe, &q);
+    }
+    if (!ffn_ok || !deepseek_ok || n_exp == 0 || l0 == n_layers || gv->resolve_weight == nullptr ||
         gv->buffer_copy == nullptr || gf == nullptr || gf->linear_t == nullptr ||
         gf->silu_mul == nullptr) {
         if (verbose) {

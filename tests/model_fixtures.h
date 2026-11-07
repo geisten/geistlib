@@ -223,8 +223,8 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
                                : t->fill == MF_VB   ? kvb[(h * (nope + vd) + nope + b) * rank + a]
                                                     : c;
             if (t->f16) {
-                const _Float16 h = (_Float16) v;
-                tf_put(o, &h, 2);
+                const _Float16 hv = (_Float16) v;
+                tf_put(o, &hv, 2);
             } else {
                 tf_f32(o, v);
             }
