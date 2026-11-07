@@ -5417,8 +5417,8 @@ static struct metal_pipeline_h *metal_moe_mm_glu_pipe(const struct metal_state *
             st, enc, a->experts[1]->buffer->buffer, a->experts[1]->buffer->base_off, 6);
     metal_msg_send_set_buffer(st, enc, xb->buffer->buffer, xb->buffer->base_off, 7);
     metal_msg_send_set_buffer(st, enc, zb->buffer->buffer, zb->buffer->base_off, 8);
-    metal_msg_send_set_threadgroup_memory(st, enc, 10240u, 0u);
-    const struct metal_size groups = {.width = tiles, .height = (inter + 63u) / 64u, .depth = 1};
+    metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
+    const struct metal_size groups = {.width = tiles, .height = (inter + 31u) / 32u, .depth = 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM_GLU, groups);
     metal_msg_send_dispatch(
             st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
