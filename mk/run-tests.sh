@@ -31,12 +31,101 @@
 # GEIST_EXPECTED_SKIPS=<file> (one test name per line, # comments) turns any
 # skip NOT on the list into a failure — the list is what a leg is allowed to
 # skip, so a fixture that goes missing fails instead of shrinking the suite.
+# GEIST_TEST_JOBS=N (default 1) runs N tests at a time; GEIST_TEST_FIRST
+# (names) starts those first. Each line carries the test's wall time, [Ns].
 #
 # POSIX sh, no bash (minimal images such as Alpine ship none). Selected
-# binaries ride in the positional parameters; failure details go to a temp
-# file.
+# binaries ride in the positional parameters; verdicts and failure details go
+# to a temp dir.
 
 set -u
+
+# ANSI colors (optional — tee-friendly).
+if [ -t 1 ]; then
+    esc=$(printf '\033')
+    C_GREEN="${esc}[32m"
+    C_RED="${esc}[31m"
+    C_YELLOW="${esc}[33m"
+    C_GREY="${esc}[90m"
+    C_RESET="${esc}[0m"
+else
+    C_GREEN=
+    C_RED=
+    C_YELLOW=
+    C_GREY=
+    C_RESET=
+fi
+
+# run_one <bin> <dir>: run one test binary and print its verdict line. Leaves
+# <dir>/<name>.verdict (PASS, SKIP, FAIL or ERR), and the details the summary
+# needs in <dir>/<name>.failed and <dir>/<name>.skipped. The line is printed
+# whole, in one printf, so parallel runners do not interleave inside it.
+run_one() {
+    bin=$1
+    dir=$2
+    name=$(basename "$bin")
+    t0=$(date +%s)
+    out=$("$bin" 2>&1)
+    rc=$?
+    secs=$(($(date +%s) - t0))
+
+    verbose=
+    if [ "${GEIST_TEST_VERBOSE:-0}" = "1" ] && [ -n "$out" ]; then
+        verbose=$(printf '\n--- %s ---\n%s' "$name" "$(echo "$out" | sed 's/^/  /')")
+    fi
+
+    case $rc in
+        0)
+            verdict=PASS
+            # A passing test's summary is its last line, by convention across
+            # this suite. Showing it keeps the table one-line-per-test while
+            # the numbers stay visible; GEIST_TEST_VERBOSE=1 shows the rest.
+            summary=$(echo "$out" | grep -v '^[[:space:]]*$' | tail -1)
+            if [ -n "$summary" ]; then
+                line=$(printf "  ${C_GREEN}PASS${C_RESET}  %s ${C_GREY}[%ss] (%s)${C_RESET}" "$name" "$secs" "$summary")
+            else
+                line=$(printf "  ${C_GREEN}PASS${C_RESET}  %s ${C_GREY}[%ss]${C_RESET}" "$name" "$secs")
+            fi
+            ;;
+        77)
+            verdict=SKIP
+            reason=$(echo "$out" | grep -v '^[[:space:]]*$' | head -1)
+            printf '%s\t%s\n' "$name" "$reason" >"$dir/$name.skipped"
+            if [ -n "${GEIST_EXPECTED_SKIPS:-}" ] && ! grep -qx "$name" "$GEIST_EXPECTED_SKIPS"; then
+                verdict=FAIL
+                { printf '\n--- %s ---\n' "$name"
+                  echo "  UNEXPECTED SKIP: not listed in $GEIST_EXPECTED_SKIPS"
+                  echo "$out" | sed 's/^/  /'; } >"$dir/$name.failed"
+                line=$(printf "  ${C_RED}FAIL${C_RESET}  %s ${C_GREY}(unexpected skip: %s)${C_RESET}" "$name" "$reason")
+            else
+                line=$(printf "  ${C_YELLOW}SKIP${C_RESET}  %s ${C_GREY}(%s)${C_RESET}" "$name" "$reason")
+            fi
+            ;;
+        99)
+            verdict=ERR
+            { printf '\n--- %s ---\n' "$name"; echo "$out" | sed 's/^/  /'; } >"$dir/$name.failed"
+            line=$(printf "  ${C_RED}ERR${C_RESET}   %s ${C_GREY}[%ss]${C_RESET}" "$name" "$secs")
+            ;;
+        *)
+            verdict=FAIL
+            { printf '\n--- %s ---\n' "$name"; echo "$out" | sed 's/^/  /'; } >"$dir/$name.failed"
+            line=$(printf "  ${C_RED}FAIL${C_RESET}  %s ${C_GREY}(exit=%d) [%ss]${C_RESET}" "$name" "$rc" "$secs")
+            ;;
+    esac
+    echo "$verdict" >"$dir/$name.verdict"
+    if [ -n "$verbose" ]; then
+        printf '%s\n%s\n' "$verbose" "$line"
+    else
+        printf '%s\n' "$line"
+    fi
+}
+
+# Re-entry for GEIST_TEST_JOBS > 1: xargs runs `run-tests.sh --run-one <dir>
+# <bin>` per test.
+if [ "${1:-}" = "--run-one" ]; then
+    run_one "$3" "$2"
+    exit 0
+fi
 
 BIN_DIR="${1:-}"
 FILTER="${2:-}"
@@ -109,86 +198,70 @@ FAIL=0
 SKIP=0
 ERROR=0
 
-# Failure details accumulate in a temp file: POSIX sh has no arrays, and a
-# failing test's output is multi-line, so a delimiter-joined variable would be
-# fragile.
-FAILED_LOG=$(mktemp) || exit 99
-SKIPPED_LOG=$(mktemp) || exit 99
-trap 'rm -f "$FAILED_LOG" "$SKIPPED_LOG"' EXIT HUP INT TERM
+# Per-test verdicts and details land in a temp dir (run_one); the summary
+# below reads them back in suite order. POSIX sh has no arrays, and a failing
+# test's output is multi-line, so a delimiter-joined variable would be fragile.
+WORK_DIR=$(mktemp -d) || exit 99
+FAILED_LOG="$WORK_DIR/failed.log"
+SKIPPED_LOG="$WORK_DIR/skipped.log"
+: >"$FAILED_LOG"
+: >"$SKIPPED_LOG"
+trap 'rm -rf "$WORK_DIR"' EXIT HUP INT TERM
 
 if [ -n "${GEIST_EXPECTED_SKIPS:-}" ] && [ ! -r "$GEIST_EXPECTED_SKIPS" ]; then
     echo "ERROR: GEIST_EXPECTED_SKIPS='$GEIST_EXPECTED_SKIPS' is not readable." >&2
     exit 99
 fi
 
-# ANSI colors (optional — tee-friendly).
-if [ -t 1 ]; then
-    esc=$(printf '\033')
-    C_GREEN="${esc}[32m"
-    C_RED="${esc}[31m"
-    C_YELLOW="${esc}[33m"
-    C_GREY="${esc}[90m"
-    C_RESET="${esc}[0m"
-else
-    C_GREEN=
-    C_RED=
-    C_YELLOW=
-    C_GREY=
-    C_RESET=
-fi
-
 START_TIME=$(date +%s)
 TOTAL=$#
+JOBS=${GEIST_TEST_JOBS:-1}
+case $JOBS in
+    '' | *[!0-9]* | 0) echo "ERROR: GEIST_TEST_JOBS='$JOBS' is not a positive integer." >&2; exit 99 ;;
+esac
+
+if [ "$JOBS" -gt 1 ]; then
+    # GEIST_TEST_JOBS=N runs N tests at a time, verdicts in completion order.
+    # The tests start in suite order, except that GEIST_TEST_FIRST (test names,
+    # space-separated) start first: the longest ones, so the run does not wait
+    # on one that started last. Only for suites whose tests share no fixed
+    # file names; gcov merges each process's counters into the .gcda files
+    # under a file lock, so a coverage build may run in parallel too.
+    {
+        for f in ${GEIST_TEST_FIRST:-}; do
+            for bin in "$@"; do
+                [ "${bin##*/}" = "$f" ] && printf '%s\n' "$bin"
+            done
+        done
+        for bin in "$@"; do
+            case " ${GEIST_TEST_FIRST:-} " in
+                *" ${bin##*/} "*) ;;
+                *) printf '%s\n' "$bin" ;;
+            esac
+        done
+    } | xargs -I {} -P "$JOBS" sh "$0" --run-one "$WORK_DIR" {}
+else
+    for bin in "$@"; do
+        run_one "$bin" "$WORK_DIR"
+    done
+fi
 
 for bin in "$@"; do
     name=$(basename "$bin")
-    out=$("$bin" 2>&1)
-    rc=$?
-
-    if [ "${GEIST_TEST_VERBOSE:-0}" = "1" ] && [ -n "$out" ]; then
-        printf '\n--- %s ---\n' "$name"
-        echo "$out" | sed 's/^/  /'
-    fi
-
-    case $rc in
-        0)
-            PASS=$((PASS + 1))
-            # A passing test's summary is its last line, by convention across
-            # this suite. Showing it keeps the table one-line-per-test while
-            # the numbers stay visible; GEIST_TEST_VERBOSE=1 shows the rest.
-            summary=$(echo "$out" | grep -v '^[[:space:]]*$' | tail -1)
-            if [ -n "$summary" ]; then
-                printf "  ${C_GREEN}PASS${C_RESET}  %s ${C_GREY}(%s)${C_RESET}\n" "$name" "$summary"
-            else
-                printf "  ${C_GREEN}PASS${C_RESET}  %s\n" "$name"
-            fi
-            ;;
-        77)
-            SKIP=$((SKIP + 1))
-            reason=$(echo "$out" | grep -v '^[[:space:]]*$' | head -1)
-            printf '%s\t%s\n' "$name" "$reason" >>"$SKIPPED_LOG"
-            if [ -n "${GEIST_EXPECTED_SKIPS:-}" ] && ! grep -qx "$name" "$GEIST_EXPECTED_SKIPS"; then
-                SKIP=$((SKIP - 1))
-                FAIL=$((FAIL + 1))
-                { printf '\n--- %s ---\n' "$name"
-                  echo "  UNEXPECTED SKIP: not listed in $GEIST_EXPECTED_SKIPS"
-                  echo "$out" | sed 's/^/  /'; } >>"$FAILED_LOG"
-                printf "  ${C_RED}FAIL${C_RESET}  %s ${C_GREY}(unexpected skip: %s)${C_RESET}\n" "$name" "$reason"
-            else
-                printf "  ${C_YELLOW}SKIP${C_RESET}  %s ${C_GREY}(%s)${C_RESET}\n" "$name" "$reason"
-            fi
-            ;;
-        99)
-            ERROR=$((ERROR + 1))
-            { printf '\n--- %s ---\n' "$name"; echo "$out" | sed 's/^/  /'; } >>"$FAILED_LOG"
-            printf "  ${C_RED}ERR${C_RESET}   %s\n" "$name"
-            ;;
+    verdict=$(cat "$WORK_DIR/$name.verdict" 2>/dev/null)
+    case $verdict in
+        PASS) PASS=$((PASS + 1)) ;;
+        SKIP) SKIP=$((SKIP + 1)) ;;
+        FAIL) FAIL=$((FAIL + 1)) ;;
+        ERR) ERROR=$((ERROR + 1)) ;;
         *)
-            FAIL=$((FAIL + 1))
-            { printf '\n--- %s ---\n' "$name"; echo "$out" | sed 's/^/  /'; } >>"$FAILED_LOG"
-            printf "  ${C_RED}FAIL${C_RESET}  %s ${C_GREY}(exit=%d)${C_RESET}\n" "$name" "$rc"
+            # The runner itself died before recording a verdict.
+            ERROR=$((ERROR + 1))
+            printf '\n--- %s ---\n  no verdict recorded (runner died)\n' "$name" >>"$FAILED_LOG"
             ;;
     esac
+    [ -f "$WORK_DIR/$name.failed" ] && cat "$WORK_DIR/$name.failed" >>"$FAILED_LOG"
+    [ -f "$WORK_DIR/$name.skipped" ] && cat "$WORK_DIR/$name.skipped" >>"$SKIPPED_LOG"
 done
 
 END_TIME=$(date +%s)

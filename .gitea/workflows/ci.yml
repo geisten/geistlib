@@ -1307,10 +1307,11 @@ jobs:
   coverage:
     name: coverage ratchet (Linux x86_64, unit + int)
     # Nightly, on dispatch and for a pull request labelled ci:full; not on
-    # main pushes. The instrumented run takes ~135-150 min of one of desktop-ci's
+    # main pushes. The instrumented run took ~135-150 min of one of desktop-ci's
     # four slots, and with one per merge it was the biggest CI bottleneck
-    # (2026-10-21: three at once, 74 % runner load). A coverage drop is
-    # caught by the next nightly run.
+    # (2026-10-21: three at once, 74 % runner load); since #483 it runs six
+    # tests at a time, ~30 min. A coverage drop is caught by the next
+    # nightly run.
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.label == 'true')
     runs-on: ubuntu-24.04
@@ -1319,9 +1320,9 @@ jobs:
     # numbers only by noise, so the measurement is unit + int.
     timeout-minutes: 180
     env:
-      # gcc's coverage counters are shared by all threads: on the 16-core
-      # desktop 8 OpenMP threads made one int test take 32 minutes. Coverage
-      # does not depend on the thread count, only the run time does.
+      # gcc's coverage counters are atomic and shared by all threads, so
+      # more OpenMP threads contend on them. Coverage does not depend on
+      # the thread count, only the run time does.
       OMP_NUM_THREADS: "4"
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 500M
@@ -1396,7 +1397,29 @@ jobs:
           # instrumented build stops paying 24 min for 4x32x2 parallel
           # decodes (races are the TSan job's business, not this one's).
           GEIST_TEST_LIGHT: 1
+          # Six test binaries at a time (#483). The heavy int tests run the
+          # model on cpu_scalar, one core each, so the serial suite sat at
+          # ~1 core for over two hours, most of it in four tests. The
+          # --coverage build's counters are atomic (-fopenmp implies
+          # -pthread, hence -fprofile-update=prefer-atomic), which makes
+          # them exact under threads and the code ~9x slower; single counters
+          # would be fast but race, and moved branch numbers between runs.
+          # libgcov merges each process's counters into the shared .gcda
+          # files under a file lock, so a parallel run measures what a
+          # serial one does. The longest tests start first, else the run
+          # waits on one that started last.
+          GEIST_TEST_JOBS: 6
+          GEIST_TEST_FIRST: >-
+            test_speculative_loop_int test_audio_stream_session_int
+            test_speculative_int4_int test_speculative_int4_norot_int
+            test_deltanet_chunk_int test_session_sampling_int
+            test_kv_quality_int test_speculative_primitives_int
+            test_pin_prefix_int test_model_modalities_int
+            test_layer_split_int test_prefill_determinism_int
+            test_attention_f32_unit test_arch_gate_unit
+            test_audio_stream_parity_unit
         run: |
+          make -j4 MODE=cov TARGET=linux CC="ccache gcc-14" bin
           make MODE=cov TARGET=linux CC="ccache gcc-14" test-unit
           make MODE=cov TARGET=linux CC="ccache gcc-14" test-int
       - name: Coverage report + gate
