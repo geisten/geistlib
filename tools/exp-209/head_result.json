@@ -1,0 +1,33 @@
+{
+ "chosen": {
+  "pca_k": 128,
+  "l2": 0.1,
+  "calibration_acc": 0.718,
+  "temperature": 0.5639155445560122
+ },
+ "test_n": 500,
+ "direct_scoring_acc": 0.678,
+ "direct_ece_after_temperature": 0.0381808204234103,
+ "head_acc": 0.718,
+ "head_ece_after_temperature": 0.049160064223574135,
+ "full_reasoning_cap8192_acc": 0.856,
+ "head_vs_full_reasoning": {
+  "gains": 24,
+  "losses": 93,
+  "difference_pp": -13.8,
+  "interval_pp": [
+   -19.92882264444847,
+   -7.444278890895525
+  ],
+  "noninferior": false
+ },
+ "head_vs_direct": {
+  "gains": 52,
+  "losses": 32,
+  "difference_pp": 4.0,
+  "interval_pp": [
+   -1.7491297175052574,
+   9.681435965790056
+  ]
+ }
+}
