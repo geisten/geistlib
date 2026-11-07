@@ -29,6 +29,11 @@
  * scale lets one outlier — Gemma's FFN activations have them — flatten the
  * resolution of every other element of the row.
  *
+ * Every kernel here rounds in one order (w8a8_block_step, w8a8_group_step),
+ * so a row gives the same bits alone (decode) and in a chunk (prefill), on
+ * either layout (#476): a last-bit difference there can move a following
+ * int8 activation quantization by a whole grid step.
+ *
  * The hot path is allocation-free. The caller owns every buffer.
  */
 #ifndef GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_W8A8_H
@@ -38,6 +43,7 @@
 #error "cpu_x86/kernel_w8a8.h is internal to the backend layer."
 #endif
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -49,6 +55,25 @@ constexpr size_t W8A8_ACT_GROUP_BLOCKS = 16;
 /* Activation scales per row of n_blocks blocks. */
 static inline size_t w8a8_act_groups(size_t n_blocks) {
     return (n_blocks + W8A8_ACT_GROUP_BLOCKS - 1) / W8A8_ACT_GROUP_BLOCKS;
+}
+
+/* The rounding order all W8A8 kernels share (#476). Block b of a group adds
+ * to the group's sum acc_g, starting from 0, in two fused steps,
+ *   acc_g = fma(w_scale, d_b, acc_g);  acc_g = fma(-w_offset, sum_a[b], acc_g);
+ * and a finished group adds to the row's sum, starting from 0, as
+ *   acc = fma(acc_g, act_scale, acc).
+ * The lane-parallel kernels (w8x8_gemm, w8x16_gemm) do exactly this per lane
+ * with _mm*_fmadd_ps / _mm*_fnmadd_ps; the one-row kernels call these two.
+ * Written as fmaf, -ffast-math cannot reassociate or split them, so one-row
+ * and many-row results agree bit for bit in every build mode. d_b and
+ * sum_a[b] (|d_b| <= 16 * 255 * 127) convert to float exactly. */
+static inline float
+w8a8_block_step(float acc_g, float w_scale, float w_offset, int32_t d_b, int32_t sum_a_b) {
+    return fmaf(-w_offset, (float) sum_a_b, fmaf(w_scale, (float) d_b, acc_g));
+}
+
+static inline float w8a8_group_step(float acc, float acc_g, float act_scale) {
+    return fmaf(acc_g, act_scale, acc);
 }
 
 /* Quantize one fp32 activation row to symmetric int8 with one scale per

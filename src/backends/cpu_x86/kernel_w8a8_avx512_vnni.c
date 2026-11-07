@@ -52,9 +52,9 @@
             const int32_t d_b0 = _mm_cvtsi128_si32(sum0);
             const int32_t d_b1 = _mm_cvtsi128_si32(sum1);
 
-            acc_g += w_scales[b] * (float) d_b0 - w_offsets[b] * (float) sum_a_per_block[b];
-            acc_g += w_scales[b + 1] * (float) d_b1 -
-                     w_offsets[b + 1] * (float) sum_a_per_block[b + 1];
+            acc_g = w8a8_block_step(acc_g, w_scales[b], w_offsets[b], d_b0, sum_a_per_block[b]);
+            acc_g = w8a8_block_step(
+                    acc_g, w_scales[b + 1], w_offsets[b + 1], d_b1, sum_a_per_block[b + 1]);
         }
 
         /* Tail: one 16-elem block. */
@@ -66,9 +66,9 @@
             __m128i       s      = _mm_hadd_epi32(dot4, dot4);
             s                    = _mm_hadd_epi32(s, s);
             const int32_t d_b    = _mm_cvtsi128_si32(s);
-            acc_g += w_scales[b] * (float) d_b - w_offsets[b] * (float) sum_a_per_block[b];
+            acc_g = w8a8_block_step(acc_g, w_scales[b], w_offsets[b], d_b, sum_a_per_block[b]);
         }
-        acc += act_scales[g0 / W8A8_ACT_GROUP_BLOCKS] * acc_g;
+        acc = w8a8_group_step(acc, acc_g, act_scales[g0 / W8A8_ACT_GROUP_BLOCKS]);
     }
     return acc;
 }
@@ -150,8 +150,8 @@ static void w8a8_gemm_rows(void *ctx, size_t r0, size_t r1) {
                         const __m256i dot8 = _mm256_dpbusd_epi32(_mm256_setzero_si256(), w2, a2);
                         int32_t       d0, d1;
                         reduce_dot8(dot8, &d0, &d1);
-                        acc_g[jj] += ws0 * (float) d0 - wo0 * (float) sa[b];
-                        acc_g[jj] += ws1 * (float) d1 - wo1 * (float) sa[b + 1];
+                        acc_g[jj] = w8a8_block_step(acc_g[jj], ws0, wo0, d0, sa[b]);
+                        acc_g[jj] = w8a8_block_step(acc_g[jj], ws1, wo1, d1, sa[b + 1]);
                     }
                 }
                 /* Odd-block tail (Q6_K never hits this — n_blocks is always even). */
@@ -167,12 +167,14 @@ static void w8a8_gemm_rows(void *ctx, size_t r0, size_t r1) {
                         const __m128i dot4 = _mm_dpbusd_epi32(_mm_setzero_si128(), w1, a1);
                         __m128i       s    = _mm_hadd_epi32(dot4, dot4);
                         s                  = _mm_hadd_epi32(s, s);
-                        acc_g[jj] += ws0 * (float) _mm_cvtsi128_si32(s) - wo0 * (float) sa[b];
+                        acc_g[jj] =
+                                w8a8_block_step(acc_g[jj], ws0, wo0, _mm_cvtsi128_si32(s), sa[b]);
                     }
                 }
                 const size_t g = g0 / W8A8_ACT_GROUP_BLOCKS;
                 for (size_t jj = 0; jj < jt; jj++) {
-                    acc[jj] += act_scales[(j0 + jj) * n_groups + g] * acc_g[jj];
+                    acc[jj] = w8a8_group_step(
+                            acc[jj], acc_g[jj], act_scales[(j0 + jj) * n_groups + g]);
                 }
             }
 
@@ -268,6 +270,7 @@ static void w8x8_groups(void *ctx, size_t g0, size_t g1) {
                     const __m256 dotf = _mm256_cvtepi32_ps(iacc);
                     const __m256 sa_b =
                             _mm256_set1_ps((float) sum_a_per_block[(j0 + jj) * n_blocks + b]);
+                    /* w8a8_block_step per lane: the one-row kernels' order. */
                     acc_g[jj] = _mm256_fmadd_ps(sc8, dotf, acc_g[jj]);
                     acc_g[jj] = _mm256_fnmadd_ps(of8, sa_b, acc_g[jj]);
                 }
@@ -371,6 +374,7 @@ static void w8x16_groups(void *ctx, size_t g0, size_t g1) {
                     const __m512 df = _mm512_cvtepi32_ps(d);
                     const __m512 sa_b =
                             _mm512_set1_ps((float) sum_a_per_block[(j0 + jj) * n_blocks + b]);
+                    /* w8a8_block_step per lane: the one-row kernels' order. */
                     acc_g[jj] = _mm512_fmadd_ps(sc16, df, acc_g[jj]);
                     acc_g[jj] = _mm512_fnmadd_ps(of16, sa_b, acc_g[jj]);
                 }

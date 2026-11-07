@@ -425,39 +425,19 @@ static double cosine(const float a[static VOCAB], const float b[static VOCAB]) {
 }
 
 /* Chunked prefill and one token at a time agree within 1e-4 of the
- * logits' scale (ROWS_TOL) on every backend, fixture and KV cache but the
- * wide fixture (check_wide) on a backend with int8 activations. cpu_x86
- * runs these F32 weights as W8A8, and its one-row and many-row kernels
- * (w8a8_gemv, w8x8/w8x16_gemm) sum the blocks in another order: q differs
- * in the last bit. The 512-wide int8 input of each head's v_b then lands
- * some value on a rounding edge, a step of the int8 grid, in a chunked or
- * a single run: 1e-2 of the scale on cpu_x86, in the release, ASan and
- * coverage builds differently (2.4e-7, 0 and 7e-3 with the FP32 cache;
- * the narrow fixtures stay within 2.4e-7 in all three). There the bound is
- * twice how far the same run sits from `noise_ref`, measured alongside it:
- * cpu_scalar's FP32 logits for the FP32 cache (the backend's W8A8 noise,
- * cpu_x86 1.5e-2), the backend's own FP32 logits for the F16 cache (the
- * F16 cache's effect, cpu_x86 1.8e-2). A backend with F32 activations sits
- * within 5e-7 of either and keeps ROWS_TOL. */
+ * logits' scale on every backend, fixture and KV cache, the wide fixture's
+ * included: cpu_x86 runs these F32 weights as W8A8, and its one-row and
+ * many-row kernels give a row the same bits (#476), so no last-bit
+ * difference reaches the int8 grid of a following quantization (it did,
+ * 7e-3 of the scale, before; #475). */
 static constexpr double ROWS_TOL = 1e-4;
 
 /* The fixture's logits on backend `name` with KV cache `kv` (GEIST_KV_AUTO:
  * the session's default); -1: no such backend, or a GPU refusing the split
- * layout (#376), as it must. Chunked and single agree within ROWS_TOL, or
- * with `noise_ref` (wide fixture only, see ROWS_TOL) within twice the
- * run's distance from it. */
+ * layout (#376), as it must. */
 static int check_backend(const char                *name,
                          const struct mf_deepseek2 *g,
                          enum geist_kv_mode         kv,
-                         const float               *noise_ref,
-                         float                      out[static VOCAB]);
-
-static double rel_l2_f(const float a[static VOCAB], const float b[static VOCAB]);
-
-static int check_backend(const char                *name,
-                         const struct mf_deepseek2 *g,
-                         enum geist_kv_mode         kv,
-                         const float               *noise_ref,
                          float                      out[static VOCAB]) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
@@ -491,14 +471,8 @@ static int check_backend(const char                *name,
             scale = fmax(scale, fabs(chunked[i]));
             diff  = fmax(diff, fabs((double) chunked[i] - single[i]));
         }
-        const double noise = noise_ref != nullptr ? rel_l2_f(chunked, noise_ref) : 0.0;
-        const double tol   = fmax(ROWS_TOL, 2.0 * noise);
-        printf("%s: chunks vs one at a time: max|d| %.3g of scale %.3g (bound %.3g)\n",
-               name,
-               diff,
-               scale,
-               tol * scale);
-        fails += geist_expect(diff <= tol * scale, "chunks and single tokens agree");
+        printf("%s: chunks vs one at a time: max|d| %.3g of scale %.3g\n", name, diff, scale);
+        fails += geist_expect(diff <= ROWS_TOL * scale, "chunks and single tokens agree");
         fails += geist_expect(memcmp(chunked, again, sizeof chunked) == 0,
                               "a reset session reproduces its logits bit for bit");
         memcpy(out, chunked, sizeof chunked);
@@ -536,7 +510,7 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
     ref_forward(&rm, g, (struct knobs) {0}, ref);
     int       fails = 0;
     float     scalar[VOCAB], other[VOCAB];
-    const int sc = check_backend("cpu_scalar", g, OPTS.kv_mode, nullptr, scalar);
+    const int sc = check_backend("cpu_scalar", g, OPTS.kv_mode, scalar);
     fails += sc != 0 ? geist_expect(false, "cpu_scalar runs the fixture") : 0;
     if (sc == 0 && scalar_out != nullptr)
         memcpy(scalar_out, scalar, sizeof scalar);
@@ -568,9 +542,7 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
     free(b.b);
     const char *const more[] = {"cpu_neon", "cpu_x86", "metal", "vulkan"};
     for (size_t i = 0; i < sizeof more / sizeof more[0]; i++) {
-        const bool wide = g->kv_rank == RANK_WIDE;
-        const int  r =
-                check_backend(more[i], g, OPTS.kv_mode, wide && sc == 0 ? scalar : nullptr, other);
+        const int r = check_backend(more[i], g, OPTS.kv_mode, other);
         if (r < 0)
             continue;
         fails += r;
@@ -603,31 +575,32 @@ static int check_split(const char *what, const struct mf_deepseek2 *g) {
  * past the quantized caches; the default cache is FP32 (bit for bit the
  * FP32 request's logits), an INT8 request gets the F16 cache. The latent is
  * a multiple of 16: cpu_x86 runs F32 weights of such a width as W8A8 in
- * both its one-row and its many-row kernel, and others (520 did) on two
- * F32 kernels of different summation order. */
+ * both its one-row and its many-row kernel (one rounding order, #476), and
+ * others (520 did) on two F32 kernels of different summation order. */
 static int check_wide(void) {
     struct mf_deepseek2 g = split_of(LITE);
     g.kv_rank             = RANK_WIDE;
     int fails = check_shape("V2-Lite shape, split, 512-dim latent (520-dim KV head)", &g, nullptr);
     static float f32[VOCAB], int8[VOCAB], dflt[VOCAB], scalar[VOCAB];
     const char  *cpus[] = {"cpu_scalar", "cpu_neon", "cpu_x86"};
-    if (check_backend("cpu_scalar", &g, GEIST_KV_FP32, nullptr, scalar) != 0)
+    if (check_backend("cpu_scalar", &g, GEIST_KV_FP32, scalar) != 0)
         return fails + geist_expect(false, "cpu_scalar runs the wide head");
     for (size_t i = 0; i < sizeof cpus / sizeof cpus[0]; i++) {
-        if (check_backend(cpus[i], &g, GEIST_KV_FP32, scalar, f32) != 0)
+        if (check_backend(cpus[i], &g, GEIST_KV_FP32, f32) != 0)
             continue;
-        fails += geist_expect(check_backend(cpus[i], &g, GEIST_KV_AUTO, scalar, dflt) == 0 &&
+        fails += geist_expect(check_backend(cpus[i], &g, GEIST_KV_AUTO, dflt) == 0 &&
                                       memcmp(dflt, f32, sizeof f32) == 0,
                               "a wide head's default KV cache is FP32");
-        /* The backend's W8A8 noise (ROWS_TOL): ~0 with F32 activations. */
+        /* The backend's int8-grid reach: ~0 with F32 activations. */
         const double grid = 2.0 * rel_l2_f(f32, scalar);
-        const int    r    = check_backend(cpus[i], &g, GEIST_KV_INT8, f32, int8);
+        const int    r    = check_backend(cpus[i], &g, GEIST_KV_INT8, int8);
         fails += geist_expect(r == 0, "an INT8 KV request runs the wide head");
         if (r == 0) {
             const double d = rel_l2_f(int8, f32);
             printf("%s INT8 request (F16 cache) vs FP32 KV: relative L2 %.3g\n", cpus[i], d);
             /* F16 against FP32: 1.4e-4 with F32 activations; on W8A8
-             * kernels the grid steps of ROWS_TOL (cpu_x86 1.8e-2). */
+             * kernels the F16 rounding moves int8 values by a grid step
+             * (cpu_x86 1.8e-2). */
             fails += geist_expect(d > 0.0 && d <= fmax(1e-3, grid),
                                   "the INT8 request gets the F16 cache");
         }
