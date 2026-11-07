@@ -460,6 +460,12 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
                                            .mm        = st->iq4nl_mm_pipeline,
                                            .n4_tile   = 8u,
                                            .gemm_only = true};
+    case GEIST_DTYPE_Q5_0:
+        /* #376: no tensor-API variant; the simdgroup GEMM serves M5/M6. */
+        return (struct metal_quant_pipes) {.n4        = st->q50_n4_pipeline,
+                                           .mm        = st->q50_mm_pipeline,
+                                           .n4_tile   = 8u,
+                                           .gemm_only = true};
     case GEIST_DTYPE_MXFP4:
         /* No tensor-API variant yet: the simdgroup GEMM serves M5/M6 too. */
         return (struct metal_quant_pipes) {.n4        = st->mx4_n4_pipeline,
@@ -508,7 +514,6 @@ metal_quant_pipes_for(const struct metal_state *st, enum geist_dtype dtype, uint
     case GEIST_DTYPE_BINARY:
     case GEIST_DTYPE_TERNARY:
     case GEIST_DTYPE_CUSTOM:
-    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_COUNT:
         break;
     }
@@ -2516,6 +2521,11 @@ constexpr int METAL_DECQ_MAX_GROUPS = 256;
     if ((q_off | k_off | v_off) % 4u != 0u) {
         block_pipeline = nullptr;
     }
+    /* The per-key kernels below stop at 512: the scalar kernel takes a
+     * wider head the block kernel cannot. */
+    if (block_pipeline == nullptr && head_dim > 512u) {
+        return GEIST_E_UNSUPPORTED;
+    }
     if (block_pipeline == nullptr) {
         quad_pipeline = nullptr;
     }
@@ -3600,7 +3610,7 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "metal attention: shape mismatch");
         return GEIST_E_INVALID_ARG;
     }
-    if (head_dim > 512u) {
+    if (head_dim > METAL_ATTN_HEAD_DIM_MAX) {
         geist_backend_set_error(
                 be, GEIST_E_UNSUPPORTED, "metal attention: head_dim exceeds shader limit");
         return GEIST_E_UNSUPPORTED;
@@ -3620,8 +3630,10 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         return s;
     }
     struct metal_state *st = be->state;
+    /* Past 512 (#376) only the 32-key-block kernel is built. */
     if (q_rows == 1u &&
-        (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr)) &&
+        (head_dim <= 256u || (head_dim <= 512u && st->attention_dec512_f16_pipeline != nullptr) ||
+         metal_dec_pipeline(st, head_dim, kv_is_f16, false) != nullptr) &&
         k_rows >= 32u && st->attention_dec_f16_pipeline != nullptr &&
         st->attention_dec_combine_pipeline != nullptr) {
         s = metal_attention_dec_kv(be,
@@ -4108,6 +4120,7 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_TQ2_0:
     case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_F32:
@@ -4146,7 +4159,6 @@ metal_linear_m1(const float *x, const struct geist_weight *w, struct geist_backe
     case GEIST_DTYPE_BINARY:
     case GEIST_DTYPE_TERNARY:
     case GEIST_DTYPE_CUSTOM:
-    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_COUNT:
         break;
     }
@@ -4616,6 +4628,10 @@ static const struct geist_backend_vtbl metal_vtbl =
 struct metal_moe_route_params {
     uint32_t n, k, norm, flag, ls, lo, io, wo, gate, hb, bo;
 };
+struct metal_moe_route_g_params {
+    uint32_t n, k, norm, flag, ls, lo, io, wo, gate, hb, bo, hs, so, ng, tg;
+    float    scale;
+};
 struct metal_moe_ids_params {
     uint32_t estride, per_slot, k, io;
 };
@@ -4646,6 +4662,26 @@ static bool metal_bias_of(const struct geist_tensor *b, size_t n, bool *has, siz
     return len >= n && o <= UINT32_MAX;
 }
 
+/* Whether moe_topk_g, not moe_topk, runs router `a`: DeepSeek's options
+ * (#376). */
+static bool metal_route_general(const struct geist_moe_route_args *a) {
+    return a->gating == GEIST_MOE_ROUTE_SIGMOID || a->sel_bias != nullptr || a->n_group > 1 ||
+           (a->w_scale != 0.0f && a->w_scale != 1.0f);
+}
+
+/* The routers metal_moe_route runs: its gatings, and moe_topk_g's limits
+ * (threadgroup arrays of 512 experts, 256 groups of at least two). */
+static bool metal_route_ok(const struct geist_moe_route_args *a) {
+    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX && a->gating != GEIST_MOE_ROUTE_SOFTMAX_WEIGHT &&
+        a->gating != GEIST_MOE_ROUTE_SIGMOID)
+        return false;
+    if (!metal_route_general(a))
+        return true;
+    return a->n <= 512 && a->k <= a->n &&
+           (a->n_group <= 1 || (a->n % a->n_group == 0 && a->n / a->n_group >= 2 &&
+                                a->topk_group >= 1 && a->topk_group <= a->n_group));
+}
+
 [[nodiscard]] static enum geist_status metal_moe_route(struct geist_backend              *be,
                                                        const struct geist_moe_route_args *a,
                                                        const struct geist_tensor         *logits,
@@ -4656,11 +4692,11 @@ static bool metal_bias_of(const struct geist_tensor *b, size_t n, bool *has, siz
         ids == nullptr || w == nullptr)
         return GEIST_E_INVALID_ARG;
     const size_t m = a->m, n = a->n, k = a->k;
-    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX && a->gating != GEIST_MOE_ROUTE_SOFTMAX_WEIGHT)
+    if (!metal_route_ok(a))
         return GEIST_E_UNSUPPORTED;
-    size_t lr = 0, lc = 0, lo = 0, ls = 0, wn = 0, wo = 0, nk = 0, need = 0, bo = 0;
-    bool   hb = false;
-    if (!metal_bias_of(a->bias, n, &hb, &bo) ||
+    size_t lr = 0, lc = 0, lo = 0, ls = 0, wn = 0, wo = 0, nk = 0, need = 0, bo = 0, so = 0;
+    bool   hb = false, hs = false;
+    if (!metal_bias_of(a->bias, n, &hb, &bo) || !metal_bias_of(a->sel_bias, n, &hs, &so) ||
         !metal_tensor_is_f32_matrix(logits, &lr, &lc, &lo, &ls) ||
         !metal_tensor_is_f32_vector(w, &wn, &wo) || m == 0 || k == 0 || k > n || lr < m || lc < n ||
         ckd_mul(&nk, m, k) || wn < nk || ids->owner != be->state || flag_offset % 4u != 0u ||
@@ -4688,14 +4724,39 @@ static bool metal_bias_of(const struct geist_tensor *b, size_t n, bool *has, siz
     struct metal_encoder_h                         *enc  = metal_op_begin(be, "MoE route", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
-    metal_msg_send_set_pipeline(st, enc, st->moe_topk_pipeline);
+    const bool general = metal_route_general(a);
+    metal_msg_send_set_pipeline(st, enc, general ? st->moe_topk_g_pipeline : st->moe_topk_pipeline);
     metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, logits->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 1);
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 2);
-    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 3);
-    /* No bias: the logits stand in for the unread binding. */
-    const struct geist_tensor *bt = hb ? a->bias : logits;
+    if (general) {
+        const struct metal_moe_route_g_params g = {
+                .n     = q.n,
+                .k     = q.k,
+                .norm  = q.norm,
+                .flag  = q.flag,
+                .ls    = q.ls,
+                .lo    = q.lo,
+                .wo    = q.wo,
+                .gate  = a->gating == GEIST_MOE_ROUTE_SIGMOID          ? 2u
+                         : a->gating == GEIST_MOE_ROUTE_SOFTMAX_WEIGHT ? 1u
+                                                                       : 0u,
+                .hb    = q.hb,
+                .bo    = q.bo,
+                .hs    = hs ? 1u : 0u,
+                .so    = (uint32_t) so,
+                .ng    = a->n_group > 1 ? (uint32_t) a->n_group : 0u,
+                .tg    = (uint32_t) a->topk_group,
+                .scale = a->w_scale};
+        metal_msg_send_set_bytes(st, enc, &g, sizeof g, 3);
+    } else {
+        metal_msg_send_set_bytes(st, enc, &q, sizeof q, 3);
+    }
+    /* No bias: the logits stand in for the unread bindings. */
+    const struct geist_tensor *bt = hb ? a->bias : logits, *sbt = hs ? a->sel_bias : logits;
     metal_msg_send_set_buffer(st, enc, bt->buffer->buffer, bt->buffer->base_off, 4);
+    if (general)
+        metal_msg_send_set_buffer(st, enc, sbt->buffer->buffer, sbt->buffer->base_off, 5);
     metal_msg_send_dispatch(st,
                             enc,
                             (struct metal_size) {.width = m, .height = 1, .depth = 1},
@@ -4726,6 +4787,9 @@ static bool metal_moe_ids_pipe(const struct metal_state *st,
     case GEIST_DTYPE_MXFP4:
         *pipe = st->moe_mv_mx4_pipeline, *rows_per_group = 8u, *block = 32u;
         return true;
+    case GEIST_DTYPE_Q5_0:
+        *pipe = st->moe_mv_q50_pipeline, *rows_per_group = 8u, *block = 32u;
+        return true;
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_I8:
@@ -4745,7 +4809,6 @@ static bool metal_moe_ids_pipe(const struct metal_state *st,
     case GEIST_DTYPE_TERNARY:
     case GEIST_DTYPE_CUSTOM:
     case GEIST_DTYPE_PQ2_0:
-    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_COUNT:
         break;
     }
@@ -4764,7 +4827,7 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         *off_bytes    = o * sizeof(float);
         return ok && r == rows && c == cols;
     }
-    if (dtype == GEIST_DTYPE_MXFP4) { /* no metal_mv_weight_of case: a GEMM-only dtype */
+    if (dtype == GEIST_DTYPE_MXFP4 || dtype == GEIST_DTYPE_Q5_0) { /* GEMM-only: no mv_weight */
         size_t r = 0, c = 0;
         return metal_tensor_is_quant_matrix(t, dtype, &r, &c, off_bytes) && r == rows &&
                c == cols && *off_bytes <= UINT32_MAX;
@@ -4802,9 +4865,11 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     const size_t ni = (size_t) w0->n_in, no = (size_t) w0->n_out;
     size_t xr = 0, xc = 0, xo = 0, xs = 0, yr = 0, yc = 0, yo = 0, ys = 0, nk = 0, rows = 0, wo = 0,
            need = 0;
+    /* x and y may be row views with a stride (absorbed MLA's per-head
+     * slices of q and of the attention output, #376). */
     if (ckd_mul(&nk, m, k) || ckd_mul(&rows, n, no) ||
-        !metal_tensor_is_f32_matrix(x, &xr, &xc, &xo, &xs) ||
-        !metal_tensor_is_f32_matrix(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
+        !metal_tensor_is_f32_rows(x, &xr, &xc, &xo, &xs) ||
+        !metal_tensor_is_f32_rows(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
         xc != ni || yr < nk || yc != no || ni % block != 0u ||
         !metal_moe_experts_offset(experts, dtype, rows, ni, &wo) || ids->owner != be->state ||
         ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||
@@ -4988,7 +5053,8 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
 static bool metal_moe_device_supported(struct geist_backend            *be,
                                        const struct geist_fusion_query *q) {
     if (q->m == 0 || q->m > UINT32_MAX || q->gate_w == nullptr || q->up_w == nullptr ||
-        q->down_w == nullptr || metal_ensure(be, METAL_TAB_MOE) != GEIST_OK)
+        q->down_w == nullptr || (q->moe_route != nullptr && !metal_route_ok(q->moe_route)) ||
+        metal_ensure(be, METAL_TAB_MOE) != GEIST_OK)
         return false;
     const struct geist_weight *ws[] = {q->gate_w, q->up_w, q->down_w};
     for (size_t i = 0; i < 3; i++) {

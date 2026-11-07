@@ -31,10 +31,14 @@
  *     cpu_scalar (cpu_neon and Metal within 1e-3, others cosine 0.999);
  *   - split (absorbed, #375), both shapes: the same within 1e-5 of the
  *     reference, and within 1e-5 of the unsplit file's logits on
- *     cpu_scalar; a GPU backend refuses the layout (#376). A third split
- *     shape with a 512-dim latent (a 520-dim KV head, past the quantized
- *     caches' 512) runs on every CPU backend, an INT8 KV request getting
- *     the F16 cache instead.
+ *     cpu_scalar. A third split shape with a 512-dim latent (a 520-dim KV
+ *     head, past the quantized caches' 512) runs on every CPU backend, an
+ *     INT8 KV request getting the F16 cache instead;
+ *   - Metal (#376), every shape: the experts on the GPU (dense lead layer,
+ *     DeepSeek's router on the device) and the latent attention on the
+ *     device, within 1e-5 of the double reference and of its own run with
+ *     the experts on the CPU (GEIST_MOE_HOT=0). A GPU without device MLA
+ *     (Vulkan) refuses the split layout, saying so.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -433,8 +437,8 @@ static double cosine(const float a[static VOCAB], const float b[static VOCAB]) {
 static constexpr double ROWS_TOL = 1e-4;
 
 /* The fixture's logits on backend `name` with KV cache `kv` (GEIST_KV_AUTO:
- * the session's default); -1: no such backend, or a GPU refusing the split
- * layout (#376), as it must. */
+ * the session's default); -1: no such backend, or a GPU without device MLA
+ * refusing the split layout (#376), as it must. */
 static int check_backend(const char                *name,
                          const struct mf_deepseek2 *g,
                          enum geist_kv_mode         kv,
@@ -452,7 +456,8 @@ static int check_backend(const char                *name,
     struct geist_session_opts o = OPTS;
     o.kv_mode                   = kv;
     const bool gpu              = strncmp(name, "cpu_", 4) != 0;
-    if (geist_model_load_from_memory(b.b, b.n, be, &m) != GEIST_OK && g->split && gpu) {
+    if (geist_model_load_from_memory(b.b, b.n, be, &m) != GEIST_OK && g->split && gpu &&
+        strcmp(name, "metal") != 0) {
         const char *e = geist_backend_errmsg(be);
         printf("%s refuses the split layout: %s\n", name, e != nullptr ? e : "?");
         fails = geist_expect(e != nullptr && strstr(e, "absorbed") != nullptr,
@@ -552,6 +557,23 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
             const bool exact = strcmp(more[i], "cpu_neon") == 0 || strcmp(more[i], "metal") == 0;
             fails += geist_expect(exact ? d <= 1e-3 : c >= 0.999,
                                   "a backend matches cpu_scalar within its tolerance");
+        }
+        /* #376: Metal's GPU experts and device MLA against the reference
+         * and against its experts on the CPU. */
+        if (r == 0 && strcmp(more[i], "metal") == 0) {
+            static float cpu_exp[VOCAB];
+            const double dr = rel_l2_d(other, ref);
+            printf("metal vs the double reference: relative L2 %.3g\n", dr);
+            fails += geist_expect(dr <= 1e-5, "metal matches the reference within 1e-5");
+            setenv("GEIST_MOE_HOT", "0", 1);
+            const int rc = check_backend("metal", g, OPTS.kv_mode, cpu_exp);
+            unsetenv("GEIST_MOE_HOT");
+            fails += geist_expect(rc == 0, "metal runs with its experts on the CPU");
+            if (rc == 0) {
+                const double dc = rel_l2_f(other, cpu_exp);
+                printf("metal, experts on the GPU vs on the CPU: relative L2 %.3g\n", dc);
+                fails += geist_expect(dc <= 1e-5, "the GPU experts match the CPU experts");
+            }
         }
     }
     return fails;

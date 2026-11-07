@@ -355,6 +355,9 @@ struct geist_fusion_query {
     size_t dn_head_k;
     size_t dn_head_v;
     size_t dn_conv_kernel;
+    /* moe_device (#376): the router the device route runs (its m is
+     * ignored), or nullptr for the plain softmax router. */
+    const struct geist_moe_route_args *moe_route;
 };
 
 /* Complete Gated-DeltaNet mixer after its four input projections. All
@@ -472,27 +475,46 @@ struct geist_hadamard_args {
 
 /* How fused->moe_route turns a row of router logits into weights (#373),
  * llama.cpp's expert_gating_func. The selection is the k largest (biased)
- * logits in both.
+ * logits in all three.
  *   SOFTMAX         the selected ones' softmax probabilities over all n,
  *                   renormalised over the k when norm.
  *   SOFTMAX_WEIGHT  the softmax over the k selected logits alone (GPT-OSS).
+ *   SIGMOID         the selected ones' sigmoid(logit) (DeepSeek-V3, #376),
+ *                   renormalised over the k when norm.
  * @stability EXPERIMENTAL */
 enum geist_moe_route_gating : uint32_t {
     GEIST_MOE_ROUTE_SOFTMAX        = 0,
     GEIST_MOE_ROUTE_SOFTMAX_WEIGHT = 1,
+    GEIST_MOE_ROUTE_SIGMOID        = 2,
 };
 static_assert(sizeof(enum geist_moe_route_gating) == sizeof(uint32_t));
 
 /* The router fused->moe_route runs: m rows of n logits, k picks per row.
  * bias, when not nullptr, is F32 DENSE [n], added to every row's logits
- * before anything else reads them (GPT-OSS's ffn_gate_inp.bias). A backend
- * returns GEIST_E_UNSUPPORTED for a gating or bias it does not run.
- * @stability EXPERIMENTAL */
+ * before anything else reads them (GPT-OSS's ffn_gate_inp.bias).
+ *
+ * DeepSeek-V3's router (#376), in llama.cpp's build_moe_ffn order (the
+ * host's moe_route): the scores are the gating's (softmax over all n, the
+ * sigmoid, or the logits for SOFTMAX_WEIGHT); sel_bias (nullable, F32
+ * DENSE [n], exp_probs_b) is added to them for the selection alone; with
+ * n_group > 1 the n experts form n_group equal groups, a group scores the
+ * sum of its two best selection scores and only the topk_group best groups
+ * stay eligible; the k best eligible selection scores are picked (ties:
+ * the lower id; groups too). Their weights are the unbiased scores (the
+ * softmax over the k for SOFTMAX_WEIGHT), divided by their sum, clamped
+ * below at 2^-14, when norm, then times w_scale (0: 1). Without sel_bias,
+ * groups and a scale this is the selection and weights above.
+ *
+ * A backend returns GEIST_E_UNSUPPORTED for a gating, bias or option it
+ * does not run. @stability EXPERIMENTAL */
 struct geist_moe_route_args {
     size_t                       m, n, k;
     enum geist_moe_route_gating  gating;
     bool                         norm;
     const struct geist_tensor   *bias;
+    const struct geist_tensor   *sel_bias;
+    float                        w_scale;
+    size_t                       n_group, topk_group;
 };
 
 /* The gated linear unit fused->glu runs (#373): a = x + x_bias, b = z +
@@ -950,7 +972,8 @@ struct geist_backend_fused {
      * (x_per_slot) or s / k. `experts` holds the n experts' weights back to
      * back -- expert e's [n_out, n_in] from byte e * w0->raw_nbytes of it,
      * each laid out as w0 (expert 0's weight, resolved here) -- x is F32
-     * [m or m * k, n_in], y F32 [m * k, n_out].
+     * [m or m * k, n_in], y F32 [m * k, n_out], each with a row stride of
+     * at least its width (#376: per-head slices of a wider row).
      *
      * moe_weighted_sum: out[t][c] = add[t][c] + sum_{j < k} w[t * k + j] *
      * (y[t * k + j][c] + bias[ids[t * k + j]][c]) for t in [0, m), c in
@@ -958,9 +981,10 @@ struct geist_backend_fused {
      * out F32 [m, d]; out may alias add. bias (the experts' output biases,
      * F32 DENSE [n, d]) and ids may be nullptr: no bias.
      *
-     * Plan-bound: supported(GEIST_FUSED_MOE_DEVICE) with m the most tokens
-     * and gate_w / up_w / down_w expert 0's weights answers for all three.
-     * nullptr = the host routes. */
+     * Plan-bound: supported(GEIST_FUSED_MOE_DEVICE) with m the most tokens,
+     * gate_w / up_w / down_w expert 0's weights and moe_route the router
+     * (nullptr: plain softmax) answers for all three. nullptr = the host
+     * routes. */
     enum geist_status (*moe_route)(struct geist_backend              *be,
                                    const struct geist_moe_route_args *a,
                                    const struct geist_tensor         *logits,

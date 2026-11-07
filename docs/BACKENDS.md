@@ -17,7 +17,7 @@ When `"auto"` picked Metal, `geist_model_load*` retries on the CPU backend
 `"auto"` would otherwise have picked (`cpu_neon`) if Metal
 
 - refuses the model's weight formats: a matrix whose dtype Metal has no kernel
-  for (e.g. Q5_0, IQ2_S, TQ1_0) fails the load with `GEIST_E_UNSUPPORTED`,
+  for (e.g. IQ2_S, TQ1_0; Q5_0 runs there since #376) fails the load with `GEIST_E_UNSUPPORTED`,
   naming the tensor, instead of the first prefill; or
 - refuses for memory: the load exceeds the GPU working-set budget
   (`GEIST_E_OOM`, #531), or the model loads but a session of the load's

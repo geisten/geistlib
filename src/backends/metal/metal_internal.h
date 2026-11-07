@@ -136,8 +136,12 @@ struct metal_buf_reg_entry {
     struct geist_buffer *buf;
 };
 
-/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 512. */
-constexpr int METAL_FLASH_SLOTS = 16;
+/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 576
+ * (absorbed MLA's [k_pe | latent] head, #376). */
+constexpr int METAL_FLASH_SLOTS = 18;
+
+/* The widest head the attention kernels take (#376). */
+constexpr size_t METAL_ATTN_HEAD_DIM_MAX = 576;
 
 /* Typed handles to the Objective-C objects the backend holds (#347). The
  * structs are declared and never defined: each pointer is the object's `id`
@@ -289,6 +293,10 @@ struct metal_state {
     struct metal_pipeline_h *iq4nl_n4_pipeline;
     struct metal_function_h *iq4nl_mm_function;
     struct metal_pipeline_h *iq4nl_mm_pipeline;
+    struct metal_function_h *q50_n4_function; /* #376 */
+    struct metal_pipeline_h *q50_n4_pipeline;
+    struct metal_function_h *q50_mm_function;
+    struct metal_pipeline_h *q50_mm_pipeline;
     struct metal_function_h *mx4_n4_function;
     struct metal_pipeline_h *mx4_n4_pipeline;
     struct metal_function_h *mx4_mm_function;
@@ -509,6 +517,8 @@ struct metal_state {
     struct metal_pipeline_h *argmax_merge_pipeline;
     struct metal_function_h *moe_topk_function;
     struct metal_pipeline_h *moe_topk_pipeline;
+    struct metal_function_h *moe_topk_g_function; /* #376: DeepSeek's router */
+    struct metal_pipeline_h *moe_topk_g_pipeline;
     struct metal_function_h *moe_mv_q4k_function;
     struct metal_pipeline_h *moe_mv_q4k_pipeline;
     struct metal_function_h *moe_mv_q6k_function;
@@ -517,6 +527,8 @@ struct metal_state {
     struct metal_pipeline_h *moe_mv_q80_pipeline;
     struct metal_function_h *moe_mv_mx4_function;
     struct metal_pipeline_h *moe_mv_mx4_pipeline;
+    struct metal_function_h *moe_mv_q50_function; /* #376 */
+    struct metal_pipeline_h *moe_mv_q50_pipeline;
     struct metal_function_h *moe_mv_f32_function;
     struct metal_pipeline_h *moe_mv_f32_pipeline;
     struct metal_function_h *moe_glu_function;
@@ -758,6 +770,7 @@ static inline bool metal_dtype_is_quant(enum geist_dtype dtype) {
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_TQ2_0:
     case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_Q5_0:
         return true;
     case GEIST_DTYPE_F32:
     case GEIST_DTYPE_F16:
@@ -769,7 +782,6 @@ static inline bool metal_dtype_is_quant(enum geist_dtype dtype) {
     case GEIST_DTYPE_BINARY:
     case GEIST_DTYPE_TERNARY:
     case GEIST_DTYPE_CUSTOM:
-    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_COUNT:
         break;
     }
