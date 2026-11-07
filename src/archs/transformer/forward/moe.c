@@ -373,6 +373,67 @@ static void moe_act_cols(enum geist_moe_act act,
     }
 }
 
+/* silu(g) * u over rows [row, row + m), columns [lo, hi), on the backend's
+ * own kernel, the one the layer plan gives the dense FFN (blk_silu_mul):
+ * a host silu rounds differently (cpu_x86's is a Cephes exp in AVX2), and
+ * an expert that matches a dense FFN must give its bits (#479). False if
+ * the backend fails; the caller then reports the expert failed. */
+static bool moe_silu_mul_be(const struct moe_job *j, size_t row, size_t m, size_t lo, size_t hi) {
+    struct transformer_arch_session          *sess  = j->sess;
+    const struct transformer_arch_state      *st    = sess->model;
+    const struct transformer_layer_exec_plan *P     = &st->layer_plans[j->layer];
+    const struct geist_backend_primitives    *prims = j->be->desc->prims;
+    const struct geist_backend_fused         *fused = geist_backend_fused_tbl(j->be);
+    const size_t                              inter = j->inter;
+    /* One view over whole rows; a column slice row by row (moe_split's
+     * are one row). */
+    const size_t rows = hi - lo == inter ? m : 1;
+    for (size_t r = 0; r < m; r += rows) {
+        const size_t        off = ((row + r) * inter + lo) * sizeof(float);
+        struct geist_tensor t_g =
+                view_2d_at(sess->moe_g_buf, off, (int64_t) rows, (int64_t) (hi - lo));
+        struct geist_tensor t_u =
+                view_2d_at(sess->moe_u_buf, off, (int64_t) rows, (int64_t) (hi - lo));
+        enum geist_status s;
+        if (P->fuse_silu_mul)
+            s = fused->silu_mul(j->be, &t_g, &t_u, &t_g);
+        else {
+            s = prims->silu(j->be, &t_g, &t_g);
+            if (s == GEIST_OK)
+                s = prims->mul(j->be, &t_g, &t_u, &t_g);
+        }
+        if (s != GEIST_OK)
+            return false;
+    }
+    return true;
+}
+
+/* The experts' activation over rows [row, row + m), columns [lo, hi):
+ * biases, then SwiGLU on the backend where it runs the dense FFN's, else
+ * on the host. */
+static bool moe_act(const struct moe_job *j,
+                    size_t                row,
+                    size_t                m,
+                    size_t                lo,
+                    size_t                hi,
+                    const float          *gb,
+                    const float          *ub) {
+    struct transformer_arch_session *sess = j->sess;
+    const bool on_be = j->act == GEIST_MOE_ACT_SWIGLU && sess->moe_g_buf != nullptr &&
+                       sess->model->model_fusions.prim_silu;
+    for (size_t r = 0; r < m; r++) {
+        float *g = sess->moe_g + (row + r) * j->inter, *u = sess->moe_u + (row + r) * j->inter;
+        if (on_be) {
+            for (size_t i = lo; gb != nullptr && i < hi; i++)
+                g[i] += gb[i];
+            for (size_t i = lo; ub != nullptr && i < hi; i++)
+                u[i] += ub[i];
+        } else
+            moe_act_cols(j->act, lo, hi, gb, ub, g, u);
+    }
+    return !on_be || moe_silu_mul_be(j, row, m, lo, hi);
+}
+
 static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size_t m) {
     struct transformer_arch_session *sess = j->sess;
     const float                     *x    = sess->moe_xg + row0 * j->d;
@@ -401,9 +462,9 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     const float *gb    = moe_bias(j, j->L->moe_gate_b, e, inter);
     const float *ub    = moe_bias(j, j->L->moe_up_b, e, inter);
     const float *db    = moe_bias(j, j->L->moe_down_b, e, j->d);
-    for (size_t r = 0; r < m; r++)
-        moe_act_cols(j->act, 0, inter, gb, ub, g + r * inter, u + r * inter);
-    moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
+    ok                 = moe_act(j, row0, m, 0, inter, gb, ub);
+    if (ok)
+        moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
     for (size_t r = 0; ok && db != nullptr && r < m; r++)
         for (size_t c = 0; c < j->d; c++)
             y[r * j->d + c] += db[c];
@@ -475,13 +536,13 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
                 moe_linear(1, x, &b, j->be, u + lo, &ok);
             }
             if (ok)
-                moe_act_cols(j->act,
+                ok = moe_act(j,
+                             row0,
+                             1,
                              lo,
                              hi,
                              moe_bias(j, j->L->moe_gate_b, e, j->inter),
-                             moe_bias(j, j->L->moe_up_b, e, j->inter),
-                             g,
-                             u);
+                             moe_bias(j, j->L->moe_up_b, e, j->inter));
         } else {
             const float *g  = j->sess->moe_g + row0 * j->inter;
             float       *y  = j->sess->moe_y + row0 * j->d;
@@ -967,11 +1028,28 @@ enum geist_status moe_session_alloc(struct transformer_arch_session *sess) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: MoE routing state alloc failed");
         return GEIST_E_OOM;
     }
+    if (!io) {
+        s = be->desc->vtbl->buffer_create_aliased(be,
+                                                  sess->moe_g,
+                                                  n_sel * inter * sizeof(float),
+                                                  GEIST_BUFFER_SCRATCH,
+                                                  &sess->moe_g_buf);
+        if (s == GEIST_OK)
+            s = be->desc->vtbl->buffer_create_aliased(be,
+                                                      sess->moe_u,
+                                                      n_sel * inter * sizeof(float),
+                                                      GEIST_BUFFER_SCRATCH,
+                                                      &sess->moe_u_buf);
+        if (s != GEIST_OK)
+            return s;
+    }
     return moe_gpu_session_alloc(sess);
 }
 
 void moe_session_free(struct transformer_arch_session *sess) {
     moe_gpu_session_free(sess);
+    transformer_buffer_release(sess->model->backend, &sess->moe_g_buf);
+    transformer_buffer_release(sess->model->backend, &sess->moe_u_buf);
     void *host[] = {sess->moe_x_host,
                     sess->moe_xg,
                     sess->moe_y,

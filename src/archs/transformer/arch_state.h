@@ -517,7 +517,11 @@ struct transformer_arch_session {
     float               *moe_xg; /* [m_max * n_used, d_model], rows bucketed by expert */
     float               *moe_g;  /* [m_max * n_used, intermediate] */
     float               *moe_u;  /* [m_max * n_used, intermediate] */
-    float               *moe_y;  /* [m_max * n_used, d_model] */
+    /* moe_g / moe_u as buffers of a CPU backend (nullptr on a GPU): the
+     * experts' SwiGLU runs the dense FFN's silu_mul on them, so an expert
+     * and the same dense FFN round alike (#479). */
+    struct geist_buffer *moe_g_buf, *moe_u_buf;
+    float               *moe_y; /* [m_max * n_used, d_model] */
     uint32_t            *moe_ids;
     float               *moe_wts;
     uint32_t            *moe_rows;
