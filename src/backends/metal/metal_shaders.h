@@ -4373,4 +4373,174 @@ static const char metal_moe2_source[] =
         "if(q.hb!=0u)v+=bs[q.bo+ids[q.io+s]*q.d+c];a+=w[q.wo+s]*v;}"
         "out[q.oo+t*q.d+c]=a;}\n";
 
+/* Grouped expert GEMMs for a prefill chunk (#482), llama.cpp's
+ * kernel_mul_mm_id_map0 + kernel_mul_mm_id. A unit of its own (the MoE
+ * library's matvec header defines struct P too), compiled after
+ * metal_qsg_common_source and the Q4_K / Q6_K / Q5_0 dequants.
+ *
+ * moe_map: one threadgroup buckets the m*k routed slots ids[io + s] by
+ *   expert: map[e] = the first sorted row of expert e (map[n] = the count),
+ *   map[n + 1 + r] = the slot s of sorted row r. Within an expert the slots
+ *   keep their order (each simdgroup takes experts sg, sg + nsg, ... and
+ *   ranks the matches of 32 slots at a time with a prefix sum), so the
+ *   bucketing does not depend on the thread schedule.
+ * moe_mm_<T>: grid (ceil(m / 32), ceil(n_out / 64), n experts). Threadgroup
+ *   (x, y, e) multiplies expert e's weights (q.es bytes after expert 0,
+ *   which p.wo locates in w) by the sorted rows 32x .. 32x + 31 of expert e:
+ *   slot s reads x row s (q.ps != 0, one row per slot) or s / q.k (one row
+ *   per token) and writes y row s. The tile is matmul_<T>_mm_sg_fast's (64
+ *   outputs x 32 rows, K steps of 32, x staged as half), so a row's result
+ *   is the one the per-expert GEMM gives it; n_in % 32 == 0 and x rows
+ *   8-float aligned (the host checks). The output goes through threadgroup
+ *   memory to its slot's row. */
+static const char metal_moe_map_source[] =
+        "struct MM{uint n,nk,io;};\n"
+        "kernel void moe_map(device const uint*ids[[buffer(0)]],device uint*map[[buffer(1)]],"
+        "constant MM&q[[buffer(2)]],threadgroup uint*cnt[[threadgroup(0)]],"
+        "ushort ln[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],"
+        "ushort nsg[[simdgroups_per_threadgroup]]){"
+        "device const uint*id=ids+q.io;"
+        "for(uint e=sg;e<q.n;e+=nsg){uint c=0u;"
+        "for(uint s=ln;s<q.nk;s+=32u)c+=id[s]==e?1u:0u;c=simd_sum(c);if(ln==0)cnt[e]=c;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "if(sg==0){uint base=0u;for(uint e0=0u;e0<q.n;e0+=32u){uint e=e0+ln;"
+        "uint c=e<q.n?cnt[e]:0u;uint at=base+simd_prefix_exclusive_sum(c);"
+        "if(e<q.n){map[e]=at;cnt[e]=at;}base+=simd_sum(c);}if(ln==0)map[q.n]=base;}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "device uint*srt=map+q.n+1u;"
+        "for(uint e=sg;e<q.n;e+=nsg){uint at=cnt[e];"
+        "for(uint s0=0u;s0<q.nk;s0+=32u){uint s=s0+ln;bool hit=s<q.nk&&id[s]==e;"
+        "uint h=hit?1u:0u;uint r=simd_prefix_exclusive_sum(h);if(hit)srt[at+r]=s;"
+        "at+=simd_sum(h);}}}\n"
+        "struct MQ{uint n,k,ps,es;};\n";
+
+#define GEIST_METAL_MOE_MM_KERNEL(NAME, BLK, DQ, QKNL)                                            \
+    "kernel void moe_mm_" NAME "(device const float*x[[buffer(0)]],device const "                 \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "    \
+    "uint*map[[buffer(4)]],constant MQ&q[[buffer(5)]],threadgroup char*shmem[[threadgroup(0)]],"  \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort "   \
+    "sg[[simdgroup_index_in_threadgroup]]){\n"                                                    \
+    "const uint e=tg.z,b0=map[e],ne=map[e+1u]-b0,r0=tg.y*64u,r1=tg.x*32u;"                        \
+    "if(r1>=ne||r0>=p.no)return;"                                                                 \
+    "device const uint*rl=map+q.n+1u+b0+r1;"                                                      \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "              \
+    "half*)(shmem+4096);"                                                                         \
+    "constexpr short NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short "          \
+    "QK_NL=" QKNL ";"                                                                             \
+    "const short nr0=short(min(p.no-r0,64u)),nr1=short(min(ne-r1,32u));"                          \
+    "const short lr0=min(short(ti/NL0),short(nr0-1)),lr1=min(short(ti/NL1),short(nr1-1));"        \
+    "short il0=short(ti%NL0);short il=il0;"                                                       \
+    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo+ulong(e)*ulong(q.es))+"               \
+    "(r0+uint(lr0))*p.bpr;"                                                                       \
+    "const uint s=rl[lr1];"                                                                       \
+    "device const float*xp=x+p.xo+(q.ps!=0u?s:s/q.k)*p.xs+uint(8*(ti%NL1));"                      \
+    "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"                   \
+    "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"           \
+    "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "        \
+    "ibb=short(4*sx+sy);"                                                                         \
+    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                           \
+    "half4x4 ta;" DQ "(wp,il,ta);"                                                                \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                            \
+    "FOR_UNROLL(short i=0;i<16;i++){short ax=short(2*il0+i/8);short ay=short((ti/NL0)/8);"        \
+    "short lx=short((ti/NL0)%8);short ly=short(i%8);short "                                       \
+    "ib=short(8*ax+ay);*(sa+64*ib+8*ly+lx)=ta[i/4][i%4];}"                                        \
+    "*(threadgroup half2x4*)(sb+64*ibb+8*lyb)=half2x4(*((device const float2x4*)xp));"            \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                         \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                            \
+    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+2*64*(sg/2);"      \
+    "FOR_UNROLL(short ik=0;ik<NK/8;ik++){"                                                        \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                     \
+    "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}"                   \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                     \
+    "FOR_UNROLL(short i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}"                   \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                     \
+    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],"          \
+    "mc[i]);}"                                                                                    \
+    "lsma+=8*64;lsmb+=4*64;}}"                                                                    \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "           \
+    "float*)shmem;"                                                                               \
+    "FOR_UNROLL(short "                                                                           \
+    "i=0;i<8;i++){simdgroup_store(mc[i],T+32*(sg&1)+1024*(sg>>1)+8*(i%4)+512*(i/4),64,0,false);}" \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                            \
+    "for(uint j=uint(ti);j<uint(nr1)*64u;j+=128u){uint c=j%64u;"                                  \
+    "if(c<uint(nr0))y[p.yo+rl[j/64u]*p.ys+r0+c]=T[j];}}\n"
+
+/* moe_mm_tc_<T> (#482): moe_mm_<T> on the matrix units (Apple GPU family
+ * 10+), llama.cpp's kernel_mul_mm_id under GGML_METAL_HAS_TENSOR: the same
+ * 64 x 32 tile, bucketing and K steps of 32, the weights and x staged as
+ * half in threadgroup memory row-major, and four simdgroups running a
+ * matmul2d per 16-row half (the upper half only when the expert has rows
+ * there). Built in the tensor-API unit (language version 4.0) after
+ * metal_mm_tc_head_source and the dequants; grid and threadgroup memory as
+ * moe_mm_<T>'s. */
+#define GEIST_METAL_MOE_MM_TC_KERNEL(NAME, BLK, DQ, QKNL)                                        \
+    "kernel void moe_mm_tc_" NAME "(device const float*x[[buffer(0)]],device const "             \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "   \
+    "uint*map[[buffer(4)]],constant MQ&q[[buffer(5)]],threadgroup char*shmem[[threadgroup(0)]]," \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
+    "using namespace mpp::tensor_ops;"                                                           \
+    "const uint e=tg.z,b0=map[e],ne=map[e+1u]-b0,r0=tg.y*64u,r1=tg.x*32u;"                       \
+    "if(r1>=ne||r0>=p.no)return;"                                                                \
+    "device const uint*rl=map+q.n+1u+b0+r1;"                                                     \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "             \
+    "half*)(shmem+4096);threadgroup float*sc=(threadgroup float*)shmem;"                         \
+    "constexpr short NR0=64,NR1H=16,NK=32,NL0=2,NL1=4,QK_NL=" QKNL ";"                           \
+    "const short nr0=short(min(p.no-r0,64u)),nr1=short(min(ne-r1,32u));const bool hi=nr1>NR1H;"  \
+    "const short lr0=min(short(ti/NL0),short(nr0-1)),lr1=min(short(ti/NL1),short(nr1-1));"       \
+    "short il0=short(ti%NL0);short il=il0;"                                                      \
+    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo+ulong(e)*ulong(q.es))+"              \
+    "(r0+uint(lr0))*p.bpr;"                                                                      \
+    "const uint s=rl[lr1];"                                                                      \
+    "device const float*xp=x+p.xo+(q.ps!=0u?s:s/q.k)*p.xs+uint(8*(ti%NL1));"                     \
+    "auto tA=tensor<threadgroup half,dextents<int32_t,2>,tensor_inline>(sa,"                     \
+    "dextents<int32_t,2>(NK,NR0));"                                                              \
+    "auto tB0=tensor<threadgroup half,dextents<int32_t,2>,tensor_inline>(sb,"                    \
+    "dextents<int32_t,2>(NK,NR1H));"                                                             \
+    "auto tB1=tensor<threadgroup half,dextents<int32_t,2>,tensor_inline>(sb+NR1H*NK,"            \
+    "dextents<int32_t,2>(NK,NR1H));"                                                             \
+    "matmul2d<matmul2d_descriptor(NR1H,NR0,NK,false,true,false,"                                 \
+    "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<4>> mm;"               \
+    "auto cT0=mm.get_destination_cooperative_tensor<decltype(tA),decltype(tB0),float>();"        \
+    "auto cT1=mm.get_destination_cooperative_tensor<decltype(tA),decltype(tB1),float>();"        \
+    "FOR_UNROLL(uint16_t i=0;i<cT0.get_capacity();++i){if(cT0.is_valid_element(i))cT0[i]=0.0f;}" \
+    "FOR_UNROLL(uint16_t i=0;i<cT1.get_capacity();++i){if(cT1.is_valid_element(i))cT1[i]=0.0f;}" \
+    "const short ar=short(ti/NL0),br=short(ti/NL1),bk=short(8*(ti%NL1));"                        \
+    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                          \
+    "half4x4 ta;" DQ "(wp,il,ta);"                                                               \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                           \
+    "FOR_UNROLL(short i=0;i<16;i++){sa[NK*ar+16*il0+i]=ta[i/4][i%4];}"                           \
+    "*(threadgroup half2x4*)(sb+NK*br+bk)=half2x4(*((device const float2x4*)xp));"               \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                        \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                           \
+    "mm.run(tB0,tA,cT0);if(hi)mm.run(tB1,tA,cT1);}"                                              \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                           \
+    "cT0.store(tensor<threadgroup float,dextents<int32_t,2>,tensor_inline>(sc,"                  \
+    "dextents<int32_t,2>(NR0,NR1H)));"                                                           \
+    "if(hi)cT1.store(tensor<threadgroup float,dextents<int32_t,2>,tensor_inline>(sc+NR1H*NR0,"   \
+    "dextents<int32_t,2>(NR0,NR1H)));"                                                           \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                           \
+    "for(uint j=uint(ti);j<uint(nr1)*64u;j+=128u){uint c=j%64u;"                                 \
+    "if(c<uint(nr0))y[p.yo+rl[j/64u]*p.ys+r0+c]=sc[j];}}\n"
+
+static const char metal_moe_mm_tc_q4k_source[] =
+        "struct MQ{uint n,k,ps,es;};\n" GEIST_METAL_MOE_MM_TC_KERNEL(
+                "q4k", "block_q4_K", "dq4", "16");
+static const char metal_moe_mm_tc_q6k_source[] =
+        GEIST_METAL_MOE_MM_TC_KERNEL("q6k", "block_q6_K", "dq6b", "16");
+static const char metal_moe_mm_tc_q80_source[] =
+        GEIST_METAL_MOE_MM_TC_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_moe_mm_tc_mx4_source[] =
+        GEIST_METAL_MOE_MM_TC_KERNEL("mx4", "bmx4", "dqmx4", "2");
+static const char metal_moe_mm_tc_q50_source[] =
+        GEIST_METAL_MOE_MM_TC_KERNEL("q50", "bq50", "dq50", "2");
+
+static const char metal_moe_mm_q4k_source[] =
+        GEIST_METAL_MOE_MM_KERNEL("q4k", "block_q4_K", "dq4", "16");
+static const char metal_moe_mm_q6k_source[] =
+        GEIST_METAL_MOE_MM_KERNEL("q6k", "block_q6_K", "dq6b", "16");
+static const char metal_moe_mm_q80_source[] = GEIST_METAL_MOE_MM_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_moe_mm_mx4_source[] =
+        GEIST_METAL_MOE_MM_KERNEL("mx4", "bmx4", "dqmx4", "2");
+static const char metal_moe_mm_q50_source[] = GEIST_METAL_MOE_MM_KERNEL("q50", "bq50", "dq50", "2");
+
 #endif /* GEIST_METAL_SHADERS_H */

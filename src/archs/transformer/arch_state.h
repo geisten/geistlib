@@ -697,6 +697,9 @@ struct transformer_moe_gpu {
     /* #245: the most rows of a batched decode the device layers take (1:
      * single decode steps only). */
     size_t device_rows;
+    /* #482: a prefill chunk of the device layers routes and runs its
+     * experts there too (grouped GEMMs, fused->linear_t_ids at m rows). */
+    bool device_prefill;
     /* #162: a decode step routes on the device and starts the hot experts
      * there before the host has seen the router; the host runs the cold
      * ones (fused->linear_t_sel & co., layers with grouped[]). */
