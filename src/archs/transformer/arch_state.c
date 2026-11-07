@@ -99,6 +99,15 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
     release_weight_aux(&L->mla_q_a_w);
     release_weight_aux(&L->mla_kv_a_w);
     release_weight_aux(&L->mla_kv_b_w);
+    /* Absorbed MLA's per-head slices (#375), mla_n_heads each. */
+    struct geist_weight **heads[] = {&L->mla_k_b_w, &L->mla_v_b_w};
+    for (size_t p = 0; p < 2; p++) {
+        for (size_t h = 0; *heads[p] != nullptr && h < L->mla_n_heads; h++)
+            release_weight_aux(&(*heads[p])[h]);
+        safe_free((void **) heads[p]);
+    }
+    safe_free((void **) &L->mla_k_b);
+    safe_free((void **) &L->mla_v_b);
     /* The expert arrays: n_experts entries each, all set or all null. */
     struct geist_weight **experts[] = {&L->moe_gate_w, &L->moe_up_w, &L->moe_down_w};
     for (size_t p = 0; p < 3; p++) {
@@ -1200,12 +1209,14 @@ geometry_from_metadata(struct geist_backend             *be,
         return GEIST_E_UNSUPPORTED;
     }
     /* head_dim is metadata: a layer asking for more than the forward pass
-     * holds (TRANSFORMER_HEAD_DIM_MAX) is refused here, before it can
-     * overflow the attention kernels' per-head stack arrays. */
+     * holds (TRANSFORMER_HEAD_DIM_MAX_WIDE) is refused here, before it can
+     * overflow the attention kernels' per-head stack arrays. Past
+     * TRANSFORMER_HEAD_DIM_MAX the session's KV layout keeps it off the
+     * quantized caches (transformer_kv_layout_resolve). */
     for (size_t i = 0; i < st->n_layers + st->n_mtp_layers; i++) {
         const size_t hd = i < st->n_layers ? st->layers[i].head_dim
                                            : st->mtp_layers[i - st->n_layers].block.head_dim;
-        if (hd > TRANSFORMER_HEAD_DIM_MAX) {
+        if (hd > TRANSFORMER_HEAD_DIM_MAX_WIDE) {
             geist_backend_set_error(be,
                                     GEIST_E_UNSUPPORTED,
                                     "transformer: %s layer %zu head_dim %zu exceeds the "
@@ -1213,11 +1224,20 @@ geometry_from_metadata(struct geist_backend             *be,
                                     fam->name,
                                     i,
                                     hd,
-                                    TRANSFORMER_HEAD_DIM_MAX);
+                                    TRANSFORMER_HEAD_DIM_MAX_WIDE);
             return GEIST_E_UNSUPPORTED;
         }
     }
     return GEIST_OK;
+}
+
+size_t transformer_head_dim_max(const struct transformer_arch_state *st) {
+    size_t m = 0;
+    for (size_t i = 0; st->layers != nullptr && i < st->n_layers; i++)
+        m = st->layers[i].head_dim > m ? st->layers[i].head_dim : m;
+    for (size_t i = 0; st->mtp_layers != nullptr && i < st->n_mtp_layers; i++)
+        m = st->mtp_layers[i].block.head_dim > m ? st->mtp_layers[i].block.head_dim : m;
+    return m;
 }
 
 /* A layer split (#49) holds one part of the model per state, which the
@@ -2155,12 +2175,22 @@ resolve_kv_mode_requested(const struct geist_backend      *be,
 
 /* The requested mode, but never INT4 on a family where it misses the
  * quality bar (transformer_family.kv_int4_instead): that family gets its
- * replacement, and stderr says so once per process. */
+ * replacement, and stderr says so once per process. A model with heads
+ * wider than the quantized caches hold (`wide`, absorbed MLA, #375) prefers
+ * FP32 over its family's default: its F16 cache cost GigaChat3 0.6 % of
+ * perplexity on cpu_neon against FP32's -0.07 % (llama.cpp's F16 as the
+ * reference), ran 25-40 % slower there (no grouped F16 rows) and 4.5x
+ * slower in cpu_x86's prefill attention (the reference widens every K and
+ * V row once per head); its one KV head keeps the FP32 cache 2.7x smaller
+ * than the decompressed form's F16 one. */
 [[nodiscard]] static enum geist_kv_mode resolve_kv_mode(const struct geist_backend      *be,
                                                         const struct transformer_family *family,
+                                                        bool                             wide,
                                                         const struct geist_session_opts *opts) {
-    const enum geist_kv_mode m = resolve_kv_mode_requested(
-            be, family != nullptr ? family->kv_auto : GEIST_KV_AUTO, opts);
+    const enum geist_kv_mode fam = wide                ? GEIST_KV_FP32
+                                   : family != nullptr ? family->kv_auto
+                                                       : GEIST_KV_AUTO;
+    const enum geist_kv_mode m   = resolve_kv_mode_requested(be, fam, opts);
     if (m != GEIST_KV_INT4 || family == nullptr || family->kv_int4_instead == GEIST_KV_AUTO) {
         return m;
     }
@@ -2184,10 +2214,26 @@ struct transformer_kv_layout
 transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts) {
     struct transformer_kv_layout kl = {};
+    /* Heads wider than the quantized caches hold (absorbed MLA, #375) get
+     * the F16 cache instead of a quantized one, as an MoE family's INT4
+     * request does (#48: routing amplifies KV quantization error), and FP32
+     * where nothing asks for a mode (resolve_kv_mode). */
+    const bool wide = transformer_head_dim_max(state) > TRANSFORMER_HEAD_DIM_MAX;
     /* KV-mode resolution: opts override > env > backend/platform default. */
-    const enum geist_kv_mode mode = resolve_kv_mode(state->backend, state->family, opts);
-    kl.kivi                       = (mode == GEIST_KV_KIVI);
-    kl.int8                       = (mode == GEIST_KV_INT8);
+    enum geist_kv_mode mode = resolve_kv_mode(state->backend, state->family, wide, opts);
+    if (wide && (mode == GEIST_KV_INT8 || mode == GEIST_KV_INT4 || mode == GEIST_KV_KIVI)) {
+        static atomic_bool told = false;
+        if (!atomic_exchange(&told, true)) {
+            fprintf(stderr,
+                    "geist: the quantized KV caches hold heads of up to %zu dims, this model's "
+                    "have %zu; using F16 instead\n",
+                    TRANSFORMER_HEAD_DIM_MAX,
+                    transformer_head_dim_max(state));
+        }
+        mode = GEIST_KV_F16;
+    }
+    kl.kivi = (mode == GEIST_KV_KIVI);
+    kl.int8 = (mode == GEIST_KV_INT8);
     /* Issue #61: packed 4-bit KV rides the INT8 storage path (buffer alloc +
      * ctx wiring), with half-size data buffers holding 2 values/byte. */
     kl.int4_packed = (mode == GEIST_KV_INT4);
@@ -2207,8 +2253,8 @@ transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                 qbits = (q == 8) ? 0 : (int) q; /* 8-bit is the native path */
             }
         }
-        kl.sim_qbits = qbits;
-        if (qbits != 0) {
+        kl.sim_qbits = wide ? 0 : qbits;
+        if (kl.sim_qbits != 0) {
             kl.int8 = true;
             kl.kivi = false;
         }

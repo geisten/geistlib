@@ -451,6 +451,11 @@ int main(int argc, char **argv) {
             {1, 24, 8, 128, 256, 0, 0.0f},
             {1, 24, 8, 128, 1999, 0, 300.0f},
             {2, 24, 8, 128, 700, 0, 0.0f},
+            /* absorbed MLA (#375): one KV head of 576 (DeepSeek-V3), past
+             * the quantized caches' 512, decode and prefill */
+            {1, 16, 1, 576, 700, 0, 0.0f},
+            {1, 4, 1, 576, 9, 0, 0.0f},
+            {21, 16, 1, 576, 600, 0, 0.0f},
     };
     static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
     int                      fails = 0, ran = 0;

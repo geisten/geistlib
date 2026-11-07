@@ -372,6 +372,17 @@ struct geist_arch_config {
     size_t mla_rope;
     size_t mla_v_dim;
     float  attn_q_scale;
+    /* Absorbed MLA (#375, llama.cpp's is_mla: the file has
+     * attention.key_length_mla / value_length_mla and the split attn_k_b /
+     * attn_v_b): no per-head K or V. Each q head's nope part is taken into
+     * the latent by k_b, the cache holds ONE head of head_dim = mla_rope +
+     * mla_kv_rank, [k_pe | latent], for K and V alike, every q head
+     * [q_pe | k_b q_nope] attends it (MQA), and v_b takes the latent dims
+     * of each output head to its mla_v_dim. mla_k_dim is a head's q.k
+     * width before the absorption (mla_rope + nope), which the q scale
+     * divides by in both forms. */
+    bool   mla_absorbed;
+    size_t mla_k_dim;
 
     /* ---- qwen35 hybrid family ------------------------------------------ *
      *

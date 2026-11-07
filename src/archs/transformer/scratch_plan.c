@@ -16,9 +16,14 @@ void transformer_scratch_plan_build(const struct transformer_arch_state *st,
     const size_t F            = sizeof(float);
     const size_t M            = (m_max > 0) ? m_max : st->m_max;
     const size_t head_dim_max = TRANSFORMER_HEAD_DIM_MAX;
-    const size_t q_out_max    = st->n_q_heads * head_dim_max;
-    const size_t kv_out_max   = st->n_kv_heads * head_dim_max;
-    size_t       inter_max    = 0;
+    /* Q/K/V rows for the widest head a layer has (absorbed MLA's 576, #375),
+     * at least for TRANSFORMER_HEAD_DIM_MAX as before. */
+    const size_t hd_rows    = transformer_head_dim_max(st) > head_dim_max
+                                      ? transformer_head_dim_max(st)
+                                      : head_dim_max;
+    const size_t q_out_max  = st->n_q_heads * hd_rows;
+    const size_t kv_out_max = st->n_kv_heads * hd_rows;
+    size_t       inter_max  = 0;
     for (size_t i = 0; i < st->n_layers; i++) {
         if (st->layers[i].intermediate > inter_max) {
             inter_max = st->layers[i].intermediate;

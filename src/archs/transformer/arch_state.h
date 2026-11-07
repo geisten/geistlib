@@ -44,6 +44,15 @@
  * model whose layers ask for more, before anything is sized from it. */
 constexpr size_t TRANSFORMER_HEAD_DIM_MAX = 512;
 
+/* The widest head a layer may have: absorbed multi-head latent attention
+ * (#375) attends with one KV head of kv_lora_rank + rope = 576 dims
+ * (DeepSeek-V2/V3, Kimi K2). Past TRANSFORMER_HEAD_DIM_MAX only the F32
+ * and F16 caches hold it, whose CPU attention takes any head_dim (the
+ * shared F16 reference up to 1024), so a session of such a model gets one
+ * of them whatever KV mode it asks for (transformer_kv_layout_resolve):
+ * the quantized caches' per-head stack arrays stop at 512. */
+constexpr size_t TRANSFORMER_HEAD_DIM_MAX_WIDE = 576;
+
 /* ---- Per-layer weight bundle ------------------------------------------- */
 
 /* Per-layer token mixer. The layer loop dispatches on this before any
@@ -129,6 +138,13 @@ struct transformer_layer_weights {
     float              *mla_kv_a_norm; /* [mla_kv_rank], host: the latent is normalised there */
     struct geist_tensor mla_kv_b;      /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
     struct geist_weight mla_q_a_w, mla_kv_a_w, mla_kv_b_w;
+    /* Absorbed MLA (config.mla_absorbed, #375): the file's attn_k_b and
+     * attn_v_b, one slice per head (mla_n_heads of them, all set or all
+     * null): k_b[h] [mla_kv_rank, nope] takes a head's q_nope into the
+     * latent, v_b[h] [mla_v_dim, mla_kv_rank] its attention output out. */
+    struct geist_tensor *mla_k_b, *mla_v_b;
+    struct geist_weight *mla_k_b_w, *mla_v_b_w;
+    size_t               mla_n_heads;
 
     /* ---- Pre-resolved kernels, one per projection. ---------------------- *
      * Filled at load time by the backend's resolve_weight; the forward
@@ -355,6 +371,12 @@ struct transformer_arch_session {
      * kv_b's heads (n_q_heads * (nope + mla_v_dim)) and q_a (mla_q_rank,
      * when the model has it); nullptr without MLA. */
     struct geist_buffer *mla_kv_a, *mla_lat, *mla_kv, *mla_q_a;
+    /* Absorbed MLA (#375): mla_kv holds q before the absorption
+     * (n_q_heads * (mla_rope + nope)) instead, and every head's rows go
+     * through k_b / v_b gathered in mla_hx and out of mla_hy,
+     * [n_q_heads, m_max, max(nope, mla_kv_rank)] and
+     * [n_q_heads, m_max, max(mla_kv_rank, mla_v_dim)]. */
+    struct geist_buffer *mla_hx, *mla_hy;
 
     /* ---- Memory backing for the buffers above.
      * scratch_arena: per-forward frame-arena, reset per layer.
@@ -1223,6 +1245,10 @@ struct transformer_kv_layout {
 [[nodiscard]] struct transformer_kv_layout
 transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts);
+
+/* The widest head_dim of the model's layers (MTP blocks included); 0 before
+ * the layers are populated. */
+[[nodiscard]] size_t transformer_head_dim_max(const struct transformer_arch_state *st);
 
 /* geist_session_truncate (#622): keep the first n positions; see the
  * truncate op in geist_arch.h. The caller has settled a deferred advance. */

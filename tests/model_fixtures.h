@@ -102,8 +102,14 @@ static inline float mf_weight(uint64_t *s) {
 /* ---- F32 tensors ---------------------------------------------------------- */
 
 /* MF_RAMP: element i is mf_ramp(i), mixed signs, no draw from the seed.
- * MF_STEP: element i is 1 + i / 2 (positive factors, e.g. rope_freqs). */
-enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP, MF_STEP };
+ * MF_STEP: element i is 1 + i / 2 (positive factors, e.g. rope_freqs).
+ * MF_KB, MF_VB: a DeepSeek attn_kv_b split as llama.cpp's converter splits
+ * it (#375), two consecutive tensors: MF_KB [nope, rank, heads] (kvb_pair:
+ * the value dims) draws the whole MF_RAND kv_b [heads * (nope + v), rank]
+ * where kv_b would and writes each head's k rows transposed, MF_VB [rank,
+ * v, heads] (kvb_pair: nope) its v rows. The draws are kv_b's, so every
+ * tensor after them has the values of the unsplit file. */
+enum mf_fill { MF_RAND, MF_ONE, MF_NEG_ONE, MF_ZERO, MF_RAMP, MF_STEP, MF_KB, MF_VB };
 
 static inline float mf_ramp(uint64_t i) {
     return ((float) (i % 7) - 3.0f) * 0.25f;
@@ -114,9 +120,10 @@ struct mf_tensor {
     uint64_t     ne0, ne1; /* ne1 0: one dimension */
     uint64_t     ne2;      /* 0: at most two dimensions */
     enum mf_fill fill;
-    float        scale; /* MF_RAND values times this (mf_add: 1) */
-    bool         f16;   /* stored as F16; F32 otherwise */
-    bool         q5_0;  /* stored as zero Q5_0 blocks (ne0 a multiple of 32) */
+    float        scale;    /* MF_RAND values times this (mf_add: 1) */
+    bool         f16;      /* stored as F16; F32 otherwise */
+    bool         q5_0;     /* stored as zero Q5_0 blocks (ne0 a multiple of 32) */
+    uint64_t     kvb_pair; /* MF_KB: the value dims; MF_VB: nope */
 };
 
 struct mf_tensors {
@@ -139,13 +146,14 @@ mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, con
     va_start(ap, fmt);
     vsnprintf(t->name, sizeof t->name, fmt, ap);
     va_end(ap);
-    t->ne0   = ne0;
-    t->ne1   = ne1;
-    t->ne2   = 0;
-    t->fill  = fill;
-    t->scale = 1.0f;
-    t->f16   = false;
-    t->q5_0  = false;
+    t->ne0      = ne0;
+    t->ne1      = ne1;
+    t->ne2      = 0;
+    t->fill     = fill;
+    t->scale    = 1.0f;
+    t->f16      = false;
+    t->q5_0     = false;
+    t->kvb_pair = 0;
 }
 
 static inline uint64_t mf_elems(const struct mf_tensor *t) {
@@ -177,7 +185,8 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         tf_u64(o, off);
         off += (mf_bytes(t) + 31) / 32 * 32;
     }
-    uint64_t s = seed;
+    uint64_t s   = seed;
+    float   *kvb = nullptr; /* MF_KB's draws, until MF_VB has used them */
     for (size_t i = 0; i < ts->n; i++) {
         const struct mf_tensor *t = &ts->t[i];
         while (o->n % 32 != 0) {
@@ -189,18 +198,40 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
             }
             continue;
         }
+        /* kv_b row (h, j) of nope + v rows per head, column r. */
+        const bool     kb   = t->fill == MF_KB;
+        const uint64_t nope = kb ? t->ne0 : t->kvb_pair, vd = kb ? t->kvb_pair : t->ne1;
+        const uint64_t rank = kb ? t->ne1 : t->ne0;
+        if (kb) {
+            kvb = malloc(t->ne2 * (nope + vd) * rank * sizeof *kvb);
+            if (kvb == nullptr) {
+                fprintf(stderr, "model_fixtures: out of memory\n");
+                exit(1);
+            }
+            for (uint64_t e = 0; e < t->ne2 * (nope + vd) * rank; e++)
+                kvb[e] = mf_weight(&s) * t->scale;
+        }
         const float c = t->fill == MF_ONE ? 1.0f : t->fill == MF_NEG_ONE ? -1.0f : 0.0f;
         for (uint64_t e = 0; e < mf_elems(t); e++) {
-            const float v = t->fill == MF_RAND   ? mf_weight(&s) * t->scale
-                            : t->fill == MF_RAMP ? mf_ramp(e)
-                            : t->fill == MF_STEP ? 1.0f + 0.5f * (float) e
-                                                 : c;
+            const bool     sp = kb || t->fill == MF_VB; /* 3-D: element (a, b, h) */
+            const uint64_t a = sp ? e % t->ne0 : 0, b = sp ? e / t->ne0 % t->ne1 : 0;
+            const uint64_t h = sp ? e / (t->ne0 * t->ne1) : 0;
+            const float    v = t->fill == MF_RAND   ? mf_weight(&s) * t->scale
+                               : t->fill == MF_RAMP ? mf_ramp(e)
+                               : t->fill == MF_STEP ? 1.0f + 0.5f * (float) e
+                               : kb                 ? kvb[(h * (nope + vd) + a) * rank + b]
+                               : t->fill == MF_VB   ? kvb[(h * (nope + vd) + nope + b) * rank + a]
+                                                    : c;
             if (t->f16) {
                 const _Float16 h = (_Float16) v;
                 tf_put(o, &h, 2);
             } else {
                 tf_f32(o, v);
             }
+        }
+        if (t->fill == MF_VB) {
+            free(kvb);
+            kvb = nullptr;
         }
     }
     free(ts->t);
@@ -652,7 +683,11 @@ static inline struct tf_buf mf_gpt_oss_gguf(const struct mf_gpt_oss *c) {
     return o;
 }
 
-/* DeepSeek-V2 (#242), the unsplit attn_kv_b layout: `lead` dense layers,
+/* DeepSeek-V2 (#242), the unsplit attn_kv_b layout, or with `split` the
+ * same weights as llama.cpp's converter writes them today (#375): k_b /
+ * v_b (MF_KB / MF_VB), one KV head of key_length rank + rope and
+ * value_length rank, the per-head sizes in key_length_mla /
+ * value_length_mla. `lead` dense layers,
  * then MoE layers with expert_shared_count shared experts. q_rank > 0
  * writes q_a / q_a_norm / q_b (V3) instead of attn_q. YaRN with DeepSeek's
  * log multiplier unless no_yarn. v3 writes a sigmoid router (gating 2) with
@@ -663,6 +698,7 @@ struct mf_deepseek2 {
     uint32_t experts, used, expert_ff, shared, vocab;
     uint64_t seed;
     bool     no_yarn, v3;
+    bool     split; /* attn_k_b / attn_v_b and the absorbed-MLA metadata (#375) */
     uint32_t n_group, topk_group;
     float    w_scale;
 };
@@ -685,12 +721,21 @@ static inline struct tf_buf mf_deepseek2_gguf(const struct mf_deepseek2 *c) {
         }
         mf_add(&ts, d, c->kv_rank + c->rope, MF_RAND, "blk.%u.attn_kv_a_mqa.weight", l);
         mf_add(&ts, c->kv_rank, 0, MF_RAMP, "blk.%u.attn_kv_a_norm.weight", l);
-        mf_add(&ts,
-               c->kv_rank,
-               c->heads * (c->nope + c->v_dim),
-               MF_RAND,
-               "blk.%u.attn_kv_b.weight",
-               l);
+        if (c->split) {
+            mf_add(&ts, c->nope, c->kv_rank, MF_KB, "blk.%u.attn_k_b.weight", l);
+            ts.t[ts.n - 1].ne2      = c->heads;
+            ts.t[ts.n - 1].kvb_pair = c->v_dim;
+            mf_add(&ts, c->kv_rank, c->v_dim, MF_VB, "blk.%u.attn_v_b.weight", l);
+            ts.t[ts.n - 1].ne2      = c->heads;
+            ts.t[ts.n - 1].kvb_pair = c->nope;
+        } else {
+            mf_add(&ts,
+                   c->kv_rank,
+                   c->heads * (c->nope + c->v_dim),
+                   MF_RAND,
+                   "blk.%u.attn_kv_b.weight",
+                   l);
+        }
         mf_add(&ts, c->heads * c->v_dim, d, MF_RAND, "blk.%u.attn_output.weight", l);
         mf_add(&ts, d, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
         if (l < c->lead) {
@@ -721,7 +766,7 @@ static inline struct tf_buf mf_deepseek2_gguf(const struct mf_deepseek2 *c) {
             {"block_count", c->layers},
             {"embedding_length", d},
             {"attention.head_count", c->heads},
-            {"attention.head_count_kv", c->heads},
+            {"attention.head_count_kv", c->split ? 1 : c->heads},
             {"expert_count", c->experts},
             {"expert_used_count", c->used},
             {"context_length", 4096},
@@ -731,16 +776,20 @@ static inline struct tf_buf mf_deepseek2_gguf(const struct mf_deepseek2 *c) {
             {"expert_shared_count", c->shared},
             {"leading_dense_block_count", c->lead},
             {"attention.kv_lora_rank", c->kv_rank},
-            {"attention.key_length", hk},
-            {"attention.value_length", c->v_dim},
+            {"attention.key_length", c->split ? c->kv_rank + c->rope : hk},
+            {"attention.value_length", c->split ? c->kv_rank : c->v_dim},
             {"rope.dimension_count", c->rope},
     };
     size_t n_u32 = 16;
     struct {
         const char *key;
         uint32_t    v;
-    } extra[5]     = {0};
+    } extra[7]     = {0};
     size_t n_extra = 0;
+    if (c->split) {
+        extra[n_extra++] = (typeof(extra[0])) {"attention.key_length_mla", hk};
+        extra[n_extra++] = (typeof(extra[0])) {"attention.value_length_mla", c->v_dim};
+    }
     if (c->q_rank > 0)
         extra[n_extra++] = (typeof(extra[0])) {"attention.q_lora_rank", c->q_rank};
     if (!c->no_yarn)
