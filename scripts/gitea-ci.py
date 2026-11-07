@@ -66,16 +66,17 @@ s=swap(s,"""  # 20 tok/s, run 1586).
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && (github.event_name != 'push' || matrix.heavy != true)
 ""","build-test-full")
 # Coverage: not on main pushes either (desktop-ci's slots), nightly instead
-s=swap(s,"""    # Not on pull_request: the instrumented run takes 60-100 minutes. It runs
+s=swap(s,"""    # Not on pull_request: the instrumented run takes ~30 minutes. It runs
     # on every push to main, nightly and on dispatch, so a coverage drop is
     # caught one merge later; a pull request opts in with the ci:full label.
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && (github.event_name != 'pull_request' || needs.changes.outputs.label == 'true')
 ""","""    # Nightly, on dispatch and for a pull request labelled ci:full; not on
-    # main pushes. The instrumented run takes ~135-150 min of one of desktop-ci's
+    # main pushes. The instrumented run took ~135-150 min of one of desktop-ci's
     # four slots, and with one per merge it was the biggest CI bottleneck
-    # (2026-10-21: three at once, 74 % runner load). A coverage drop is
-    # caught by the next nightly run.
+    # (2026-10-21: three at once, 74 % runner load); since #483 it runs six
+    # tests at a time, ~30 min. A coverage drop is caught by the next
+    # nightly run.
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.label == 'true')
 ""","coverage")

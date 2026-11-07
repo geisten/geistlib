@@ -1307,10 +1307,11 @@ jobs:
   coverage:
     name: coverage ratchet (Linux x86_64, unit + int)
     # Nightly, on dispatch and for a pull request labelled ci:full; not on
-    # main pushes. The instrumented run takes ~135-150 min of one of desktop-ci's
+    # main pushes. The instrumented run took ~135-150 min of one of desktop-ci's
     # four slots, and with one per merge it was the biggest CI bottleneck
-    # (2026-10-21: three at once, 74 % runner load). A coverage drop is
-    # caught by the next nightly run.
+    # (2026-10-21: three at once, 74 % runner load); since #483 it runs six
+    # tests at a time, ~30 min. A coverage drop is caught by the next
+    # nightly run.
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.full == 'true' && github.event_name != 'push' && (github.event_name != 'pull_request' || needs.changes.outputs.label == 'true')
     runs-on: ubuntu-24.04

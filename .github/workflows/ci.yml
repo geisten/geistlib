@@ -1303,7 +1303,7 @@ jobs:
   # Pi 5, where this run took hours and held releases back.
   coverage:
     name: coverage ratchet (Linux x86_64, unit + int)
-    # Not on pull_request: the instrumented run takes 60-100 minutes. It runs
+    # Not on pull_request: the instrumented run takes ~30 minutes. It runs
     # on every push to main, nightly and on dispatch, so a coverage drop is
     # caught one merge later; a pull request opts in with the ci:full label.
     needs: changes
