@@ -996,5 +996,60 @@
       "decision": "owner 2026-11-05: default of geistr decide --escalate chat for the verified Bonsai 2 27B profile only (geist-runtime#284); the cost on finished questions accepted and documented; tau 0.9 follow-up #467",
       "result_comment": "geistlib#286 comment 7661"
     }
+  },
+  "early_exit_tau09_467": {
+    "tracking_issue": "geistlib#467 (Gitea), follow-up of #286",
+    "declared_date": "2026-11-07",
+    "decided_by": "user (2026-11-06: #467 approved; comparison against full reasoning, margin 2 pp, night runs from 2026-11-07)",
+    "declared_before_inference": true,
+    "question": "Is early exit at tau 0.9 (probes every 128 tokens) non-inferior to full reasoning at cap 8192 on Bonsai 2 27B, within the 2 pp margin, on questions disjoint from every earlier test sample?",
+    "why_new_sample": "tau 0.9 was motivated by #286's exploratory per-tau table on #286's own 3,500 test questions; choosing it there would spend that test set, so it is tested on a new, disjoint sample.",
+    "sample": {
+      "questions": 3000,
+      "population": "the cleaned classic-MMLU test split (13,904; cais/mmlu c30699e8, exact-overlap exclusion) minus the 500 #171/#236 and the 3,500 #286 test questions: 9,904",
+      "exclusion_file": "exclude-171-286.jsonl = #171 cases-test/test.jsonl (sha256 108f815e3c21f6fe17adc4fa25d5a14f3051473349e156c06f59f46f86aa3977) followed by #286 cases-test/test.jsonl (sha256 aeb39d5c8c53653bc40a874cf51a89c595cae3468f12cf501fac10c60094fd15); 4,000 unique question_ids; sha256 e716bc88b8e1d7f0a5dd953a37c3b7da7aa9a86758d5e9535d59ca20d2b9a9c6",
+      "seed": "geist-decision-test-sample-467-v1",
+      "policy": "decision_dataset.select_stratified (subject-proportional largest-remainder quotas; within a subject the first by sha256([seed, question_id]); label-independent), as #286",
+      "question_ids_sha256": "b40cb1ab04303efb39f982ea30e6f0eae732d099739bae31f4eca6b7c63d5354",
+      "prepare": "tools/prepare_decision_eval.py --splits test --test-sample 3000 --test-seed geist-decision-test-sample-467-v1 --test-exclude exclude-171-286.jsonl --overlap-policy exclude --template-date 2026-10-04, otherwise the #171 frozen prompt policy (5 shots, rotations 1), tokenizer from the pinned build; prepared on 2026-11-07 before any inference (tokenizer only)",
+      "question_ids_sha256_of": "the selected question_ids in selection order, joined by newlines (the formula reproduces #286's declared ac034b06...)",
+      "cases_sha256": "cases-test/test.jsonl b8cfe3f37824241f0514e7b01b2010f81e4540a9aa552f990fdcfe7ee127413e (3,000 records; 0 overlap with the 4,000 excluded)",
+      "prepare_reproducibility": "The pinned build re-prepares #286's 3,500 cases identical to #286's cases-test/test.jsonl in every field except the *_ms timing fields (prompt_ids, profiles, labels), so prompts and tokenization match #286."
+    },
+    "sample_size": {
+      "rule": "decision_metrics.paired_quality (exact binomial gain/loss intervals, Bonferroni), 2 pp margin, lower bound at zero true difference",
+      "planning_discordance": "#286's tau-0.9 flips against full reasoning (151 gains, 50 losses in 3,500: 201 discordant, 2.87 % each when split evenly), and for robustness #236's cap-8192 discordance (5.4 % each). Used for n only, not for choosing tau.",
+      "lower_bound_pp_at_zero_difference": {
+        "2.87 % each": {
+          "1500": -2.0,
+          "2000": -1.72,
+          "2500": -1.54,
+          "3000": -1.4,
+          "3500": -1.29
+        },
+        "5.4 % each": {
+          "3000": -1.88,
+          "3500": -1.74,
+          "4000": -1.63
+        }
+      },
+      "note": "n = 3,000 establishes the 2 pp margin at zero true difference under both discordance assumptions."
+    },
+    "run": {
+      "driver": "tools/eval_decision_batched_reasoning.py -> tools/bench_reasoning_batch, built from main e5e4aaf8a5d91120fda389b65966030ad4045051 (campaign src worktree, release)",
+      "settings": "as #286: Bonsai 2 27B PQ2_0 (3907dc16...), Metal on the M1 Max, FP32 KV, 6 threads, OMP_WAIT_POLICY=passive, greedy, chat_reasoning prompts in subject order, per-subject prefix snapshot aligned to 320, cap 8192, batch 8 refilled as questions finish (no --pad), probes [198, 248069, 271] every 128 generated tokens recorded with --exit-tau 0",
+      "both_arms_from_one_run": "As #286: the recorded run is the full-reasoning arm; the early-exit arm is the policy applied to the recorded probes of the same generation: the first probe at position >= 128 whose top softmax probability over the four options (temperature 1) is >= 0.9 answers with that option; without one, the full-reasoning answer.",
+      "batching": "as #286 (refilled, no padding; a question in flight at a chunk deadline is re-run from its prompt in the next chunk)",
+      "scoring": "eval_decision.generation_outcome, thinking on, as #286"
+    },
+    "analysis": {
+      "primary": "paired_quality(early exit tau 0.9, full reasoning, margin 2 pp): non-inferior iff the lower bound of the conservative 95 % interval is above -2 pp",
+      "secondary": "accuracy of both arms, gains/losses, early exits, capped answers, generated tokens of the early-exit arm against full reasoning (token cost), and, descriptively, the same numbers for tau 0.8 on this sample (not a test)",
+      "no_interim": "No interim analysis: the 3,000 are analysed once, after all are complete (progress reports give counts and throughput only, no accuracy)."
+    },
+    "latency_check": "none: #286 measured live early exit against the offline policy (300/300 identical); the token ratio from the recorded run is the cost measure here",
+    "schedule": "night-only, 21:00-07:00 Berlin, as #286: chunks under 28-min wall-clock deadlines, LOCK_PRIO=batch, LOCK_MAX=30, caffeinate, resumable; power state sampled every 30 s (accuracy does not depend on it)",
+    "estimate": "about 20 s of lease per question as #286 measured: about 17 h of lease, 2.5-3 nights",
+    "if_noninferior": "a geist-runtime PR that changes the Bonsai 2 27B early-exit default from tau 0.8 to 0.9, left for the user's merge decision; if not non-inferior, tau 0.8 stays"
   }
 }
