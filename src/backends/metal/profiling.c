@@ -24,7 +24,7 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_Q4K_LINEAR_W4A8]      = "dispatch.q4k_linear.w4a8",
         [METAL_PROFILE_DISPATCH_Q4K_PLE_GATE_NT8]     = "dispatch.q4k_ple_gate.nt8",
         [METAL_PROFILE_DISPATCH_F32_PLE_GATE]         = "dispatch.f32_ple_gate",
-        [METAL_PROFILE_DISPATCH_PQ2_LOWP_X]           = "dispatch.pq2_lowp_x",
+        [METAL_PROFILE_DISPATCH_PQ2_LOWP_X]           = "dispatch.moe_glu",
         [METAL_PROFILE_DISPATCH_Q6K_LINEAR_BASE]      = "dispatch.q6k_linear.base",
         [METAL_PROFILE_DISPATCH_Q6K_LINEAR_N4]        = "dispatch.q6k_linear.n4",
         [METAL_PROFILE_DISPATCH_Q6K_LINEAR_NT4]       = "dispatch.q6k_linear.nt4",
@@ -62,12 +62,13 @@ const char *const metal_profile_stage_names[METAL_PROFILE_STAGE_COUNT] = {
         [METAL_PROFILE_DISPATCH_DN_OUT]               = "dispatch.dn.out",
         [METAL_PROFILE_DISPATCH_QGATE_SPLIT]          = "dispatch.qgate_split",
         [METAL_PROFILE_DISPATCH_SIGMOID_MUL]          = "dispatch.sigmoid_mul",
-        [METAL_PROFILE_DISPATCH_HADAMARD]             = "dispatch.hadamard",
-        [METAL_PROFILE_DISPATCH_PQ2_X_F16]            = "dispatch.pq2_x_f16",
-        [METAL_PROFILE_DISPATCH_PQ2_M8]               = "dispatch.pq2_m8",
+        [METAL_PROFILE_DISPATCH_HADAMARD]             = "dispatch.moe_wsum",
+        [METAL_PROFILE_DISPATCH_PQ2_X_F16]            = "dispatch.moe_mm_gu",
+        [METAL_PROFILE_DISPATCH_PQ2_M8]               = "dispatch.moe_route",
         [METAL_PROFILE_DISPATCH_MM_TC]                = "dispatch.mm_tc",
         [METAL_PROFILE_DISPATCH_ATTENTION_TC]         = "dispatch.attention_tc",
         [METAL_PROFILE_DISPATCH_MOE_MM]               = "dispatch.moe_mm",
+        [METAL_PROFILE_DISPATCH_MOE_MAP]              = "dispatch.moe_map",
 };
 
 #include "metal_shaders.h"

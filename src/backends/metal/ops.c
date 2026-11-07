@@ -4764,6 +4764,9 @@ static bool metal_route_ok(const struct geist_moe_route_args *a) {
     metal_msg_send_set_buffer(st, enc, bt->buffer->buffer, bt->buffer->base_off, 4);
     if (general)
         metal_msg_send_set_buffer(st, enc, sbt->buffer->buffer, sbt->buffer->base_off, 5);
+    metal_profile_add_dispatch(st,
+                               METAL_PROFILE_DISPATCH_MOE_ROUTE,
+                               (struct metal_size) {.width = m, .height = 1, .depth = 1});
     metal_msg_send_dispatch(st,
                             enc,
                             (struct metal_size) {.width = m, .height = 1, .depth = 1},
@@ -4949,10 +4952,20 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     metal_msg_send_set_bytes(st, enc, &mq, sizeof mq, 2);
     metal_msg_send_set_threadgroup_memory(
             st, enc, (n * sizeof(uint32_t) + 15u) & ~(size_t) 15u, 0u);
+    metal_profile_add_dispatch(st,
+                               METAL_PROFILE_DISPATCH_MOE_MAP,
+                               (struct metal_size) {.width = 1, .height = 1, .depth = 1});
     metal_msg_send_dispatch(st,
                             enc,
                             (struct metal_size) {.width = 1, .height = 1, .depth = 1},
                             (struct metal_size) {.width = threads, .height = 1, .depth = 1});
+    enum geist_status s0 = metal_op_end(be, cmd, enc, "MoE map");
+    if (s0 != GEIST_OK)
+        return s0;
+    cmd = nullptr;
+    enc = metal_op_begin(be, "MoE grouped GEMM", &cmd);
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
     metal_msg_send_set_pipeline(st, enc, mm);
     metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
     metal_msg_send_set_buffer(st, enc, experts->buffer->buffer, experts->buffer->base_off, 1);
@@ -4963,7 +4976,10 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
     const struct metal_size groups = {
             .width = (m + 31u) / 32u, .height = (p->n_out + 63u) / 64u, .depth = n};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM, groups);
+    metal_profile_add_dispatch(st,
+                               x_per_slot ? METAL_PROFILE_DISPATCH_MOE_MM
+                                          : METAL_PROFILE_DISPATCH_MOE_MM_GU,
+                               groups);
     metal_msg_send_dispatch(
             st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
     return metal_op_end(be, cmd, enc, "MoE grouped GEMM");
@@ -5112,6 +5128,10 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 5);
         metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 6);
     }
+    metal_profile_add_dispatch(
+            st,
+            METAL_PROFILE_DISPATCH_MOE_WSUM,
+            (struct metal_size) {.width = (d + 255u) / 256u, .height = m, .depth = 1});
     metal_msg_send_dispatch(
             st,
             enc,
@@ -5180,6 +5200,10 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
         metal_msg_send_set_buffer(st, enc, a->ids->buffer, a->ids->base_off, 6);
     else
         metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 6);
+    metal_profile_add_dispatch(
+            st,
+            METAL_PROFILE_DISPATCH_MOE_GLU,
+            (struct metal_size) {.width = (xc + 255u) / 256u, .height = xr, .depth = 1});
     metal_msg_send_dispatch(
             st,
             enc,

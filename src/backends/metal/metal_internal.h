@@ -106,8 +106,14 @@ enum metal_profile_stage : uint32_t {
     METAL_PROFILE_DISPATCH_PQ2_M8,
     METAL_PROFILE_DISPATCH_MM_TC,        /* tensor-API GEMMs (#314) */
     METAL_PROFILE_DISPATCH_ATTENTION_TC, /* tensor-API prefill flash (#314) */
-    METAL_PROFILE_DISPATCH_MOE_MM,       /* moe_map + moe_mm_<T> (#482) */
+    METAL_PROFILE_DISPATCH_MOE_MM,       /* moe_mm_<T> (#482): the down projection */
+    METAL_PROFILE_DISPATCH_MOE_MAP,      /* moe_map (#486 probe) */
     METAL_PROFILE_STAGE_COUNT,
+    /* #486 probe only: relabelled stages a MoE model does not use */
+    METAL_PROFILE_DISPATCH_MOE_MM_GU = METAL_PROFILE_DISPATCH_PQ2_X_F16,
+    METAL_PROFILE_DISPATCH_MOE_ROUTE = METAL_PROFILE_DISPATCH_PQ2_M8,
+    METAL_PROFILE_DISPATCH_MOE_GLU   = METAL_PROFILE_DISPATCH_PQ2_LOWP_X,
+    METAL_PROFILE_DISPATCH_MOE_WSUM  = METAL_PROFILE_DISPATCH_HADAMARD,
 };
 static_assert(sizeof(enum metal_profile_stage) == sizeof(uint32_t));
 static_assert(METAL_PROFILE_STAGE_COUNT <= 64, "a profile mask has a bit per stage");
