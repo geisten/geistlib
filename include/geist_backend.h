@@ -542,6 +542,28 @@ struct geist_glu_args {
     const struct geist_buffer *ids;
 };
 
+/* The routed experts' FFN of a mixture of experts, fused->moe_ffn_ids's
+ * arguments (#486): n experts, m tokens of k routed slots each, ids the m *
+ * k uint32 expert ids at the start of `ids` (moe_route's). w0 / experts:
+ * gate, up and down as fused->linear_t_ids takes them (expert 0's weight,
+ * resolved here; the n experts back to back). glu: the activation, its
+ * x_bias the gate's and z_bias the up projection's biases, one row per
+ * expert (its ids unused: a slot takes its own expert's row); nullptr:
+ * silu(gate) * up, no biases. x F32 [m, n_in] (one row per token), g F32
+ * [m * k, n_out of gate] (written: the activated rows), y F32 [m * k,
+ * n_out of down], each with a row stride of at least its width.
+ * @stability EXPERIMENTAL */
+struct geist_moe_ffn_args {
+    size_t                       n, m, k;
+    const struct geist_glu_args *glu;
+    const struct geist_weight   *w0[3];
+    const struct geist_tensor   *experts[3];
+    const struct geist_buffer   *ids;
+    const struct geist_tensor   *x;
+    struct geist_tensor         *g;
+    struct geist_tensor         *y;
+};
+
 /* Every slot here is an OPTIMIZATION: the arch must be able to produce the
  * same result from core + primitives. nullptr = always decomposed; a
  * non-null slot may still return GEIST_E_UNSUPPORTED for geometries its
@@ -1011,6 +1033,19 @@ struct geist_backend_fused {
                                           const struct geist_tensor *bias,
                                           const struct geist_buffer *ids,
                                           struct geist_tensor       *out);
+
+    /* The experts' FFN of a prefill chunk in one call (#486):
+     *   g[s] = act(gate_e x[s / k] + gate bias[e], up_e x[s / k] + up bias[e])
+     *   y[s] = down_e g[s]
+     * for s in [0, a->m * a->k), e = ids[s] -- linear_t_ids for gate and up,
+     * glu (silu_mul without a->glu) and linear_t_ids for down, within the
+     * GEMMs' rounding of them, with the slots bucketed by expert once for
+     * the three. GEIST_E_UNSUPPORTED (nothing recorded): those four calls
+     * instead -- the backend's kernel does not cover the geometry (a decode
+     * step's rows, gate and up of different dtypes). nullptr = always
+     * those. EXPERIMENTAL. */
+    enum geist_status (*moe_ffn_ids)(struct geist_backend             *be,
+                                     const struct geist_moe_ffn_args *a);
 
     /* Mixture-of-experts decode with the experts split between a GPU and
      * the CPU (#162): the device routes (moe_route) and starts the experts

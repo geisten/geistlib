@@ -107,6 +107,7 @@ enum metal_profile_stage : uint32_t {
     METAL_PROFILE_DISPATCH_MM_TC,        /* tensor-API GEMMs (#314) */
     METAL_PROFILE_DISPATCH_ATTENTION_TC, /* tensor-API prefill flash (#314) */
     METAL_PROFILE_DISPATCH_MOE_MM,       /* moe_map + moe_mm_<T> (#482) */
+    METAL_PROFILE_DISPATCH_MOE_MM_GLU,   /* moe_mm_glu_<T>: gate, up and the GLU (#486) */
     METAL_PROFILE_STAGE_COUNT,
 };
 static_assert(sizeof(enum metal_profile_stage) == sizeof(uint32_t));
@@ -553,6 +554,17 @@ struct metal_state {
     struct metal_pipeline_h *moe_mm_mx4_pipeline;
     struct metal_function_h *moe_mm_q50_function;
     struct metal_pipeline_h *moe_mm_q50_pipeline;
+    /* #486: gate and up of a chunk's experts with the activation */
+    struct metal_function_h *moe_mm_glu_q4k_function;
+    struct metal_pipeline_h *moe_mm_glu_q4k_pipeline;
+    struct metal_function_h *moe_mm_glu_q6k_function;
+    struct metal_pipeline_h *moe_mm_glu_q6k_pipeline;
+    struct metal_function_h *moe_mm_glu_q80_function;
+    struct metal_pipeline_h *moe_mm_glu_q80_pipeline;
+    struct metal_function_h *moe_mm_glu_mx4_function;
+    struct metal_pipeline_h *moe_mm_glu_mx4_pipeline;
+    struct metal_function_h *moe_mm_glu_q50_function;
+    struct metal_pipeline_h *moe_mm_glu_q50_pipeline;
     /* their tensor-API form (#482), null unless tensor_mm */
     struct metal_function_h *moe_mm_tc_q4k_function;
     struct metal_pipeline_h *moe_mm_tc_q4k_pipeline;
@@ -564,6 +576,16 @@ struct metal_state {
     struct metal_pipeline_h *moe_mm_tc_mx4_pipeline;
     struct metal_function_h *moe_mm_tc_q50_function;
     struct metal_pipeline_h *moe_mm_tc_q50_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q4k_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q4k_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q6k_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q6k_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q80_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q80_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_mx4_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_mx4_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q50_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q50_pipeline;
     struct metal_buffer_h   *argmax_result_buffer;
     void                    *argmax_result_mapped;
     uint32_t                 argmax_result_capacity;

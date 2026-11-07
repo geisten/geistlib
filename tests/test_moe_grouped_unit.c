@@ -27,6 +27,18 @@
  * supported(GEIST_FUSED_MOE_DEVICE) says yes for these dtypes at m = 512
  * and no for F32 there (no grouped GEMM: the chunk stays on the host).
  *
+ * The experts' FFN in one call (#486, fused->moe_ffn_ids), per dtype: gate
+ * and up of 256 (K-quants) or 160 outputs (a ragged 64-wide tile), down of
+ * 136; m / k / ids from 9 x 1 to 300 x 6 (random, skewed, uniform), with
+ * the plain SwiGLU and with swiglu_oai and both biases. g and y against
+ *   - the four calls it fuses (linear_t_ids gate and up, silu_mul or glu,
+ *     linear_t_ids down): within 1e-5 of the scale (the same tiles; the
+ *     count of bit-identical cases is printed);
+ *   - a double-precision FFN of the dequantized weights: within 2e-3 of
+ *     the scale (x and g are staged as half);
+ *   - its own second run: bit-identical.
+ * 8 rows and gate / up of different dtypes return GEIST_E_UNSUPPORTED.
+ *
  * SKIPs when no backend in the build has the ops.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -506,6 +518,343 @@ out:
     return fails;
 }
 
+/* ---- the experts' FFN in one call (#486) --------------------------------- */
+
+enum { F_OUT = 136, F_CASES = 7 };
+
+/* Uploads n_exp experts of rows x cols of q (random blocks) as one weight
+ * buffer; their dequantized rows into wd. */
+static int make_experts(struct geist_backend *be,
+                        const struct qfmt    *q,
+                        size_t                rows,
+                        size_t                cols,
+                        uint8_t             **blob,
+                        struct geist_weight   w[static N_EXP],
+                        struct geist_buffer **buf,
+                        struct geist_tensor  *ex,
+                        float                *wd) {
+    const struct geist_backend_vtbl *v  = be->desc->vtbl;
+    const size_t                     rb = (cols / q->elems) * q->bytes, wb = rows * rb;
+    *blob = malloc(N_EXP * wb + 16384);
+    if (*blob == nullptr)
+        return geist_expect(false, "host memory");
+    uint8_t *al = *blob + (16384 - ((uintptr_t) *blob % 16384)) % 16384;
+    for (size_t b = 0; b < N_EXP * rows * (cols / q->elems); b++) {
+        uint8_t *blk = al + b * q->bytes;
+        for (size_t i = 0; i < q->bytes; i++)
+            blk[i] = rng_u8();
+        if (q->dtype == GEIST_DTYPE_MXFP4) {
+            blk[0] = (uint8_t) (120 + rng_u8() % 4); /* E8M0: 2^-7 .. 2^-4 */
+            continue;
+        }
+        /* d (and Q4_K's dmin) such that a weight is ~0.1 in size: the
+         * activations stay where a model's are, well inside half's range
+         * (x and g are staged as half). */
+        const uint8_t dh = q->dtype == GEIST_DTYPE_Q4_K   ? 0x14  /* 2^-10 */
+                           : q->dtype == GEIST_DTYPE_Q6_K ? 0x0C  /* 2^-12 */
+                           : q->dtype == GEIST_DTYPE_Q8_0 ? 0x1C  /* 2^-8 */
+                                                          : 0x24; /* 2^-6 */
+        uint8_t      *d  = q->trailing_d ? blk + q->bytes - 2 : blk;
+        d[0]             = 0x00;
+        d[1]             = dh;
+        if (q->dtype == GEIST_DTYPE_Q4_K) {
+            blk[2] = 0x00;
+            blk[3] = dh;
+        }
+    }
+    int fails = 0;
+    for (size_t r = 0; r < N_EXP * rows; r++) {
+        if (q->dtype == GEIST_DTYPE_Q4_K)
+            dequant_q4_K_row(cols, al + r * rb, wd + r * cols);
+        else if (q->dtype == GEIST_DTYPE_Q6_K)
+            dequant_q6_K_row(cols, al + r * rb, wd + r * cols);
+        else if (q->dtype == GEIST_DTYPE_Q8_0)
+            dequant_q8_0_row(cols, al + r * rb, wd + r * cols);
+        else if (q->dtype == GEIST_DTYPE_Q5_0)
+            dequant_q5_0_row(cols, al + r * rb, wd + r * cols);
+        else
+            dequant_mxfp4_row(cols, al + r * rb, wd + r * cols);
+    }
+    for (size_t e = 0; e < N_EXP; e++) {
+        w[e] = (struct geist_weight) {.raw        = al + e * wb,
+                                      .raw_nbytes = wb,
+                                      .n_in       = (int64_t) cols,
+                                      .n_out      = (int64_t) rows,
+                                      .dtype      = (uint16_t) q->dtype};
+        fails += geist_expect(be->desc->vtbl->resolve_weight(be, &w[e]) == GEIST_OK, "resolve");
+    }
+    fails += geist_expect(v->buffer_create_aliased(be, al, N_EXP * wb, GEIST_BUFFER_WEIGHT, buf) ==
+                                  GEIST_OK,
+                          "expert buffer");
+    *ex = (struct geist_tensor) {.buffer = *buf,
+                                 .offset = 0,
+                                 .dtype  = (enum geist_dtype) q->dtype,
+                                 .layout = GEIST_LAYOUT_BLOCK_QUANTIZED,
+                                 .ndim   = 2,
+                                 .shape  = {(int64_t) (N_EXP * rows), (int64_t) cols},
+                                 .stride = {(int64_t) cols, 1}};
+    return fails;
+}
+
+static double ref_act(bool oai, double a, double b) {
+    if (!oai)
+        return a / (1.0 + exp(-a)) * b;
+    a = fmin(a, (double) GEIST_SWIGLU_OAI_LIMIT);
+    b = fmax(fmin(b, (double) GEIST_SWIGLU_OAI_LIMIT), -(double) GEIST_SWIGLU_OAI_LIMIT);
+    return a / (1.0 + exp(-(double) GEIST_SWIGLU_OAI_ALPHA * a)) * (b + 1.0);
+}
+
+/* fused->moe_ffn_ids for gate / up of `inter` outputs and down of F_OUT,
+ * all of dtype q, with the plain SwiGLU (no biases) and with swiglu_oai
+ * and both biases: against the four calls it fuses (linear_t_ids gate and
+ * up, glu or silu_mul, linear_t_ids down), against a double-precision FFN
+ * of the dequantized weights, and against its own second run. */
+static int test_ffn(struct geist_backend *be, const struct qfmt *q, size_t inter) {
+    const struct geist_backend_vtbl  *v                 = be->desc->vtbl;
+    const struct geist_backend_fused *f                 = be->desc->fused;
+    static const size_t               cases[F_CASES][3] = /* m, k, ids pattern */
+            {{9, 1, 0}, {9, 6, 1}, {37, 4, 0}, {37, 4, 2}, {37, 6, 1}, {300, 6, 0}, {300, 4, 1}};
+    const size_t         nkmax   = M_MAX * K_MAX;
+    uint8_t             *blob[3] = {nullptr, nullptr, nullptr};
+    struct geist_weight  w[3][N_EXP];
+    struct geist_buffer *bw[3] = {nullptr, nullptr, nullptr};
+    struct geist_tensor  ex[3];
+    struct geist_buffer *bx = nullptr, *bg = nullptr, *bu = nullptr, *by = nullptr, *bi = nullptr,
+                        *bb = nullptr;
+    float    *wd[3]         = {malloc(N_EXP * inter * N_IN * sizeof(float)),
+                               malloc(N_EXP * inter * N_IN * sizeof(float)),
+                               malloc(N_EXP * F_OUT * inter * sizeof(float))};
+    float    *xs            = malloc(M_MAX * N_IN * sizeof *xs);
+    float    *bias          = malloc(2 * N_EXP * inter * sizeof *bias);
+    float    *gf = malloc(nkmax * inter * sizeof *gf), *g1 = malloc(nkmax * inter * sizeof *g1);
+    float    *yf = malloc(nkmax * F_OUT * sizeof *yf), *y1 = malloc(nkmax * F_OUT * sizeof *y1);
+    float    *yf2   = malloc(nkmax * F_OUT * sizeof *yf2);
+    double   *gr    = malloc(inter * sizeof *gr);
+    uint32_t *ids   = malloc(nkmax * sizeof *ids);
+    int       fails = 0;
+    if (wd[0] == nullptr || wd[1] == nullptr || wd[2] == nullptr || xs == nullptr ||
+        bias == nullptr || gf == nullptr || g1 == nullptr || yf == nullptr || y1 == nullptr ||
+        yf2 == nullptr || gr == nullptr || ids == nullptr) {
+        fails += geist_expect(false, "host memory");
+        goto out;
+    }
+    for (size_t p = 0; p < 3 && fails == 0; p++)
+        fails += make_experts(be,
+                              q,
+                              p < 2 ? inter : F_OUT,
+                              p < 2 ? N_IN : inter,
+                              &blob[p],
+                              w[p],
+                              &bw[p],
+                              &ex[p],
+                              wd[p]);
+    for (size_t i = 0; i < M_MAX * N_IN; i++)
+        xs[i] = (float) rng_u8() / 64.0f - 2.0f + (float) rng_u8() / 65536.0f;
+    for (size_t i = 0; i < 2 * N_EXP * inter; i++)
+        bias[i] = (float) rng_u8() / 128.0f - 1.0f;
+    fails += geist_expect(
+            fails == 0 &&
+                    v->buffer_create(
+                            be, M_MAX * N_IN * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bx) ==
+                            GEIST_OK &&
+                    v->buffer_create(
+                            be, nkmax * inter * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bg) ==
+                            GEIST_OK &&
+                    v->buffer_create(
+                            be, nkmax * inter * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bu) ==
+                            GEIST_OK &&
+                    v->buffer_create(
+                            be, nkmax * F_OUT * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &by) ==
+                            GEIST_OK &&
+                    v->buffer_create(be, nkmax * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) ==
+                            GEIST_OK &&
+                    v->buffer_create(
+                            be, 2 * N_EXP * inter * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bb) ==
+                            GEIST_OK &&
+                    v->buffer_upload(bx, M_MAX * N_IN * 4, (const uint8_t *) xs) == GEIST_OK &&
+                    v->buffer_upload(bb, 2 * N_EXP * inter * 4, (const uint8_t *) bias) == GEIST_OK,
+            "buffers");
+    if (fails > 0)
+        goto out;
+    const struct geist_tensor tbg      = mat(bb, 0, N_EXP, inter);
+    const struct geist_tensor tbu      = mat(bb, N_EXP * inter * sizeof(float), N_EXP, inter);
+    double                    worst_g1 = 0.0, worst_y1 = 0.0, worst_gd = 0.0, worst_yd = 0.0;
+    size_t                    same = 0, total = 0;
+    for (int oai = 0; oai < 2 && fails == 0; oai++)
+        for (size_t c = 0; c < F_CASES && fails == 0; c++) {
+            const size_t m = cases[c][0], k = cases[c][1], nk = m * k;
+            make_ids((int) cases[c][2], m, k, ids);
+            for (size_t i = 0; i < nk * inter; i++)
+                gf[i] = NAN;
+            for (size_t i = 0; i < nk * F_OUT; i++)
+                yf[i] = NAN;
+            fails += geist_expect(
+                    v->buffer_upload(bi, nk * 4, (const uint8_t *) ids) == GEIST_OK &&
+                            v->buffer_upload(bg, nk * inter * 4, (const uint8_t *) gf) ==
+                                    GEIST_OK &&
+                            v->buffer_upload(by, nk * F_OUT * 4, (const uint8_t *) yf) == GEIST_OK,
+                    "upload");
+            struct geist_tensor             tx = mat(bx, 0, m, N_IN), tg = mat(bg, 0, nk, inter),
+                                            tu = mat(bu, 0, nk, inter), ty = mat(by, 0, nk, F_OUT);
+            const struct geist_glu_args     ga = {.act    = GEIST_GLU_SWIGLU_OAI,
+                                                  .alpha  = GEIST_SWIGLU_OAI_ALPHA,
+                                                  .limit  = GEIST_SWIGLU_OAI_LIMIT,
+                                                  .x_bias = &tbg,
+                                                  .z_bias = &tbu,
+                                                  .ids    = bi};
+            const struct geist_moe_ffn_args fa = {.n       = N_EXP,
+                                                  .m       = m,
+                                                  .k       = k,
+                                                  .glu     = oai ? &ga : nullptr,
+                                                  .w0      = {&w[0][0], &w[1][0], &w[2][0]},
+                                                  .experts = {&ex[0], &ex[1], &ex[2]},
+                                                  .ids     = bi,
+                                                  .x       = &tx,
+                                                  .g       = &tg,
+                                                  .y       = &ty};
+            for (int run = 0; run < 2; run++)
+                fails += geist_expect(
+                        f->moe_ffn_ids(be, &fa) == GEIST_OK &&
+                                v->buffer_download(nk * F_OUT * 4,
+                                                   (uint8_t *) (run ? yf2 : yf),
+                                                   by) == GEIST_OK &&
+                                v->buffer_download(nk * inter * 4, (uint8_t *) gf, bg) == GEIST_OK,
+                        "moe_ffn_ids");
+            fails += geist_expect(memcmp(yf, yf2, nk * F_OUT * 4) == 0,
+                                  "a second run is bit-identical");
+            /* The four calls it fuses, the arch's decomposed route. */
+            fails += geist_expect(
+                    f->linear_t_ids(be, N_EXP, m, k, false, &w[0][0], &ex[0], bi, &tx, &tg) ==
+                                    GEIST_OK &&
+                            f->linear_t_ids(
+                                    be, N_EXP, m, k, false, &w[1][0], &ex[1], bi, &tx, &tu) ==
+                                    GEIST_OK &&
+                            (oai ? f->glu(be, &ga, &tg, &tu, &tg)
+                                 : f->silu_mul(be, &tg, &tu, &tg)) == GEIST_OK &&
+                            f->linear_t_ids(
+                                    be, N_EXP, m, k, true, &w[2][0], &ex[2], bi, &tg, &ty) ==
+                                    GEIST_OK &&
+                            v->buffer_download(nk * inter * 4, (uint8_t *) g1, bg) == GEIST_OK &&
+                            v->buffer_download(nk * F_OUT * 4, (uint8_t *) y1, by) == GEIST_OK,
+                    "the four calls");
+            double eg1 = 0.0, ey1 = 0.0, egd = 0.0, eyd = 0.0, sg = 0.0, sy = 0.0;
+            size_t nan = 0;
+            for (size_t s = 0; s < nk; s++) {
+                const size_t e  = ids[s];
+                const float *xr = xs + (s / k) * N_IN;
+                for (size_t o = 0; o < inter; o++) {
+                    const float *wg = wd[0] + (e * inter + o) * N_IN;
+                    const float *wu = wd[1] + (e * inter + o) * N_IN;
+                    double       a = 0.0, b = 0.0;
+                    for (size_t i = 0; i < N_IN; i++) {
+                        a += (double) wg[i] * (double) xr[i];
+                        b += (double) wu[i] * (double) xr[i];
+                    }
+                    if (oai) {
+                        a += bias[e * inter + o];
+                        b += bias[(N_EXP + e) * inter + o];
+                    }
+                    gr[o]          = ref_act(oai != 0, a, b);
+                    const double g = gf[s * inter + o];
+                    nan += isnan(g);
+                    egd = fmax(egd, fabs(gr[o] - g));
+                    eg1 = fmax(eg1, fabs((double) g1[s * inter + o] - g));
+                    sg  = fmax(sg, fabs(gr[o]));
+                }
+                for (size_t o = 0; o < F_OUT; o++) {
+                    const float *wr  = wd[2] + (e * F_OUT + o) * inter;
+                    double       ref = 0.0;
+                    for (size_t i = 0; i < inter; i++)
+                        ref += (double) wr[i] * gr[i];
+                    const double y = yf[s * F_OUT + o];
+                    nan += isnan(y);
+                    eyd = fmax(eyd, fabs(ref - y));
+                    ey1 = fmax(ey1, fabs((double) y1[s * F_OUT + o] - y));
+                    sy  = fmax(sy, fabs(ref));
+                }
+            }
+            same += memcmp(gf, g1, nk * inter * 4) == 0 && memcmp(yf, y1, nk * F_OUT * 4) == 0;
+            total++;
+            worst_g1      = fmax(worst_g1, sg > 0.0 ? eg1 / sg : 1.0);
+            worst_y1      = fmax(worst_y1, sy > 0.0 ? ey1 / sy : 1.0);
+            worst_gd      = fmax(worst_gd, sg > 0.0 ? egd / sg : 1.0);
+            worst_yd      = fmax(worst_yd, sy > 0.0 ? eyd / sy : 1.0);
+            const bool ok = nan == 0 && eg1 <= 1e-5 * sg && ey1 <= 1e-5 * sy && egd <= 2e-3 * sg &&
+                            eyd <= 2e-3 * sy;
+            if (!ok)
+                fprintf(stderr,
+                        "  %s %s m=%zu k=%zu ids %zu: %zu unwritten; g vs the four calls %.3g, "
+                        "vs double %.3g of %.3g; y %.3g, %.3g of %.3g\n",
+                        q->name,
+                        oai ? "swiglu_oai" : "silu",
+                        m,
+                        k,
+                        cases[c][2],
+                        nan,
+                        eg1,
+                        egd,
+                        sg,
+                        ey1,
+                        eyd,
+                        sy);
+            fails += geist_expect(nan == 0, "every slot's g and y row is written");
+            fails += geist_expect(eg1 <= 1e-5 * sg && ey1 <= 1e-5 * sy,
+                                  "moe_ffn_ids matches the four calls");
+            fails += geist_expect(egd <= 2e-3 * sg && eyd <= 2e-3 * sy,
+                                  "moe_ffn_ids matches double");
+        }
+    printf("  %-5s moe_ffn_ids (inter %zu): g / y max |d|/scale %.3g / %.3g vs the four calls (%zu "
+           "of %zu cases bit-identical), %.3g / %.3g vs double\n",
+           q->name,
+           inter,
+           worst_g1,
+           worst_y1,
+           same,
+           total,
+           worst_gd,
+           worst_yd);
+    /* A decode step's rows and gate / up of different dtypes: not here. */
+    struct geist_tensor       tx = mat(bx, 0, 8, N_IN), tg = mat(bg, 0, 8, inter),
+                              ty  = mat(by, 0, 8, F_OUT);
+    struct geist_moe_ffn_args few = {.n       = N_EXP,
+                                     .m       = 8,
+                                     .k       = 1,
+                                     .w0      = {&w[0][0], &w[1][0], &w[2][0]},
+                                     .experts = {&ex[0], &ex[1], &ex[2]},
+                                     .ids     = bi,
+                                     .x       = &tx,
+                                     .g       = &tg,
+                                     .y       = &ty};
+    fails += geist_expect(f->moe_ffn_ids(be, &few) == GEIST_E_UNSUPPORTED,
+                          "8 rows: GEIST_E_UNSUPPORTED");
+    struct geist_weight wu_other = w[1][0];
+    wu_other.dtype =
+            (uint16_t) (q->dtype == GEIST_DTYPE_Q8_0 ? GEIST_DTYPE_Q5_0 : GEIST_DTYPE_Q8_0);
+    few.m     = 9;
+    few.w0[1] = &wu_other;
+    fails += geist_expect(f->moe_ffn_ids(be, &few) == GEIST_E_UNSUPPORTED,
+                          "gate and up of different dtypes: GEIST_E_UNSUPPORTED");
+out:
+    struct geist_buffer *bs[] = {bw[0], bw[1], bw[2], bx, bg, bu, by, bi, bb};
+    for (size_t i = 0; i < sizeof bs / sizeof bs[0]; i++)
+        if (bs[i] != nullptr)
+            v->buffer_destroy(be, bs[i]);
+    for (size_t p = 0; p < 3; p++) {
+        free(blob[p]);
+        free(wd[p]);
+    }
+    free(xs);
+    free(bias);
+    free(gf);
+    free(g1);
+    free(yf);
+    free(y1);
+    free(yf2);
+    free(gr);
+    free(ids);
+    return fails;
+}
+
 /* F32 experts have no grouped GEMM: the probe keeps a chunk on the host. */
 static int test_f32_refused(struct geist_backend *be) {
     static float              wf[N_OUT * N_IN];
@@ -547,6 +896,9 @@ int main(void) {
         };
         for (size_t i = 0; i < sizeof qs / sizeof qs[0]; i++)
             fails += test_grouped(be, &qs[i]);
+        if (f->moe_ffn_ids != nullptr) /* down's n_in: whole blocks; 160 a ragged tile */
+            for (size_t i = 0; i < sizeof qs / sizeof qs[0]; i++)
+                fails += test_ffn(be, &qs[i], qs[i].elems == 256 ? 256 : 160);
         fails += test_f32_refused(be);
         geist_backend_destroy(be);
     }
@@ -555,6 +907,6 @@ int main(void) {
         return 0;
     }
     if (fails == 0)
-        printf("PASS: chunk routing and grouped expert GEMMs\n");
+        printf("PASS: chunk routing, grouped expert GEMMs and the fused expert FFN\n");
     return fails == 0 ? 0 : 1;
 }

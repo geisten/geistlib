@@ -4635,12 +4635,16 @@ struct metal_moe_route_g_params {
 struct metal_moe_ids_params {
     uint32_t estride, per_slot, k, io;
 };
-/* moe_map's MM and moe_mm_<T>'s MQ (#482). */
+/* moe_map's MM, moe_mm_<T>'s MQ (#482) and moe_mm_glu_<T>'s MQG (#486). */
 struct metal_moe_map_params {
-    uint32_t n, nk, io;
+    uint32_t n, nk, io, tb;
 };
 struct metal_moe_mm_params {
-    uint32_t n, k, ps, es;
+    uint32_t n, k, ps, es, tb;
+};
+struct metal_moe_glu_mm_params {
+    uint32_t n, k, es, tb, wu, act, hx, hz, xbo, zbo;
+    float    alpha, limit;
 };
 struct metal_moe_glu_params {
     uint32_t n, act, hx, hz, hi, xo, zo, yo, xbo, zbo, io;
@@ -4910,9 +4914,88 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     return mw.n_out == rows && mw.n_in == cols;
 }
 
+/* The bucketing of m * k = nk slots of n experts (#482, #486): moe_map's
+ * words in moe_map_buffer -- n + 1 expert offsets, nk sorted slots, the
+ * tile count and the tiles -- and the tiles' bound, the grids' width:
+ * sum_e ceil(c_e / 32) <= floor(nk / 32) + (the experts with rows). A tile
+ * packs its row tile above bit 16, so an expert's rows (at most nk) stay
+ * under 2^21. false: too many experts or slots for that. */
+static bool metal_moe_map_size(size_t n, size_t nk, size_t *words, size_t *tiles) {
+    *tiles = nk / 32u + (n < nk ? n : nk);
+    *words = n + 2u + nk + *tiles;
+    return n <= METAL_MOE_MAP_MAX_EXPERTS && nk < ((size_t) 1 << 21);
+}
+
+/* Records moe_map: the slots of ids by expert into map, then the tiles
+ * that have rows (one threadgroup, as many simdgroups as the pipeline
+ * runs, up to 32). */
+[[nodiscard]] static bool metal_moe_encode_map(struct metal_state        *st,
+                                               struct metal_encoder_h    *enc,
+                                               size_t                     n,
+                                               size_t                     nk,
+                                               const struct geist_buffer *ids,
+                                               const struct geist_buffer *map) {
+    unsigned long threads =
+            metal_msg_send_ulong0(st, st->moe_map_pipeline, "maxTotalThreadsPerThreadgroup");
+    threads = (threads < 1024u ? threads : 1024u) & ~31ul;
+    if (threads == 0u)
+        return false;
+    const struct metal_moe_map_params mq = {
+            .n = (uint32_t) n, .nk = (uint32_t) nk, .tb = (uint32_t) (n + 1u + nk)};
+    metal_msg_send_set_pipeline(st, enc, st->moe_map_pipeline);
+    metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, map->buffer, map->base_off, 1);
+    metal_msg_send_set_bytes(st, enc, &mq, sizeof mq, 2);
+    metal_msg_send_set_threadgroup_memory(
+            st, enc, (n * sizeof(uint32_t) + 15u) & ~(size_t) 15u, 0u);
+    metal_msg_send_dispatch(st,
+                            enc,
+                            (struct metal_size) {.width = 1, .height = 1, .depth = 1},
+                            (struct metal_size) {.width = threads, .height = 1, .depth = 1});
+    return true;
+}
+
+/* Records moe_mm_<dtype> over map's tiles (moe_map's of the same n and m *
+ * k slots): y's slot rows = their experts' weights (experts, laid out as
+ * w0) times x's rows, one per slot or per token; p is the linear's checked
+ * geometry. */
+static void metal_moe_encode_mm(struct metal_state            *st,
+                                struct metal_encoder_h        *enc,
+                                size_t                         n,
+                                size_t                         m,
+                                size_t                         k,
+                                bool                           x_per_slot,
+                                const struct geist_weight     *w0,
+                                const struct metal_q4k_params *p,
+                                const struct geist_buffer     *map,
+                                const struct geist_tensor     *x,
+                                const struct geist_tensor     *experts,
+                                struct geist_tensor           *y) {
+    size_t words = 0, tiles = 0;
+    (void) metal_moe_map_size(n, m * k, &words, &tiles); /* the caller checked it */
+    const struct metal_moe_mm_params q = {.n  = (uint32_t) n,
+                                          .k  = (uint32_t) k,
+                                          .ps = x_per_slot ? 1u : 0u,
+                                          .es = (uint32_t) w0->raw_nbytes,
+                                          .tb = (uint32_t) (n + 1u + m * k)};
+    metal_msg_send_set_pipeline(st, enc, metal_moe_mm_pipe(st, (enum geist_dtype) w0->dtype));
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, experts->buffer->buffer, experts->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, p, sizeof *p, 3);
+    metal_msg_send_set_buffer(st, enc, map->buffer, map->base_off, 4);
+    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 5);
+    metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
+    const struct metal_size groups = {.width = tiles, .height = (p->n_out + 63u) / 64u, .depth = 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM, groups);
+    metal_msg_send_dispatch(
+            st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
+}
+
 /* metal_linear_t_ids's grouped form (#482): moe_map buckets the m * k
  * slots of ids by expert into moe_map_buffer, then moe_mm_<dtype> runs
- * every expert's rows; p is the linear's checked geometry (rows unused). */
+ * the tiles that have rows; p is the linear's checked geometry (rows
+ * unused). */
 [[nodiscard]] static enum geist_status metal_moe_mm(struct geist_backend          *be,
                                                     size_t                         n,
                                                     size_t                         m,
@@ -4924,49 +5007,74 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
                                                     const struct geist_tensor     *x,
                                                     const struct geist_tensor     *experts,
                                                     struct geist_tensor           *y) {
-    struct metal_state               *st  = be->state;
-    struct geist_buffer              *map = st->moe_map_buffer;
-    struct metal_pipeline_h          *mm  = metal_moe_mm_pipe(st, (enum geist_dtype) w0->dtype);
-    const struct metal_moe_map_params mq  = {.n = (uint32_t) n, .nk = (uint32_t) (m * k)};
-    const struct metal_moe_mm_params  q   = {.n  = (uint32_t) n,
-                                             .k  = (uint32_t) k,
-                                             .ps = x_per_slot ? 1u : 0u,
-                                             .es = (uint32_t) w0->raw_nbytes};
-    /* One threadgroup, as many simdgroups as the pipeline runs, up to 32. */
-    unsigned long threads =
-            metal_msg_send_ulong0(st, st->moe_map_pipeline, "maxTotalThreadsPerThreadgroup");
-    threads = (threads < 1024u ? threads : 1024u) & ~31ul;
-    if (threads == 0u)
-        return GEIST_E_BACKEND;
+    struct metal_state                             *st   = be->state;
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     struct metal_cmdbuf_h                          *cmd  = nullptr;
     struct metal_encoder_h *enc = metal_op_begin(be, "MoE grouped GEMM", &cmd);
     if (enc == nullptr)
         return GEIST_E_BACKEND;
-    metal_msg_send_set_pipeline(st, enc, st->moe_map_pipeline);
-    metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, map->buffer, map->base_off, 1);
-    metal_msg_send_set_bytes(st, enc, &mq, sizeof mq, 2);
-    metal_msg_send_set_threadgroup_memory(
-            st, enc, (n * sizeof(uint32_t) + 15u) & ~(size_t) 15u, 0u);
-    metal_msg_send_dispatch(st,
-                            enc,
-                            (struct metal_size) {.width = 1, .height = 1, .depth = 1},
-                            (struct metal_size) {.width = threads, .height = 1, .depth = 1});
-    metal_msg_send_set_pipeline(st, enc, mm);
-    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, experts->buffer->buffer, experts->buffer->base_off, 1);
-    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
-    metal_msg_send_set_bytes(st, enc, p, sizeof *p, 3);
-    metal_msg_send_set_buffer(st, enc, map->buffer, map->base_off, 4);
-    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 5);
-    metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
-    const struct metal_size groups = {
-            .width = (m + 31u) / 32u, .height = (p->n_out + 63u) / 64u, .depth = n};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM, groups);
-    metal_msg_send_dispatch(
-            st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
+    if (!metal_moe_encode_map(st, enc, n, m * k, ids, st->moe_map_buffer)) {
+        (void) metal_op_end(be, cmd, enc, "MoE grouped GEMM");
+        return GEIST_E_BACKEND;
+    }
+    metal_moe_encode_mm(st, enc, n, m, k, x_per_slot, w0, p, st->moe_map_buffer, x, experts, y);
     return metal_op_end(be, cmd, enc, "MoE grouped GEMM");
+}
+
+/* linear_t_ids's arguments checked, as the kernels' parameter block p
+ * (rows unused); block: the dtype's id-indexed matvec block. */
+[[nodiscard]] static enum geist_status metal_moe_ids_geometry(const struct metal_state  *st,
+                                                              size_t                     n,
+                                                              size_t                     m,
+                                                              size_t                     k,
+                                                              uint32_t                   block,
+                                                              bool                       x_per_slot,
+                                                              const struct geist_weight *w0,
+                                                              const struct geist_tensor *experts,
+                                                              const struct geist_buffer *ids,
+                                                              const struct geist_tensor *x,
+                                                              const struct geist_tensor *y,
+                                                              struct metal_q4k_params   *p) {
+    const enum geist_dtype dtype = (enum geist_dtype) w0->dtype;
+    const size_t           ni = (size_t) w0->n_in, no = (size_t) w0->n_out;
+    size_t xr = 0, xc = 0, xo = 0, xs = 0, yr = 0, yc = 0, yo = 0, ys = 0, nk = 0, rows = 0, wo = 0,
+           need = 0;
+    /* x and y may be row views with a stride (absorbed MLA's per-head
+     * slices of q and of the attention output, #376). */
+    if (ckd_mul(&nk, m, k) || ckd_mul(&rows, n, no) ||
+        !metal_tensor_is_f32_rows(x, &xr, &xc, &xo, &xs) ||
+        !metal_tensor_is_f32_rows(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
+        xc != ni || yr < nk || yc != no || block == 0u || ni % block != 0u ||
+        !metal_moe_experts_offset(experts, dtype, rows, ni, &wo) || ids->owner != st ||
+        ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||
+        ni > UINT32_MAX || no > UINT32_MAX || xo > UINT32_MAX || yo > UINT32_MAX ||
+        wo > UINT32_MAX || xs > UINT32_MAX || ys > UINT32_MAX || nk > UINT32_MAX || k == 0)
+        return GEIST_E_INVALID_ARG;
+    *p = (struct metal_q4k_params) {
+            .n_in           = (uint32_t) ni,
+            .n_out          = (uint32_t) no,
+            .rows           = 1,
+            .blocks_per_row = (uint32_t) (ni / block),
+            .x_offset       = (uint32_t) xo,
+            .w_byte_offset  = (uint32_t) wo,
+            .y_offset       = (uint32_t) yo,
+            .x_row_stride   = (uint32_t) xs,
+            .y_row_stride   = (uint32_t) ys,
+    };
+    return GEIST_OK;
+}
+
+/* Whether the grouped GEMMs take an expert linear of geometry p over m *
+ * k slots of n experts: x rows 8-float aligned, and the bucketing's words
+ * reserved in moe_map_buffer. */
+static bool metal_moe_grouped_ready(
+        struct geist_backend *be, size_t n, size_t m, size_t k, const struct metal_q4k_params *p) {
+    struct metal_state *st    = be->state;
+    size_t              words = 0, tiles = 0, bytes = 0;
+    return p->x_offset % 8u == 0u && p->x_row_stride % 8u == 0u &&
+           metal_moe_map_size(n, m * k, &words, &tiles) &&
+           !ckd_mul(&bytes, words, sizeof(uint32_t)) &&
+           metal_scratch_reserve(be, bytes, 0, false, &st->moe_map_buffer) == GEIST_OK;
 }
 
 [[nodiscard]] static enum geist_status metal_linear_t_ids(struct geist_backend      *be,
@@ -4993,41 +5101,15 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
     uint32_t                 rpg = 0, block = 0;
     if (!metal_moe_ids_pipe(st, dtype, &pipe, &rpg, &block) || pipe == nullptr)
         return GEIST_E_UNSUPPORTED;
-    const size_t ni = (size_t) w0->n_in, no = (size_t) w0->n_out;
-    size_t xr = 0, xc = 0, xo = 0, xs = 0, yr = 0, yc = 0, yo = 0, ys = 0, nk = 0, rows = 0, wo = 0,
-           need = 0;
-    /* x and y may be row views with a stride (absorbed MLA's per-head
-     * slices of q and of the attention output, #376). */
-    if (ckd_mul(&nk, m, k) || ckd_mul(&rows, n, no) ||
-        !metal_tensor_is_f32_rows(x, &xr, &xc, &xo, &xs) ||
-        !metal_tensor_is_f32_rows(y, &yr, &yc, &yo, &ys) || xr < (x_per_slot ? nk : m) ||
-        xc != ni || yr < nk || yc != no || ni % block != 0u ||
-        !metal_moe_experts_offset(experts, dtype, rows, ni, &wo) || ids->owner != be->state ||
-        ckd_mul(&need, nk, sizeof(uint32_t)) || need > ids->bytes || w0->raw_nbytes > UINT32_MAX ||
-        ni > UINT32_MAX || no > UINT32_MAX || xo > UINT32_MAX || yo > UINT32_MAX ||
-        wo > UINT32_MAX || xs > UINT32_MAX || ys > UINT32_MAX || nk > UINT32_MAX || k == 0)
-        return GEIST_E_INVALID_ARG;
-    const struct metal_q4k_params p = {
-            .n_in           = (uint32_t) ni,
-            .n_out          = (uint32_t) no,
-            .rows           = 1,
-            .blocks_per_row = (uint32_t) (ni / block),
-            .x_offset       = (uint32_t) xo,
-            .w_byte_offset  = (uint32_t) wo,
-            .y_offset       = (uint32_t) yo,
-            .x_row_stride   = (uint32_t) xs,
-            .y_row_stride   = (uint32_t) ys,
-    };
+    struct metal_q4k_params p;
+    s = metal_moe_ids_geometry(st, n, m, k, block, x_per_slot, w0, experts, ids, x, y, &p);
+    if (s != GEIST_OK)
+        return s;
     /* #482: a chunk's rows bucketed by expert on the device, then each
-     * expert's rows as one GEMM tile column (moe_map + moe_mm_<T>). */
-    size_t     map_n = 0;
-    const bool grouped =
-            metal_moe_mm_takes(st, dtype, m, ni) && n <= METAL_MOE_MAP_MAX_EXPERTS &&
-            xo % 8u == 0u && xs % 8u == 0u && !ckd_add(&map_n, n + 1u, nk) &&
-            !ckd_mul(&map_n, map_n, sizeof(uint32_t)) &&
-            metal_scratch_reserve(be, map_n, 0, false, &st->moe_map_buffer) == GEIST_OK;
-    if (grouped)
+     * expert's rows as GEMM tiles (moe_map + moe_mm_<T>). */
+    if (metal_moe_mm_takes(st, dtype, m, p.n_in) && metal_moe_grouped_ready(be, n, m, k, &p))
         return metal_moe_mm(be, n, m, k, x_per_slot, w0, &p, ids, x, experts, y);
+    const size_t                                    nk = m * k, no = p.n_out;
     const struct metal_moe_ids_params               q    = {.estride  = (uint32_t) w0->raw_nbytes,
                                                             .per_slot = x_per_slot ? 1u : 0u,
                                                             .k        = (uint32_t) k};
@@ -5186,6 +5268,162 @@ static bool metal_moe_experts_offset(const struct geist_tensor *t,
             (struct metal_size) {.width = (xc + 255u) / 256u, .height = xr, .depth = 1},
             (struct metal_size) {.width = 256, .height = 1, .depth = 1});
     return metal_op_end(be, cmd, enc, "MoE GLU");
+}
+
+/* The fused gate / up GEMM with the GLU for a dtype (#486): its
+ * tensor-API form where the device has the matrix units, else the
+ * simdgroup one; nullptr: none (the dtypes metal_moe_mm_pipe has). */
+static struct metal_pipeline_h *metal_moe_mm_glu_pipe(const struct metal_state *st,
+                                                      enum geist_dtype          dtype) {
+    if (metal_moe_mm_pipe(st, dtype) == nullptr)
+        return nullptr;
+    const bool tc = st->tensor_mm;
+    switch (dtype) {
+    case GEIST_DTYPE_Q4_K:
+        return tc && st->moe_mm_tc_glu_q4k_pipeline != nullptr ? st->moe_mm_tc_glu_q4k_pipeline
+                                                               : st->moe_mm_glu_q4k_pipeline;
+    case GEIST_DTYPE_Q6_K:
+        return tc && st->moe_mm_tc_glu_q6k_pipeline != nullptr ? st->moe_mm_tc_glu_q6k_pipeline
+                                                               : st->moe_mm_glu_q6k_pipeline;
+    case GEIST_DTYPE_Q8_0:
+        return tc && st->moe_mm_tc_glu_q80_pipeline != nullptr ? st->moe_mm_tc_glu_q80_pipeline
+                                                               : st->moe_mm_glu_q80_pipeline;
+    case GEIST_DTYPE_MXFP4:
+        return tc && st->moe_mm_tc_glu_mx4_pipeline != nullptr ? st->moe_mm_tc_glu_mx4_pipeline
+                                                               : st->moe_mm_glu_mx4_pipeline;
+    case GEIST_DTYPE_Q5_0:
+        return tc && st->moe_mm_tc_glu_q50_pipeline != nullptr ? st->moe_mm_tc_glu_q50_pipeline
+                                                               : st->moe_mm_glu_q50_pipeline;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_Q5_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_COUNT:
+        break;
+    }
+    return nullptr;
+}
+
+/* fused->moe_ffn_ids (#486): one bucketing (moe_map) for the three
+ * projections, gate and up with the activation as one grouped GEMM
+ * (moe_mm_glu_<T>: x staged once, no g / u round trip through memory, no
+ * GLU dispatch) and down as moe_mm_<T>, all over the tiles that have rows.
+ * Below METAL_MOE_MM_MIN_ROWS (a decode step's rows), with gate and up of
+ * different dtypes or geometry, or a dtype without the kernels:
+ * GEIST_E_UNSUPPORTED before anything is recorded. */
+[[nodiscard]] static enum geist_status metal_moe_ffn_ids(struct geist_backend            *be,
+                                                         const struct geist_moe_ffn_args *a) {
+    if (be == nullptr || be->state == nullptr || a == nullptr || a->ids == nullptr ||
+        a->x == nullptr || a->g == nullptr || a->y == nullptr)
+        return GEIST_E_INVALID_ARG;
+    for (size_t i = 0; i < 3; i++)
+        if (a->w0[i] == nullptr || a->experts[i] == nullptr)
+            return GEIST_E_INVALID_ARG;
+    const struct geist_weight *wg = a->w0[0], *wu = a->w0[1], *wd = a->w0[2];
+    const enum geist_dtype     dg = (enum geist_dtype) wg->dtype, dd = (enum geist_dtype) wd->dtype;
+    const enum geist_glu_act   act = a->glu != nullptr ? a->glu->act : GEIST_GLU_SILU;
+    if (a->m < METAL_MOE_MM_MIN_ROWS || wu->dtype != wg->dtype || wu->n_in != wg->n_in ||
+        wu->n_out != wg->n_out || wu->raw_nbytes != wg->raw_nbytes ||
+        (act != GEIST_GLU_SILU && act != GEIST_GLU_SWIGLU_OAI))
+        return GEIST_E_UNSUPPORTED;
+    enum geist_status s = metal_ensure(be, METAL_TAB_MOE);
+    if (s != GEIST_OK)
+        return s;
+    struct metal_state *st = be->state;
+    if (st->tensor_mm)
+        (void) metal_ensure(be, METAL_TAB_TENSOR); /* not fatal: drops tensor_mm */
+    struct metal_pipeline_h *pg = nullptr, *pd = nullptr, *glu = metal_moe_mm_glu_pipe(st, dg);
+    uint32_t                 rpg = 0, bg = 0, bd = 0;
+    if (glu == nullptr || !metal_moe_ids_pipe(st, dg, &pg, &rpg, &bg) || pg == nullptr ||
+        !metal_moe_ids_pipe(st, dd, &pd, &rpg, &bd) || pd == nullptr ||
+        !metal_moe_mm_takes(st, dg, a->m, (size_t) wg->n_in) ||
+        !metal_moe_mm_takes(st, dd, a->m, (size_t) wd->n_in))
+        return GEIST_E_UNSUPPORTED;
+    /* The up projection is gate's geometry with its own weights: checked
+     * as a linear of its own into g. */
+    struct metal_q4k_params p, pu, pdn;
+    s = metal_moe_ids_geometry(
+            st, a->n, a->m, a->k, bg, false, wg, a->experts[0], a->ids, a->x, a->g, &p);
+    if (s == GEIST_OK)
+        s = metal_moe_ids_geometry(
+                st, a->n, a->m, a->k, bg, false, wu, a->experts[1], a->ids, a->x, a->g, &pu);
+    if (s == GEIST_OK)
+        s = metal_moe_ids_geometry(
+                st, a->n, a->m, a->k, bd, true, wd, a->experts[2], a->ids, a->g, a->y, &pdn);
+    if (s != GEIST_OK)
+        return s;
+    size_t     inter = p.n_out, bias_len = 0, xbo = 0, zbo = 0;
+    bool       hx = false, hz = false;
+    const bool biases_ok =
+            !ckd_mul(&bias_len, a->n, inter) &&
+            (a->glu == nullptr || (metal_bias_of(a->glu->x_bias, bias_len, &hx, &xbo) &&
+                                   metal_bias_of(a->glu->z_bias, bias_len, &hz, &zbo)));
+    if (!biases_ok)
+        return GEIST_E_INVALID_ARG;
+    if (!metal_moe_grouped_ready(be, a->n, a->m, a->k, &p) ||
+        !metal_moe_grouped_ready(be, a->n, a->m, a->k, &pdn))
+        return GEIST_E_UNSUPPORTED;
+    size_t words = 0, tiles = 0;
+    (void) metal_moe_map_size(a->n, a->m * a->k, &words, &tiles); /* grouped_ready checked it */
+    const struct metal_moe_glu_mm_params q   = {.n     = (uint32_t) a->n,
+                                                .k     = (uint32_t) a->k,
+                                                .es    = (uint32_t) wg->raw_nbytes,
+                                                .tb    = (uint32_t) (a->n + 1u + a->m * a->k),
+                                                .wu    = pu.w_byte_offset,
+                                                .act   = act == GEIST_GLU_SWIGLU_OAI ? 1u : 0u,
+                                                .hx    = hx ? 1u : 0u,
+                                                .hz    = hz ? 1u : 0u,
+                                                .xbo   = (uint32_t) xbo,
+                                                .zbo   = (uint32_t) zbo,
+                                                .alpha = a->glu != nullptr ? a->glu->alpha : 0.0f,
+                                                .limit = a->glu != nullptr ? a->glu->limit : 0.0f};
+    struct geist_buffer                 *map = st->moe_map_buffer;
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+    struct metal_cmdbuf_h                          *cmd  = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, "MoE expert FFN", &cmd);
+    if (enc == nullptr)
+        return GEIST_E_BACKEND;
+    if (!metal_moe_encode_map(st, enc, a->n, a->m * a->k, a->ids, map)) {
+        (void) metal_op_end(be, cmd, enc, "MoE expert FFN");
+        return GEIST_E_BACKEND;
+    }
+    /* No bias: x stands in for the unread bindings. */
+    const struct geist_tensor *xb = hx ? a->glu->x_bias : a->x, *zb = hz ? a->glu->z_bias : a->x;
+    metal_msg_send_set_pipeline(st, enc, glu);
+    metal_msg_send_set_buffer(st, enc, a->x->buffer->buffer, a->x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(
+            st, enc, a->experts[0]->buffer->buffer, a->experts[0]->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, a->g->buffer->buffer, a->g->buffer->base_off, 2);
+    metal_msg_send_set_bytes(st, enc, &p, sizeof p, 3);
+    metal_msg_send_set_buffer(st, enc, map->buffer, map->base_off, 4);
+    metal_msg_send_set_bytes(st, enc, &q, sizeof q, 5);
+    metal_msg_send_set_buffer(
+            st, enc, a->experts[1]->buffer->buffer, a->experts[1]->buffer->base_off, 6);
+    metal_msg_send_set_buffer(st, enc, xb->buffer->buffer, xb->buffer->base_off, 7);
+    metal_msg_send_set_buffer(st, enc, zb->buffer->buffer, zb->buffer->base_off, 8);
+    metal_msg_send_set_threadgroup_memory(st, enc, 10240u, 0u);
+    const struct metal_size groups = {.width = tiles, .height = (inter + 63u) / 64u, .depth = 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM_GLU, groups);
+    metal_msg_send_dispatch(
+            st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
+    metal_moe_encode_mm(st, enc, a->n, a->m, a->k, true, wd, &pdn, map, a->g, a->experts[2], a->y);
+    return metal_op_end(be, cmd, enc, "MoE expert FFN");
 }
 
 /* GEIST_FUSED_MOE_DEVICE: the three experts' dtypes have an id-indexed
@@ -5362,6 +5600,7 @@ static const struct geist_backend_fused metal_fused = {
         .moe_route                    = metal_moe_route,
         .linear_t_ids                 = metal_linear_t_ids,
         .moe_weighted_sum             = metal_moe_weighted_sum,
+        .moe_ffn_ids                  = metal_moe_ffn_ids,
 };
 
 /* The immutable device belongs to this live backend. This getter intentionally

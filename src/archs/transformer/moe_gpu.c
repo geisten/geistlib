@@ -1491,13 +1491,33 @@ enum geist_status moe_gpu_device_ffn(struct transformer_arch_session *sess,
     /* The flag word follows the session's m_max * k ids. */
     enum geist_status s = gf->moe_route(
             gbe, &ra, &t_lg, sess->moe_dev_ids, sess->m_max * k * sizeof(uint32_t), &t_w);
-    if (s == GEIST_OK)
+    /* #486: the experts' FFN in one call where the backend fuses it (a
+     * prefill chunk on Metal: one bucketing, gate and up with the GLU as
+     * one GEMM); GEIST_E_UNSUPPORTED (a decode step) -> the four calls. */
+    bool fused = false;
+    if (s == GEIST_OK && gf->moe_ffn_ids != nullptr) {
+        const struct geist_moe_ffn_args fa = {.n       = n,
+                                              .m       = seq,
+                                              .k       = k,
+                                              .glu     = mg->ext ? &ga : nullptr,
+                                              .w0      = {&tw[0], &tw[1], &tw[2]},
+                                              .experts = {&ex[0], &ex[1], &ex[2]},
+                                              .ids     = sess->moe_dev_ids,
+                                              .x       = &t_x,
+                                              .g       = &t_g,
+                                              .y       = &t_y};
+        s                                  = gf->moe_ffn_ids(gbe, &fa);
+        fused                              = s == GEIST_OK;
+        if (s == GEIST_E_UNSUPPORTED)
+            s = GEIST_OK;
+    }
+    if (s == GEIST_OK && !fused)
         s = gf->linear_t_ids(gbe, n, seq, k, false, &tw[0], &ex[0], sess->moe_dev_ids, &t_x, &t_g);
-    if (s == GEIST_OK)
+    if (s == GEIST_OK && !fused)
         s = gf->linear_t_ids(gbe, n, seq, k, false, &tw[1], &ex[1], sess->moe_dev_ids, &t_x, &t_u);
-    if (s == GEIST_OK)
+    if (s == GEIST_OK && !fused)
         s = mg->ext ? gf->glu(gbe, &ga, &t_g, &t_u, &t_g) : gf->silu_mul(gbe, &t_g, &t_u, &t_g);
-    if (s == GEIST_OK)
+    if (s == GEIST_OK && !fused)
         s = gf->linear_t_ids(gbe, n, seq, k, true, &tw[2], &ex[2], sess->moe_dev_ids, &t_g, &t_y);
     if (s == GEIST_OK)
         s = gf->moe_weighted_sum(gbe,
