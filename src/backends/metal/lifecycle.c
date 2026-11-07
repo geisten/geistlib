@@ -21,6 +21,8 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
     st->pq2_lowp_x = nullptr;
     metal_buffer_destroy_internal(be, st->pq2_xh_buffer);
     st->pq2_xh_buffer = nullptr;
+    metal_buffer_destroy_internal(be, st->moe_map_buffer);
+    st->moe_map_buffer = nullptr;
     metal_buffer_destroy_internal(be, st->attn_kf16_buffer);
     metal_buffer_destroy_internal(be, st->attn_vf16_buffer);
     st->attn_kf16_buffer = nullptr;

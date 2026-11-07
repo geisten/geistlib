@@ -860,11 +860,34 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         }
         if (rows_ok)
             mg->device_rows = rows;
+        /* #482: a prefill chunk too, when every device layer takes its
+         * rows: 2 (a short appended turn) and the session's most
+         * (GEIST_MOE_DEVICE_PREFILL=0: the host routes them). */
+        bool pre_ok =
+                mg->any_device && st->m_max > 1 && geist_env_flag("GEIST_MOE_DEVICE_PREFILL", true);
+        for (size_t l = 0; pre_ok && l < n_layers; l++) {
+            const struct geist_weight *tw = &mg->twins[l * slots * 3];
+            for (size_t i = 0; pre_ok && i < 2; i++) {
+                const size_t                      m = i == 0 ? 2 : st->m_max;
+                struct geist_tensor               b_r, b_s;
+                const struct geist_moe_route_args ra = moe_route_args(st, mg, l, m, &b_r, &b_s);
+                const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                        .m         = m,
+                                                        .gate_w    = &tw[0],
+                                                        .up_w      = &tw[1],
+                                                        .down_w    = &tw[2],
+                                                        .moe_route = &ra};
+                pre_ok                               = !mg->device[l] || gf->supported(gbe, &q);
+            }
+        }
+        mg->device_prefill = pre_ok;
         if (verbose && mg->any_device)
             fprintf(stderr,
-                    "geist: moe: decode routes on %s (#201), batched rows up to %zu\n",
+                    "geist: moe: decode routes on %s (#201), batched rows up to %zu; prefill %s "
+                    "(#482)\n",
                     gbe->desc->name,
-                    mg->device_rows);
+                    mg->device_rows,
+                    mg->device_prefill ? "too" : "on the host");
     }
     /* #162: with the experts split, a decode step routes on the device and
      * starts its hot experts without the host (GEIST_MOE_GPU_ROUTE=0: the
@@ -1414,7 +1437,8 @@ bool moe_gpu_device(const struct transformer_arch_session *sess,
                     size_t                                 seq,
                     bool                                   decode_rows) {
     const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
-    return mg != nullptr && (seq == 1 || (decode_rows && seq <= mg->device_rows)) &&
+    return mg != nullptr &&
+           (seq == 1 || (decode_rows ? seq <= mg->device_rows : mg->device_prefill)) &&
            mg->device != nullptr && sess->moe_dev_ids != nullptr && layer < sess->model->n_layers &&
            mg->device[layer];
 }
