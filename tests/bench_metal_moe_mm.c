@@ -3,13 +3,16 @@
  *
  * One call of fused->linear_t_ids (moe_mm_<T>, from 9 rows) or of
  * fused->moe_ffn_ids (moe_mm_glu_<T> + moe_mm_<T>) on random experts, for
- * the shapes llama.cpp's `test-backend-ops perf -o MUL_MAT_ID` times
- * (Qwen3-30B-A3B: 128 experts, 8 used, 768 x 2048; gpt-oss-20b: 32 experts,
- * 4 used, 2880 x 2880; x one row per slot, as its b = false) and the
- * OLMoE-1B-7B projections (64 experts, 8 used, gate / up 1024 x 2048 with x
- * one row per token, down 2048 x 1024 per slot, and the whole FFN). Each
- * token routes to k distinct experts drawn uniformly (llama.cpp's test
- * draws a shuffled permutation per token).
+ * shapes llama.cpp's `test-backend-ops perf -o MUL_MAT_ID` can time as
+ * test_mul_mat_id(type, F32, n, k, b, n_out, m, n_in): OLMoE-1B-7B (64
+ * experts, 8 used; gate / up 1024 x 2048 with x one row per token, its
+ * b = true; down 2048 x 1024, x one row per slot), Qwen3-30B-A3B (128
+ * experts, 8 used, 768 x 2048 per slot) and gpt-oss-20b (32 experts, 4
+ * used, 2880 x 2880; 32-element block types only), each in Q4_K, Q6_K,
+ * Q8_0, Q5_0 and MXFP4, plus the whole FFN (moe_ffn_ids) of the OLMoE and
+ * gpt-oss shapes. Each token routes to k distinct experts drawn uniformly
+ * (llama.cpp's test draws a shuffled permutation per token), or replays a
+ * model's routing (GEIST_BENCH_IDS, see load_ids).
  *
  * Each sample encodes ITERS back-to-back calls in one prefill batch and
  * drains them with a 4-byte download; the median over REPS gives ms per
