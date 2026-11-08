@@ -19,7 +19,9 @@
  * window). Without a mask this is the usual 4*m*kv*hd*heads.
  *
  * GEIST_FA_M=<m> sets the query rows instead (1: the decode kernels, #17);
- * a Llama 3.2 3B shape (24/8 heads, head_dim 128) runs last.
+ * a Llama 3.2 3B shape (24/8 heads, head_dim 128) follows, then gpt-oss-20b's
+ * (64/8 heads, head_dim 64, with and without its 128-key window) and
+ * absorbed MLA's (32 q heads on one KV head of 576, GigaChat3), #487.
  *
  * Usage: bench_metal_flash_attn [iters] [reps] [f16|f32] [kv ...].
  * SKIPs without a Metal device. Timing: run it under the host's benchmark
@@ -62,6 +64,7 @@ static void *dev_alloc(struct geist_backend *be, size_t bytes, struct geist_buff
 struct shape {
     const char *name;
     size_t      qh, kvh, hd, sw;
+    bool        v_is_k; /* V reads the K cache (absorbed MLA, #487) */
 };
 
 static int bench_shape(struct geist_backend *be,
@@ -116,7 +119,7 @@ static int bench_shape(struct geist_backend *be,
                                   .shape  = {(int64_t) kv, (int64_t) sh->kvh, (int64_t) sh->hd},
                                   .stride = {(int64_t) (sh->kvh * sh->hd), (int64_t) sh->hd, 1}};
     struct geist_tensor    tv  = tk;
-    tv.buffer                  = bv;
+    tv.buffer                  = sh->v_is_k ? bk : bv;
     struct geist_tensor to     = tq;
     to.buffer                  = bo;
     const size_t q_off         = kv - m;
@@ -192,10 +195,17 @@ int main(int argc, char **argv) {
         GEIST_SKIP("metal backend unavailable (not built or no device)");
     }
     static const struct shape shapes[] = {
-            {"bonsai", 24, 4, 256, 0},
-            {"gemma.swa", 8, 1, 256, 512},
-            {"gemma.glob", 8, 1, 512, 0},
-            {"llama3.3b", 24, 8, 128, 0},
+            {"bonsai", 24, 4, 256, 0, false},
+            {"gemma.swa", 8, 1, 256, 512, false},
+            {"gemma.glob", 8, 1, 512, 0, false},
+            {"llama3.3b", 24, 8, 128, 0, false},
+            /* #487: gpt-oss-20b's sliding and full layers, and absorbed
+             * MLA's one KV head of 576 (GigaChat3-10B: 32 q heads), its
+             * V a separate cache and the K cache (as the engine runs it). */
+            {"gptoss.swa", 64, 8, 64, 128, false},
+            {"gptoss.glob", 64, 8, 64, 0, false},
+            {"mla576", 32, 1, 576, 0, false},
+            {"mla576.vk", 32, 1, 576, 0, true},
     };
     size_t kvs[16] = {1024, 2048, 4096, 8192};
     size_t n_kv    = 4;

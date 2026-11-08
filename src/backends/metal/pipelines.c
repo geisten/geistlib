@@ -322,8 +322,10 @@ static const struct metal_pipeline_row metal_tensor_rows[] = {
         METAL_PIPE(mm_tc, "moe_mm_tc_glu_q50", moe_mm_tc_glu_q50),
         METAL_FLASH_TC_PIPE(64),
         METAL_FLASH_TC_PIPE(128),
+        METAL_FLASH_TC_PIPE(192),
         METAL_FLASH_TC_PIPE(256),
         METAL_FLASH_TC_PIPE(512),
+        METAL_FLASH_TC_PIPE(576),
 };
 
 static const struct metal_pipeline_row metal_argmax_rows[] = {

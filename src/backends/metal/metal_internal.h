@@ -376,8 +376,8 @@ struct metal_state {
     /* Tensor-API prefill flash (#314), head_dim HD in slot HD/64 - 1
      * (64, 128, 256, 512 built); built only when tensor_mm. */
     struct metal_library_h  *attn_tc_library;
-    struct metal_function_h *attention_flash_tc_function[8];
-    struct metal_pipeline_h *attention_flash_tc_pipeline[8];
+    struct metal_function_h *attention_flash_tc_function[9];
+    struct metal_pipeline_h *attention_flash_tc_pipeline[9];
     struct metal_library_h  *q4k_gate_up_n4_library;
     struct metal_library_h  *q4k_pair_n4_library;
     struct metal_function_h *q4k_pair_n4_function;

@@ -2108,6 +2108,16 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 512, 383, 2);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 1536, 64, 7);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 384, 1000, 8);
+    /* #487: absorbed MLA's GigaChat3 shape (32 q heads on one KV head of
+     * 576) over several 16-row tiles and a ragged last one, from the
+     * prompt's start and as a chunk after 400 rows: the tensor-API flash
+     * kernel at 576 where the GPU has matrix units, else attention_flash. */
+    run_flash_ref_case(mt, ref, 131, 0, 32, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 77, 400, 32, 1, 576, 0);
+    /* Decompressed MLA (DeepSeek-V2-Lite): 16 heads of 192 (a tensor-API
+     * kernel of its own since #487). */
+    run_flash_ref_case(mt, ref, 99, 0, 16, 16, 192, 0);
+    run_flash_ref_case(mt, ref, 45, 300, 16, 16, 192, 0);
 
 #ifdef GEIST_BACKEND_METAL
     static const size_t argmax_n[] = {1, 255, 2049, 151936, 262144, 262144 * 2 + 77};
