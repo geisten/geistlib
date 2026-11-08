@@ -1359,11 +1359,20 @@ size_t transformer_head_dim_max(const struct transformer_arch_state *st) {
      * hot experts' GEMMs need the larger batch (Qwen3-30B-A3B, RTX 2080 Ti:
      * prefill 302-307 tok/s at 128, 490-498 at 512, runs 1754/1755).
      * Before the weights load: the fused ops are planned for this m_max.
-     * caps.max_m and GEIST_M_MAX, applied below, still win. */
+     * caps.max_m and GEIST_M_MAX, applied below, still win.
+     * The same on a unified-memory GPU that runs a chunk's experts as
+     * grouped GEMMs on the device (fused->moe_ffn_ids, Metal #494): 256
+     * rows fill an expert's 32-row tiles to ~65 % (OLMoE), and every chunk
+     * reads the experts' weights again; 512 gave pp512 / pp2048 +12-20 %
+     * on OLMoE, DeepSeek-V2-Lite, GigaChat3 and gpt-oss-20b (M6, run
+     * 3396), pp128 unchanged. */
     if (st->config.moe_n_experts > 0 && be->desc != nullptr &&
         strncmp(be->desc->name, "cpu_", 4) != 0 && st->m_max < 512) {
         struct geist_backend_memory mem;
-        if (geist_backend_memory_info(be, &mem) == GEIST_OK && !mem.unified_memory) {
+        const bool                  device_experts =
+                be->desc->fused != nullptr && be->desc->fused->moe_ffn_ids != nullptr;
+        if (geist_backend_memory_info(be, &mem) == GEIST_OK &&
+            (!mem.unified_memory || device_experts)) {
             st->m_max = 512;
         }
     }
