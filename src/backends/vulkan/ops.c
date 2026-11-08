@@ -1156,6 +1156,40 @@ static_assert(sizeof(enum vk_ew3_op) == sizeof(uint32_t));
     return vk_ew3_cpu(be, EW3_MUL, a, b, y, "mul");
 }
 
+/* prims->add_bias (#492): the add shader over contiguous x and y with b's
+ * row stride 0, one dispatch for all rows. A slab view or a buffer without
+ * a device side is UNSUPPORTED: the arch then adds row by row (vk_add,
+ * which has the host fallback). */
+[[nodiscard]] static enum geist_status vk_add_bias(struct geist_backend      *be,
+                                                   const struct geist_tensor *x,
+                                                   const struct geist_tensor *b,
+                                                   struct geist_tensor       *y) {
+    const size_t n    = vk_t_n(x);
+    const size_t cols = vk_t_n(b);
+    size_t       rx, cx, sx, ry, cy, sy;
+    if (n == 0 || cols == 0 || n != vk_t_n(y) || (size_t) x->shape[x->ndim - 1] != cols ||
+        !vk_t_geom(x, &rx, &cx, &sx) || !vk_t_geom(y, &ry, &cy, &sy) || rx != 1 || ry != 1) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    VkDescriptorBufferInfo bi[3];
+    uint32_t               off[3];
+    if (!vk_tensor_gpu(x, &bi[0], &off[0]) || !vk_tensor_gpu(b, &bi[1], &off[1]) ||
+        !vk_tensor_gpu(y, &bi[2], &off[2])) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* {n, offsets, cols, x / b / y row strides}: b's 0 repeats its row */
+    uint32_t push[8] = {0, off[0], off[1], off[2], 0, 0, 0, 0};
+    if (vk_ckd_u32(n, &push[0]) || vk_ckd_u32(cols, &push[4])) {
+        return vk_too_wide(be, "add_bias");
+    }
+    push[5]                       = push[4];
+    push[7]                       = push[4];
+    const struct vk_access acc[3] = {
+            vk_acc_tensor(x, false), vk_acc_tensor(b, false), vk_acc_tensor(y, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_ADD, bi, acc, push, sizeof(push), vk_groups(push[0]), 1, 1);
+}
+
 /* Host fallback of the unary elementwise ops: `fn` is the shared reference
  * kernel (gemma4_kernels.h) the CPU backends run. */
 [[nodiscard]] static enum geist_status vk_ew2_cpu(struct geist_backend *be,
@@ -3746,7 +3780,8 @@ static const struct geist_backend_primitives vk_prims =
                             vk_rope_apply,
                             vk_attention,
                             .relu_squared = vk_relu_squared,
-                            .scale_f32    = vk_scale_f32);
+                            .scale_f32    = vk_scale_f32,
+                            .add_bias     = vk_add_bias);
 
 static const struct geist_backend_fused vk_fused = {
         .supported     = vk_fused_supported,

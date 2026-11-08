@@ -198,7 +198,7 @@ struct geist_backend_vtbl {
 
 /* Required: rmsnorm, add, mul, gelu_tanh, silu, rope_apply, attention
  * (GEIST_BACKEND_PRIMS in src/backends/common/backend_tables.h refuses a
- * table without one); relu_squared and scale_f32 are nullable.
+ * table without one); relu_squared, scale_f32 and add_bias are nullable.
  *
  * Each op takes geist_tensor inputs/outputs whose .buffer was created via
  * this same backend. Return GEIST_OK on success; on error, set the backend
@@ -286,6 +286,17 @@ struct geist_backend_primitives {
                                    const struct geist_tensor *x,
                                    float                      scale,
                                    struct geist_tensor       *y);
+
+    /* y = x + b, b one row broadcast over the rows of x (a projection bias,
+     * gpt-oss q/k/v/o: #492). x and y [rows, n], b [n] (or [1, n]); F32
+     * DENSE, y may alias x. Each element is add's float add, so the result
+     * is bit-identical to one add per row, in one dispatch instead of rows.
+     * nullptr (or GEIST_E_UNSUPPORTED for a view the backend does not
+     * take) = arch adds row by row through add. */
+    enum geist_status (*add_bias)(struct geist_backend      *be,
+                                  const struct geist_tensor *x,
+                                  const struct geist_tensor *b,
+                                  struct geist_tensor       *y);
 };
 
 /* ====================================================================== */
@@ -1277,7 +1288,7 @@ struct geist_backend_descriptor {
     /* Core table. Required. */
     const struct geist_backend_vtbl *vtbl;
 
-    /* Primitive ops. Required (relu_squared and scale_f32 may be nullptr,
+    /* Primitive ops. Required (relu_squared, scale_f32 and add_bias may be nullptr,
      * see the table). name, vtbl and prims are the descriptor's required
      * members (GEIST_BACKEND_DESCRIPTOR, backend_tables.h). */
     const struct geist_backend_primitives *prims;

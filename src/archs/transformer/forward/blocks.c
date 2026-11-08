@@ -41,7 +41,14 @@ enum geist_status blk_add_bias(struct transformer_layer_forward_ctx *ctx,
         return GEIST_OK;
     }
     struct geist_tensor t_b = view_2d_at(b->buffer, (size_t) b->offset, 1, (int64_t) n);
-    enum geist_status   s   = GEIST_OK;
+    enum geist_status   s   = GEIST_E_UNSUPPORTED;
+    if (ctx->prims->add_bias != nullptr) { /* all rows in one op (#492) */
+        struct geist_tensor t_x = view_2d(x, ctx->SEQ, (int64_t) n);
+        s                       = ctx->prims->add_bias(ctx->be, &t_x, &t_b, &t_x);
+        if (s != GEIST_E_UNSUPPORTED)
+            return s;
+    }
+    s = GEIST_OK;
     for (size_t t = 0; t < ctx->seq && s == GEIST_OK; t++) {
         struct geist_tensor t_x = view_2d_at(x, t * n * sizeof(float), 1, (int64_t) n);
         s                       = ctx->prims->add(ctx->be, &t_x, &t_b, &t_x);

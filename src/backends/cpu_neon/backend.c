@@ -233,7 +233,8 @@ static const struct geist_backend_primitives cpu_neon_prims =
                             cpu_neon_silu,
                             cpu_neon_rope_apply,
                             cpu_neon_attention,
-                            .relu_squared = cpu_neon_relu_squared);
+                            .relu_squared = cpu_neon_relu_squared,
+                            .add_bias     = geist_host_add_bias);
 
 static const struct geist_backend_fused cpu_neon_fused = {
         .supported            = cpu_neon_fused_supported,

@@ -1489,21 +1489,25 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
 }
 
 /* The pipeline is passed as the address of its state field: it is read
- * only after metal_ensure(be, METAL_TAB_QUANT) built it. */
+ * only after metal_ensure(be, METAL_TAB_QUANT) built it. row_b: b is one
+ * row (metal_vec_of, stride 0) every row of a reads (prims->add_bias, #492). */
 [[nodiscard, gnu::always_inline]] static inline enum geist_status
 metal_binary_rows(struct geist_backend           *be,
                   struct metal_pipeline_h *const *pipeline,
                   enum metal_profile_stage        stage,
                   const struct geist_tensor      *a,
                   const struct geist_tensor      *b,
-                  struct geist_tensor            *y) {
+                  struct geist_tensor            *y,
+                  bool                            row_b) {
 
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
     }
     struct metal_rows ar, br, yr;
-    if (!metal_rows_of(be, a, &ar) || !metal_rows_of(be, b, &br) || !metal_rows_of(be, y, &yr) ||
-        br.rows != ar.rows || yr.rows != ar.rows || br.cols != ar.cols || yr.cols != ar.cols) {
+    if (!metal_rows_of(be, a, &ar) ||
+        !(row_b ? metal_vec_of(be, b, &br) : metal_rows_of(be, b, &br)) ||
+        !metal_rows_of(be, y, &yr) || (!row_b && br.rows != ar.rows) || yr.rows != ar.rows ||
+        br.cols != ar.cols || yr.cols != ar.cols) {
         return GEIST_E_UNSUPPORTED;
     }
     if (!ar.fits || !br.fits || !yr.fits) {
@@ -1543,7 +1547,20 @@ metal_binary_rows(struct geist_backend           *be,
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    return metal_binary_rows(be, &st->add_rows_pipeline, METAL_PROFILE_DISPATCH_ADD_ROWS, a, b, y);
+    return metal_binary_rows(
+            be, &st->add_rows_pipeline, METAL_PROFILE_DISPATCH_ADD_ROWS, a, b, y, false);
+}
+
+[[nodiscard]] static enum geist_status metal_add_bias(struct geist_backend      *be,
+                                                      const struct geist_tensor *x,
+                                                      const struct geist_tensor *b,
+                                                      struct geist_tensor       *y) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    return metal_binary_rows(
+            be, &st->add_rows_pipeline, METAL_PROFILE_DISPATCH_ADD_ROWS, x, b, y, true);
 }
 
 [[nodiscard]] static enum geist_status metal_mul(struct geist_backend      *be,
@@ -1554,7 +1571,8 @@ metal_binary_rows(struct geist_backend           *be,
         return GEIST_E_INVALID_ARG;
     }
     struct metal_state *st = be->state;
-    return metal_binary_rows(be, &st->mul_rows_pipeline, METAL_PROFILE_DISPATCH_MUL_ROWS, a, b, y);
+    return metal_binary_rows(
+            be, &st->mul_rows_pipeline, METAL_PROFILE_DISPATCH_MUL_ROWS, a, b, y, false);
 }
 
 [[nodiscard]] static enum geist_status metal_attn_qgate_split(struct geist_backend      *be,
@@ -1856,7 +1874,7 @@ metal_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struc
     }
     struct metal_state *st = be->state;
     return metal_binary_rows(
-            be, &st->gelu_mul_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_MUL_ROWS, x, z, y);
+            be, &st->gelu_mul_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_MUL_ROWS, x, z, y, false);
 }
 
 [[nodiscard]] static enum geist_status metal_silu_mul(struct geist_backend      *be,
@@ -1868,7 +1886,7 @@ metal_relu_squared(struct geist_backend *be, const struct geist_tensor *x, struc
     }
     struct metal_state *st = be->state;
     return metal_binary_rows(
-            be, &st->silu_mul_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_MUL_ROWS, x, z, y);
+            be, &st->silu_mul_rows_pipeline, METAL_PROFILE_DISPATCH_GELU_MUL_ROWS, x, z, y, false);
 }
 
 /* Shared table-geometry check for the embed lookups: row_bytes /
@@ -5647,7 +5665,8 @@ static const struct geist_backend_primitives metal_prims =
                             metal_rope_apply,
                             metal_attention,
                             .relu_squared = metal_relu_squared,
-                            .scale_f32    = metal_scale_f32);
+                            .scale_f32    = metal_scale_f32,
+                            .add_bias     = metal_add_bias);
 
 static const struct geist_backend_fused metal_fused = {
         .supported                    = metal_fused_supported,
