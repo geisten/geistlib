@@ -47,7 +47,7 @@ job, the warnings in every build leg.
 | `BACKENDS=cpu_x86` alone did not link | one-backend build matrix | #433 |
 | `buffer_create_aliased` documented optional, called without a null check | required-slot macros | #433 |
 | NEON dequant fallback decoded F16 subnormals wrong in the scalar tail | duplicate removal | #435 |
-| a malformed UTF-8 byte became 0xFFFFFFFF, not U+FFFD, in the tokenizer | `-Wsign-conversion` | open: #427 |
+| a malformed UTF-8 byte became 0xFFFFFFFF, not U+FFFD, in the tokenizer | `-Wsign-conversion` | #427 (fixed after this review) |
 | 7 printf-like helpers had unchecked callers | `-Wformat=2` | #417 (no caller was wrong) |
 
 ## Metrics
@@ -148,11 +148,16 @@ Compare like with like before reading a regression into an A/B.
   every merge of main into a branch needs a new one. Fewer, complete pushes
   save rounds.
 
-## Left open
+## Follow-up status
 
-- #420: clang-tidy on the x86_64 and Vulkan sources.
-- #427: the tokenizer's replacement character, with a parity test.
-- #441: the layer violations in `tools/layers_baseline.txt`, among them the
-  235 portability `#if`s in hot kernels (one kernel family at a time).
-- #443: gcc-14 x86_64 `MODE=tsan` and `-Wstringop-overflow` in a test.
-- #444: the M1 Max cells of the Phase 0 baseline.
+This review records the revisions named above; its metrics are historical.
+Subsequent changes completed the x86_64/Vulkan static-analysis job (#420),
+the malformed-UTF-8 tokenizer fix and parity test (#427), and the gcc-14
+`MODE=tsan` test build fix (#443). The corresponding release fragments in
+`changes/` record those fixes.
+
+For remaining layer violations, consult `tools/layers_baseline.txt` rather
+than the review's old counts. #441 exempted backend portability guards:
+backends are the hardware boundary, while ceilings outside them remain.
+The M1 Max Phase 0 baseline cells (#444) remain unmeasured; see
+[C23_BASELINE.md](../benchmark/results/C23_BASELINE.md).
