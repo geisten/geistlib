@@ -39,7 +39,8 @@
                                         struct geist_buffer                  *b,
                                         struct geist_buffer                  *y);
 
-/* x[t, :] += b over rows of n; a no-op for b (or its buffer) nullptr. */
+/* x[t, :] += b over rows of n: one prims->add_bias, else one add per row;
+ * a no-op for b (or its buffer) nullptr. */
 [[nodiscard]] enum geist_status blk_add_bias(struct transformer_layer_forward_ctx *ctx,
                                              size_t                                n,
                                              const struct geist_tensor            *b,
