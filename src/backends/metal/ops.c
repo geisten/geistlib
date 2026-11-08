@@ -2385,7 +2385,8 @@ static struct metal_pipeline_h *metal_flash_pipeline(const struct metal_state *s
                                                                 size_t k_off,
                                                                 size_t v_off,
                                                                 size_t out_off,
-                                                                bool   kv_native_f16) {
+                                                                bool   kv_native_f16,
+                                                                const struct geist_tensor *sinks) {
 
     const size_t kv_out = k_heads * head_dim;
     const size_t elems  = k_rows * kv_out;
@@ -2399,18 +2400,20 @@ static struct metal_pipeline_h *metal_flash_pipeline(const struct metal_state *s
         uint32_t elems, kv_out, k_offset, v_offset, k_cache_offset, v_cache_offset, q_position;
     } ap = {(uint32_t) elems, (uint32_t) kv_out, (uint32_t) k_off, (uint32_t) v_off, 0u, 0u, 0u};
     struct {
-        uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo;
-    } fp                        = {(uint32_t) q_rows,
-                                   (uint32_t) k_rows,
-                                   (uint32_t) q_heads,
-                                   (uint32_t) k_heads,
-                                   (uint32_t) head_dim,
-                                   (uint32_t) q_offset,
-                                   (uint32_t) sliding_window,
-                                   (uint32_t) q_off,
-                                   kv_native_f16 ? (uint32_t) k_off : 0u,
-                                   kv_native_f16 ? (uint32_t) v_off : 0u,
-                                   (uint32_t) out_off};
+        uint32_t rows, kv_len, qh, kvh, hd, qpos, sw, qo, kco, vco, yo, so, hs;
+    } fp = {(uint32_t) q_rows,
+            (uint32_t) k_rows,
+            (uint32_t) q_heads,
+            (uint32_t) k_heads,
+            (uint32_t) head_dim,
+            (uint32_t) q_offset,
+            (uint32_t) sliding_window,
+            (uint32_t) q_off,
+            kv_native_f16 ? (uint32_t) k_off : 0u,
+            kv_native_f16 ? (uint32_t) v_off : 0u,
+            (uint32_t) out_off,
+            sinks != nullptr ? (uint32_t) (sinks->offset / sizeof(float)) : 0u,
+            sinks != nullptr ? 1u : 0u};
     struct metal_buffer_h *kf16 = kv_native_f16 ? k->buffer->buffer : st->attn_kf16_buffer->buffer;
     struct metal_buffer_h *vf16 =
             kv_native_f16 ? value->buffer->buffer : st->attn_vf16_buffer->buffer;
@@ -2436,12 +2439,12 @@ static struct metal_pipeline_h *metal_flash_pipeline(const struct metal_state *s
     }
 
     /* On the matrix units (#314) Q rows per threadgroup, 32 or 16 at
-     * head_dim 512, 8 simdgroups; else 16 rows and 4 simdgroups up to
+     * head_dim 512 and 576 (absorbed MLA, #487), 8 simdgroups; else 16 rows and 4 simdgroups up to
      * head_dim 256, 8 above (the Gemma global layers, head_dim 512). */
     if (st->tensor_mm) {
         (void) metal_ensure(be, METAL_TAB_TENSOR); /* not fatal: drops tensor_mm */
     }
-    struct metal_pipeline_h *tc = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 8u
+    struct metal_pipeline_h *tc = st->tensor_mm && head_dim % 64u == 0u && head_dim / 64u <= 9u
                                           ? st->attention_flash_tc_pipeline[head_dim / 64u - 1u]
                                           : nullptr;
     const size_t             tc_rows = head_dim >= 512u ? 16u : 32u;
@@ -2451,6 +2454,12 @@ static struct metal_pipeline_h *metal_flash_pipeline(const struct metal_state *s
     metal_msg_send_set_buffer(st, enc, vf16, 0, 2);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 3);
     metal_msg_send_set_bytes(st, enc, &fp, sizeof(fp), 4);
+    /* The sink logits (#487); unread without them, so q stands in. */
+    if (sinks != nullptr) {
+        metal_msg_send_set_buffer(st, enc, sinks->buffer->buffer, sinks->buffer->base_off, 5);
+    } else {
+        metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 5);
+    }
     const size_t            frows    = tc != nullptr ? tc_rows : 16u;
     const struct metal_size fgroups  = {(q_rows + frows - 1u) / frows, q_heads, 1};
     const struct metal_size fthreads = {tc != nullptr || head_dim > 256u ? 256u : 128u, 1, 1};
@@ -2502,7 +2511,8 @@ constexpr int METAL_DECQ_MAX_GROUPS = 256;
                                                               size_t k_off,
                                                               size_t v_off,
                                                               size_t out_off,
-                                                              bool   kv_native_f16) {
+                                                              bool   kv_native_f16,
+                                                              const struct geist_tensor *sinks) {
 
     uint32_t window = (uint32_t) q_offset + 1u;
     if ((uint32_t) k_rows < window) {
@@ -2614,7 +2624,12 @@ constexpr int METAL_DECQ_MAX_GROUPS = 256;
                             : block_pipeline != nullptr ? threads32
                                                         : threads256);
 
-    const uint32_t cb[4] = {(uint32_t) q_heads, (uint32_t) head_dim, nsplit, (uint32_t) out_off};
+    const uint32_t cb[6] = {(uint32_t) q_heads,
+                            (uint32_t) head_dim,
+                            nsplit,
+                            (uint32_t) out_off,
+                            sinks != nullptr ? (uint32_t) (sinks->offset / sizeof(float)) : 0u,
+                            sinks != nullptr ? 1u : 0u};
     metal_msg_send_set_pipeline(st, enc, st->attention_dec_combine_pipeline);
     metal_msg_send_set_buffer(st,
                               enc,
@@ -2623,6 +2638,12 @@ constexpr int METAL_DECQ_MAX_GROUPS = 256;
                               0);
     metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 1);
     metal_msg_send_set_bytes(st, enc, cb, sizeof(cb), 2);
+    /* The sink logits (#487) join the softmax here; q stands in without. */
+    if (sinks != nullptr) {
+        metal_msg_send_set_buffer(st, enc, sinks->buffer->buffer, sinks->buffer->base_off, 3);
+    } else {
+        metal_msg_send_set_buffer(st, enc, q->buffer->buffer, q->buffer->base_off, 3);
+    }
     const struct metal_size ggroups   = {(head_dim + 63u) / 64u, q_heads, 1};
     const struct metal_size threads64 = {64, 1, 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ATTENTION_ROWS, ggroups);
@@ -3652,7 +3673,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
                                    k_off,
                                    v_off,
                                    out_off,
-                                   kv_is_f16);
+                                   kv_is_f16,
+                                   nullptr);
         if (s == GEIST_OK) {
             return GEIST_OK;
         }
@@ -3680,7 +3702,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
                                      k_off,
                                      v_off,
                                      out_off,
-                                     kv_is_f16);
+                                     kv_is_f16,
+                                     nullptr);
         if (s == GEIST_OK) {
             return GEIST_OK;
         }
@@ -3710,7 +3733,8 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     return metal_op_end(be, cmd, enc, "attention");
 }
 
-/* fused->attention_sinks (#243): one simdgroup per (query row, head). */
+/* fused->attention_sinks (#243): the flash / split-KV kernels with the sink
+ * in their softmax (#487), else one simdgroup per (query row, head). */
 [[nodiscard]] static enum geist_status
 metal_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_args *a) {
     if (be == nullptr || be->state == nullptr || a == nullptr || a->q == nullptr ||
@@ -3745,8 +3769,61 @@ metal_attention_sinks(struct geist_backend *be, const struct geist_attention_sin
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state                       *st = be->state;
-    const struct metal_attention_sinks_params p  = {
+    struct metal_state *st = be->state;
+    /* #487: the kernels plain attention takes, the sink folded into their
+     * softmax (the split-KV combine at decode, the flash epilogue in a
+     * prefill, which also skips the key blocks before the window). The
+     * one-simdgroup kernel below stays for short caches. */
+    if (q_rows == 1u && k_rows >= 32u && st->attention_dec_f16_pipeline != nullptr &&
+        st->attention_dec_combine_pipeline != nullptr) {
+        s = metal_attention_dec_kv(be,
+                                   st,
+                                   a->q,
+                                   a->k,
+                                   a->v,
+                                   a->out,
+                                   k_rows,
+                                   q_heads,
+                                   k_heads,
+                                   hd,
+                                   a->q_offset,
+                                   a->sliding_window,
+                                   q_off,
+                                   k_off,
+                                   v_off,
+                                   o_off,
+                                   f16,
+                                   sk);
+        if (s == GEIST_OK) {
+            return GEIST_OK;
+        }
+    }
+    if (q_rows > 1u && k_rows >= 64u && metal_flash_pipeline(st, hd) != nullptr &&
+        st->kv_append_rows_f16_pipeline != nullptr) {
+        s = metal_attention_flash_kv(be,
+                                     st,
+                                     a->q,
+                                     a->k,
+                                     a->v,
+                                     a->out,
+                                     q_rows,
+                                     k_rows,
+                                     q_heads,
+                                     k_heads,
+                                     hd,
+                                     a->q_offset,
+                                     a->sliding_window,
+                                     q_off,
+                                     k_off,
+                                     v_off,
+                                     o_off,
+                                     f16,
+                                     sk);
+        if (s == GEIST_OK) {
+            return GEIST_OK;
+        }
+    }
+    const struct metal_attention_sinks_params p = {
             .rows           = (uint32_t) q_rows,
             .kv_len         = (uint32_t) k_rows,
             .q_heads        = (uint32_t) q_heads,

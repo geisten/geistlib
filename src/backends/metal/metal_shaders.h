@@ -1601,18 +1601,22 @@ static const char metal_mm_tc_pq2_source[] = GEIST_METAL_MM_TC_KERNEL("pq2", "bp
  *     rescaled lazily;
  *   - O += P V: matmul2d into a float cooperative tensor, V from the cache.
  * The store's extents clip a ragged last tile; its rows repeat the last
- * valid row. Built in the tensor unit (language version 4.0), only when
- * tensor_mm. Grid: ((rows + Q - 1) / Q, q_heads), 256 threads. */
+ * valid row. Sinks (p.hs) as attention_flash folds them (#487); head_dim
+ * 192 (decompressed MLA, DeepSeek-V2-Lite) at 32 rows, 576 (absorbed MLA)
+ * at 16 as 512. Built in the tensor unit (language
+ * version 4.0), only when tensor_mm. Grid: ((rows + Q - 1) / Q, q_heads),
+ * 256 threads. */
 static const char metal_attn_flash_tc_source_a[] =
         "#include <metal_stdlib>\n"
         "#include <metal_tensor>\n"
         "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n"
         "using namespace metal;\n"
-        "struct AT{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
+        "struct AT{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo,so,hs;};\n"
         "template<short D,short Q>\n"
         "kernel void attention_flash_tc(device const float*q[[buffer(0)]],device const "
         "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],"
-        "constant AT&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],ushort "
+        "constant AT&p[[buffer(4)]],device const float*sk[[buffer(5)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],ushort "
         "sg[[simdgroup_index_in_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
         "using namespace mpp::tensor_ops;"
         "constexpr short NSG=8,C=64,NW=32,NQ=Q/NSG,NC=C/NW;"
@@ -1668,7 +1672,8 @@ static const char metal_attn_flash_tc_source_b[] =
         "mpv.run(tp,tv,co);}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);}"
         "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
-        "if(ln==0)sr[j]=S[jj]==0.0f?0.0f:1.0f/S[jj];}"
+        "if(ln==0){float r=S[jj]==0.0f?0.0f:1.0f/S[jj];if(p.hs!=0u){const float "
+        "sv=sk[p.so+h],mx=max(M[jj],sv),c=exp(M[jj]-mx);r=c/(S[jj]*c+exp(sv-mx));}sr[j]=r;}}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(short i=0;i<co.get_capacity();++i){"
         "if(co.is_valid_element(i))co[i]*=sr[co.get_multidimensional_index(i)[1]];}"
@@ -1680,10 +1685,14 @@ static const char metal_attn_flash_tc_source_b[] =
         "attention_flash_tc<64,32>;\n"
         "template [[host_name(\"attention_flash_tc_d128\")]] kernel attention_flash_tc_t "
         "attention_flash_tc<128,32>;\n"
+        "template [[host_name(\"attention_flash_tc_d192\")]] kernel attention_flash_tc_t "
+        "attention_flash_tc<192,32>;\n"
         "template [[host_name(\"attention_flash_tc_d256\")]] kernel attention_flash_tc_t "
         "attention_flash_tc<256,32>;\n"
         "template [[host_name(\"attention_flash_tc_d512\")]] kernel attention_flash_tc_t "
-        "attention_flash_tc<512,16>;\n";
+        "attention_flash_tc<512,16>;\n"
+        "template [[host_name(\"attention_flash_tc_d576\")]] kernel attention_flash_tc_t "
+        "attention_flash_tc<576,16>;\n";
 
 static const char metal_q6k_source[] =
         "#include <metal_stdlib>\n"
@@ -3125,6 +3134,9 @@ static const char metal_attn_dec_f16_body[] =
  *   - P.V: each simdgroup keeps its 8-column slices of O for both row tiles
  *     in registers, rescaled by a diagonal multiply.
  * Two barriers per block. Operands f16; scores, softmax and O in f32.
+ * With p.hs set (#487, GPT-OSS) the epilogue folds head h's sink logit
+ * sk[p.so + h] into each row's softmax as one more key with a zero value
+ * row: O / (S e^{M-M'} + e^{sink-M'}) e^{M-M'}, M' = max(M, sink).
  * The tail block re-covers [thi-63, thi] with the keys already processed
  * masked, so kv_len >= 64 keeps every cache read in bounds. Measured on
  * the M1 Max (#91): 16 rows beat 8 (+25-30 % on Bonsai 2 27B shapes),
@@ -3134,11 +3146,12 @@ static const char metal_attn_dec_f16_body[] =
 static const char metal_attn_flash_source_a[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo;};\n"
+        "struct A{uint rows,kv_len,qh,kvh,hd,qpos,sw,qo,kco,vco,yo,so,hs;};\n"
         "template<short D,short NSG>\n"
         "kernel void attention_flash(device const float*q[[buffer(0)]],device const "
         "half*kc[[buffer(1)]],device const half*vc[[buffer(2)]],device float*y[[buffer(3)]],"
-        "constant A&p[[buffer(4)]],uint2 tg[[threadgroup_position_in_grid]],ushort "
+        "constant A&p[[buffer(4)]],device const float*sk[[buffer(5)]],uint2 "
+        "tg[[threadgroup_position_in_grid]],ushort "
         "sg[[simdgroup_index_in_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
         "constexpr short C=64,T=2,R=8*T,NQ=R/NSG,NO=D/8/NSG,NC=C/8/NSG;"
         "threadgroup half sq[R*D];threadgroup float ss[R*C];threadgroup half sp[R*C];"
@@ -3197,7 +3210,8 @@ static const char metal_attn_flash_source_b[] =
         "for(short t=0;t<T;t++)simdgroup_multiply_accumulate(lo[t][ii],mp[t],mv,lo[t][ii]);}}}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(short jj=0;jj<NQ;jj++){const short j=jj*NSG+sg;"
-        "if(ln==0)sd[(j/8)*64+(j%8)*9]=1.0f/S[jj];}"
+        "if(ln==0){float r=1.0f/S[jj];if(p.hs!=0u){const float sv=sk[p.so+h],mx=max(M[jj],sv),"
+        "c=exp(M[jj]-mx);r=c/(S[jj]*c+exp(sv-mx));}sd[(j/8)*64+(j%8)*9]=r;}}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(short t=0;t<T;t++){simdgroup_float8x8 md;simdgroup_load(md,sd+t*64,8);"
         "const uint r0=q0+8u*t;device float*yo=y+p.yo+r0*p.qh*D+h*D+8*sg;"
@@ -3306,7 +3320,9 @@ static const char metal_attn_dec_f16_plain_head[] =
  * exp(m_s - M) / L, lane s for split s, then every thread sums its element
  * over the splits, four independent loads per step. One thread looping
  * over the splits per element (16-32 dependent load and exp steps) cost
- * 18-37 us per call on the M1 Max, as much as the attention itself (#17). */
+ * 18-37 us per call on the M1 Max, as much as the attention itself (#17).
+ * With p.hs set (#487) head h's sink logit sk[p.so + h] joins the max and
+ * the denominator, a split of its own with a zero value row. */
 /* Attention with a sink logit per head (#243, GPT-OSS). One simdgroup per
  * (query row, head): the keys of the row's causal window in order, each
  * dot a simd_sum over the lanes' dims, an online softmax that starts at
@@ -3350,16 +3366,16 @@ static const char metal_attn_sinks_source[] =
 static const char metal_attn_dec_combine_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "struct CB{uint qh,hd,ns,yo;};\n"
+        "struct CB{uint qh,hd,ns,yo,so,hs;};\n"
         "kernel void attention_dec_combine(device const float*pb[[buffer(0)]],device "
-        "float*y[[buffer(1)]],constant CB&p[[buffer(2)]],uint2 "
+        "float*y[[buffer(1)]],constant CB&p[[buffer(2)]],device const float*sk[[buffer(3)]],uint2 "
         "tg[[threadgroup_position_in_grid]],ushort lid[[thread_index_in_threadgroup]],ushort "
         "sg[[simdgroup_index_in_threadgroup]],ushort ln[[thread_index_in_simdgroup]]){"
         "threadgroup float sf[64];const uint h=tg.y,hd=p.hd,st=hd+2u;if(h>=p.qh)return;"
         "device const float*b=pb+h*32u*st;"
-        "const float m=ln<p.ns?b[ln*st]:-FLT_MAX;const float M=simd_max(m);"
-        "const float e=ln<p.ns?exp(m-M):0.0f;"
-        "const float L=simd_sum(ln<p.ns?e*b[ln*st+1u]:0.0f);"
+        "const float m=ln<p.ns?b[ln*st]:-FLT_MAX;const float sv=p.hs!=0u?sk[p.so+h]:-FLT_MAX;"
+        "const float M=max(simd_max(m),sv);const float e=ln<p.ns?exp(m-M):0.0f;"
+        "const float L=simd_sum(ln<p.ns?e*b[ln*st+1u]:0.0f)+(p.hs!=0u?exp(sv-M):0.0f);"
         "sf[sg*32u+ln]=e/L;simdgroup_barrier(mem_flags::mem_threadgroup);"
         "const uint i=tg.x*64u+lid;if(i>=hd)return;"
         "threadgroup const float*f=sf+sg*32u;device const float*bi=b+2u+i;"
