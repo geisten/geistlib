@@ -1,4 +1,4 @@
-### Performance
+### Changed
 - **Metal: long-prompt attention for gpt-oss and MLA models (#487).**
   GPT-OSS's attention with sink logits ran a one-simdgroup-per-(row, head)
   kernel, about half of a 2048-token prefill's GPU time; it now takes the
