@@ -4383,18 +4383,38 @@ static const char metal_moe2_source[] =
  *   map[n + 1 + r] = the slot s of sorted row r. Within an expert the slots
  *   keep their order (each simdgroup takes experts sg, sg + nsg, ... and
  *   ranks the matches of 32 slots at a time with a prefix sum), so the
- *   bucketing does not depend on the thread schedule.
- * moe_mm_<T>: grid (ceil(m / 32), ceil(n_out / 64), n experts). Threadgroup
- *   (x, y, e) multiplies expert e's weights (q.es bytes after expert 0,
- *   which p.wo locates in w) by the sorted rows 32x .. 32x + 31 of expert e:
- *   slot s reads x row s (q.ps != 0, one row per slot) or s / q.k (one row
- *   per token) and writes y row s. The tile is matmul_<T>_mm_sg_fast's (64
- *   outputs x 32 rows, K steps of 32, x staged as half), so a row's result
- *   is the one the per-expert GEMM gives it; n_in % 32 == 0 and x rows
- *   8-float aligned (the host checks). The output goes through threadgroup
- *   memory to its slot's row. */
+ *   bucketing does not depend on the thread schedule. #486: then the tiles
+ *   that have rows, expert by expert: map[q.tb] = their count, map[q.tb + 1
+ *   + t] = e | (j << 16) for the j-th 32-row tile of expert e (q.tb = n + 1
+ *   + m*k).
+ * moe_mm_<T>: grid (tiles, ceil(n_out / 64)), the tiles' bound
+ *   floor(m*k / 32) + min(n, m*k); threadgroup (t, y) past map[q.tb] exits,
+ *   threadgroup (t, y) of tile e | (j << 16) multiplies expert e's weights
+ *   (q.es bytes after expert 0, which p.wo locates in w) by the sorted rows
+ *   32j .. 32j + 31 of expert e: slot s reads x row s (q.ps != 0, one row
+ *   per slot) or s / q.k (one row per token) and writes y row s. The tile
+ *   is matmul_<T>_mm_sg_fast's (64 outputs x 32 rows, K steps of 32, x
+ *   staged as half), so a row's result is the one the per-expert GEMM gives
+ *   it; n_in % 32 == 0 and x rows 8-float aligned (the host checks). The
+ *   output goes through threadgroup memory to its slot's row.
+ * moe_mm_glu_<T> (#486): gate and up in one grouped GEMM, x one row per
+ *   token: grid (tiles, ceil(n_out / 32)); threadgroup (t, y) runs
+ *   moe_mm_<T>'s 64 x 32 tile over rows 32y .. 32y + 31 of the gate weights
+ *   (w, p.wo) and the same rows of the up weights (wu, q.wu; the same dtype
+ *   and geometry) of expert e, so its columns c and 32 + c are gate and up
+ *   of output 32y + c, then y = act(gate + bg[e], up + bu[e]) as moe_glu
+ *   takes it (q.act 0 silu(a) * b, 1 ggml's swiglu_oai; q.hx / q.hz: the
+ *   biases at q.xbo / q.zbo floats). Each output is the per-projection
+ *   tile's; the GLU dispatch and the gate / up rows in memory are gone.
+ *   (A 128-row tile with both products measured 40 % slower on the M6.) */
+#define GEIST_METAL_MOE_TILE_HEAD                                                       \
+    "if(tg.x>=map[q.tb])return;const uint te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e]," \
+    "ne=map[e+1u]-b0,r0=tg.y*64u,r1=(te>>16)*32u;"                                      \
+    "if(r0>=p.no)return;"                                                               \
+    "device const uint*rl=map+q.n+1u+b0+r1;"
+
 static const char metal_moe_map_source[] =
-        "struct MM{uint n,nk,io;};\n"
+        "struct MM{uint n,nk,io,tb;};\n"
         "kernel void moe_map(device const uint*ids[[buffer(0)]],device uint*map[[buffer(1)]],"
         "constant MM&q[[buffer(2)]],threadgroup uint*cnt[[threadgroup(0)]],"
         "ushort ln[[thread_index_in_simdgroup]],ushort sg[[simdgroup_index_in_threadgroup]],"
@@ -4403,26 +4423,34 @@ static const char metal_moe_map_source[] =
         "for(uint e=sg;e<q.n;e+=nsg){uint c=0u;"
         "for(uint s=ln;s<q.nk;s+=32u)c+=id[s]==e?1u:0u;c=simd_sum(c);if(ln==0)cnt[e]=c;}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
-        "if(sg==0){uint base=0u;for(uint e0=0u;e0<q.n;e0+=32u){uint e=e0+ln;"
-        "uint c=e<q.n?cnt[e]:0u;uint at=base+simd_prefix_exclusive_sum(c);"
-        "if(e<q.n){map[e]=at;cnt[e]=at;}base+=simd_sum(c);}if(ln==0)map[q.n]=base;}"
+        "if(sg==0){uint base=0u,tb=0u;device uint*tl=map+q.tb+1u;"
+        "for(uint e0=0u;e0<q.n;e0+=32u){uint e=e0+ln;"
+        "uint c=e<q.n?cnt[e]:0u,nt=(c+31u)/32u;uint at=base+simd_prefix_exclusive_sum(c);"
+        "uint ta=tb+simd_prefix_exclusive_sum(nt);"
+        "if(e<q.n){map[e]=at;cnt[e]=at;for(uint j=0u;j<nt;j++)tl[ta+j]=e|(j<<16);}"
+        "base+=simd_sum(c);tb+=simd_sum(nt);}if(ln==0){map[q.n]=base;map[q.tb]=tb;}}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "device uint*srt=map+q.n+1u;"
         "for(uint e=sg;e<q.n;e+=nsg){uint at=cnt[e];"
         "for(uint s0=0u;s0<q.nk;s0+=32u){uint s=s0+ln;bool hit=s<q.nk&&id[s]==e;"
         "uint h=hit?1u:0u;uint r=simd_prefix_exclusive_sum(h);if(hit)srt[at+r]=s;"
         "at+=simd_sum(h);}}}\n"
-        "struct MQ{uint n,k,ps,es;};\n";
+        "struct MQ{uint n,k,ps,es,tb;};\n"
+        "struct MQG{uint n,k,es,tb,wu,act,hx,hz,xbo,zbo;float alpha,limit;};\n";
+
+/* The activation of moe_mm_glu's epilogue: moe_glu's, a and b in, v out. */
+#define GEIST_METAL_MOE_GLU_ACT                                            \
+    "if(q.hx!=0u)a+=bg[q.xbo+e*p.no+o];if(q.hz!=0u)b+=bu[q.zbo+e*p.no+o];" \
+    "float v;if(q.act==1u){a=min(a,q.limit);"                              \
+    "b=clamp(b,-q.limit,q.limit);v=a/(1.0f+exp(-q.alpha*a))*(b+1.0f);}"    \
+    "else v=a/(1.0f+exp(-a))*b;"
 
 #define GEIST_METAL_MOE_MM_KERNEL(NAME, BLK, DQ, QKNL)                                            \
     "kernel void moe_mm_" NAME "(device const float*x[[buffer(0)]],device const "                 \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "    \
     "uint*map[[buffer(4)]],constant MQ&q[[buffer(5)]],threadgroup char*shmem[[threadgroup(0)]],"  \
     "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort "   \
-    "sg[[simdgroup_index_in_threadgroup]]){\n"                                                    \
-    "const uint e=tg.z,b0=map[e],ne=map[e+1u]-b0,r0=tg.y*64u,r1=tg.x*32u;"                        \
-    "if(r1>=ne||r0>=p.no)return;"                                                                 \
-    "device const uint*rl=map+q.n+1u+b0+r1;"                                                      \
+    "sg[[simdgroup_index_in_threadgroup]]){\n" GEIST_METAL_MOE_TILE_HEAD                          \
     "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "              \
     "half*)(shmem+4096);"                                                                         \
     "constexpr short NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short "          \
@@ -4465,6 +4493,66 @@ static const char metal_moe_map_source[] =
     "for(uint j=uint(ti);j<uint(nr1)*64u;j+=128u){uint c=j%64u;"                                  \
     "if(c<uint(nr0))y[p.yo+rl[j/64u]*p.ys+r0+c]=T[j];}}\n"
 
+#define GEIST_METAL_MOE_MM_GLU_KERNEL(NAME, BLK, DQ, QKNL)                                      \
+    "kernel void moe_mm_glu_" NAME "(device const float*x[[buffer(0)]],device const "           \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "  \
+    "uint*map[[buffer(4)]],constant MQG&q[[buffer(5)]],device const uchar*wu[[buffer(6)]],"     \
+    "device const float*bg[[buffer(7)]],device const float*bu[[buffer(8)]],"                    \
+    "threadgroup char*shmem[[threadgroup(0)]],"                                                 \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort " \
+    "sg[[simdgroup_index_in_threadgroup]]){\n"                                                  \
+    "if(tg.x>=map[q.tb])return;const uint te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"         \
+    "ne=map[e+1u]-b0,r0=tg.y*32u,r1=(te>>16)*32u;if(r0>=p.no)return;"                           \
+    "device const uint*rl=map+q.n+1u+b0+r1;"                                                    \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "            \
+    "half*)(shmem+4096);"                                                                       \
+    "constexpr short NK=32;constexpr short NL0=2;constexpr short NL1=4;constexpr short "        \
+    "QK_NL=" QKNL ";"                                                                           \
+    "const short nr0=short(min(p.no-r0,32u)),nr1=short(min(ne-r1,32u));"                        \
+    "const short l0=short(ti/NL0),lr0=min(short(l0%32),short(nr0-1)),"                          \
+    "lr1=min(short(ti/NL1),short(nr1-1));"                                                      \
+    "short il0=short(ti%NL0);short il=il0;"                                                     \
+    "device const " BLK "*wp=(device const " BLK "*)((l0<32?w+p.wo:wu+q.wu)+"                   \
+    "ulong(e)*ulong(q.es))+(r0+uint(lr0))*p.bpr;"                                               \
+    "const uint s=rl[lr1];"                                                                     \
+    "device const float*xp=x+p.xo+(s/q.k)*p.xs+uint(8*(ti%NL1));"                               \
+    "simdgroup_half8x8 ma[4];simdgroup_half8x8 mb[2];simdgroup_float8x8 mc[8];"                 \
+    "FOR_UNROLL(short i=0;i<8;i++){mc[i]=make_filled_simdgroup_matrix<float,8>(0.0f);}"         \
+    "short sx=short(ti%NL1);short sy=short((ti/NL1)/8);short lyb=short((ti/NL1)%8);short "      \
+    "ibb=short(4*sx+sy);"                                                                       \
+    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                         \
+    "half4x4 ta;" DQ "(wp,il,ta);"                                                              \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                          \
+    "FOR_UNROLL(short i=0;i<16;i++){short ax=short(2*il0+i/8);short ay=short((ti/NL0)/8);"      \
+    "short lx=short((ti/NL0)%8);short ly=short(i%8);short "                                     \
+    "ib=short(8*ax+ay);*(sa+64*ib+8*ly+lx)=ta[i/4][i%4];}"                                      \
+    "*(threadgroup half2x4*)(sb+64*ibb+8*lyb)=half2x4(*((device const float2x4*)xp));"          \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                       \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                          \
+    "threadgroup const half*lsma=sa+4*64*(sg%2);threadgroup const half*lsmb=sb+2*64*(sg/2);"    \
+    "FOR_UNROLL(short ik=0;ik<NK/8;ik++){"                                                      \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                   \
+    "FOR_UNROLL(short i=0;i<4;i++){simdgroup_load(ma[i],lsma+64*i,8,0,false);}"                 \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                   \
+    "FOR_UNROLL(short i=0;i<2;i++){simdgroup_load(mb[i],lsmb+64*i,8,0,false);}"                 \
+    "simdgroup_barrier(mem_flags::mem_none);"                                                   \
+    "FOR_UNROLL(short i=0;i<8;i++){simdgroup_multiply_accumulate(mc[i],mb[i/4],ma[i%4],"        \
+    "mc[i]);}"                                                                                  \
+    "lsma+=8*64;lsmb+=4*64;}}"
+
+/* moe_mm_glu_<T>'s epilogue, after each dtype's head: the tile's
+ * columns c (gate) and 32 + c (up) are output c. */
+static const char metal_moe_mm_glu_tail_source[] =
+        "threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*T=(threadgroup "
+        "float*)shmem;"
+        "FOR_UNROLL(short "
+        "i=0;i<8;i++){simdgroup_store(mc[i],T+32*(sg&1)+1024*(sg>>1)+8*(i%4)+512*(i/"
+        "4),64,0,false);}"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint j=uint(ti);j<uint(nr1)*32u;j+=128u){const uint r=j/32u,c=j%32u;"
+        "if(c<uint(nr0)){const uint o=r0+c;float "
+        "a=T[r*64u+c],b=T[r*64u+32u+c];" GEIST_METAL_MOE_GLU_ACT "y[p.yo+rl[r]*p.ys+o]=v;}}}\n";
+
 /* moe_mm_tc_<T> (#482): moe_mm_<T> on the matrix units (Apple GPU family
  * 10+), llama.cpp's kernel_mul_mm_id under GGML_METAL_HAS_TENSOR: the same
  * 64 x 32 tile, bucketing and K steps of 32, the weights and x staged as
@@ -4472,16 +4560,13 @@ static const char metal_moe_map_source[] =
  * matmul2d per 16-row half (the upper half only when the expert has rows
  * there). Built in the tensor-API unit (language version 4.0) after
  * metal_mm_tc_head_source and the dequants; grid and threadgroup memory as
- * moe_mm_<T>'s. */
+ * moe_mm_<T>'s. moe_mm_tc_glu_<T> (#486): moe_mm_glu_<T> the same way. */
 #define GEIST_METAL_MOE_MM_TC_KERNEL(NAME, BLK, DQ, QKNL)                                        \
     "kernel void moe_mm_tc_" NAME "(device const float*x[[buffer(0)]],device const "             \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "   \
     "uint*map[[buffer(4)]],constant MQ&q[[buffer(5)]],threadgroup char*shmem[[threadgroup(0)]]," \
     "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
-    "using namespace mpp::tensor_ops;"                                                           \
-    "const uint e=tg.z,b0=map[e],ne=map[e+1u]-b0,r0=tg.y*64u,r1=tg.x*32u;"                       \
-    "if(r1>=ne||r0>=p.no)return;"                                                                \
-    "device const uint*rl=map+q.n+1u+b0+r1;"                                                     \
+    "using namespace mpp::tensor_ops;" GEIST_METAL_MOE_TILE_HEAD                                 \
     "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "             \
     "half*)(shmem+4096);threadgroup float*sc=(threadgroup float*)shmem;"                         \
     "constexpr short NR0=64,NR1H=16,NK=32,NL0=2,NL1=4,QK_NL=" QKNL ";"                           \
@@ -4522,25 +4607,106 @@ static const char metal_moe_map_source[] =
     "for(uint j=uint(ti);j<uint(nr1)*64u;j+=128u){uint c=j%64u;"                                 \
     "if(c<uint(nr0))y[p.yo+rl[j/64u]*p.ys+r0+c]=sc[j];}}\n"
 
+#define GEIST_METAL_MOE_MM_TC_GLU_KERNEL(NAME, BLK, DQ, QKNL)                                    \
+    "kernel void moe_mm_tc_glu_" NAME "(device const float*x[[buffer(0)]],device const "         \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "   \
+    "uint*map[[buffer(4)]],constant MQG&q[[buffer(5)]],device const uchar*wu[[buffer(6)]],"      \
+    "device const float*bg[[buffer(7)]],device const float*bu[[buffer(8)]],"                     \
+    "threadgroup char*shmem[[threadgroup(0)]],"                                                  \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
+    "using namespace mpp::tensor_ops;"                                                           \
+    "if(tg.x>=map[q.tb])return;const uint te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"          \
+    "ne=map[e+1u]-b0,r0=tg.y*32u,r1=(te>>16)*32u;if(r0>=p.no)return;"                            \
+    "device const uint*rl=map+q.n+1u+b0+r1;"                                                     \
+    "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "             \
+    "half*)(shmem+4096);"                                                                        \
+    "constexpr short NR0=64,NR1H=16,NK=32,NL0=2,NL1=4,QK_NL=" QKNL ";"                           \
+    "const short nr0=short(min(p.no-r0,32u)),nr1=short(min(ne-r1,32u));"                         \
+    "const short l0=short(ti/NL0),lr0=min(short(l0%32),short(nr0-1)),"                           \
+    "lr1=min(short(ti/NL1),short(nr1-1));"                                                       \
+    "short il0=short(ti%NL0);short il=il0;"                                                      \
+    "device const " BLK "*wp=(device const " BLK "*)((l0<32?w+p.wo:wu+q.wu)+"                    \
+    "ulong(e)*ulong(q.es))+(r0+uint(lr0))*p.bpr;"                                                \
+    "const uint s=rl[lr1];"                                                                      \
+    "device const float*xp=x+p.xo+(s/q.k)*p.xs+uint(8*(ti%NL1));"                                \
+    "const bool hi=nr1>NR1H;"                                                                    \
+    "auto tA=tensor<threadgroup half,dextents<int32_t,2>,tensor_inline>(sa,"                     \
+    "dextents<int32_t,2>(NK,NR0));"                                                              \
+    "auto tB0=tensor<threadgroup half,dextents<int32_t,2>,tensor_inline>(sb,"                    \
+    "dextents<int32_t,2>(NK,NR1H));"                                                             \
+    "auto tB1=tensor<threadgroup half,dextents<int32_t,2>,tensor_inline>(sb+NR1H*NK,"            \
+    "dextents<int32_t,2>(NK,NR1H));"                                                             \
+    "matmul2d<matmul2d_descriptor(NR1H,NR0,NK,false,true,false,"                                 \
+    "matmul2d_descriptor::mode::multiply_accumulate),execution_simdgroups<4>> mm;"               \
+    "auto cT0=mm.get_destination_cooperative_tensor<decltype(tA),decltype(tB0),float>();"        \
+    "auto cT1=mm.get_destination_cooperative_tensor<decltype(tA),decltype(tB1),float>();"        \
+    "FOR_UNROLL(uint16_t i=0;i<cT0.get_capacity();++i){if(cT0.is_valid_element(i))cT0[i]=0.0f;}" \
+    "FOR_UNROLL(uint16_t i=0;i<cT1.get_capacity();++i){if(cT1.is_valid_element(i))cT1[i]=0.0f;}" \
+    "const short ar=short(ti/NL0),br=short(ti/NL1),bk=short(8*(ti%NL1));"                        \
+    "for(uint loop_k=0u;loop_k<p.ni;loop_k+=uint(NK)){"                                          \
+    "half4x4 ta;" DQ "(wp,il,ta);"                                                               \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                           \
+    "FOR_UNROLL(short i=0;i<16;i++){sa[NK*ar+16*il0+i]=ta[i/4][i%4];}"                           \
+    "*(threadgroup half2x4*)(sb+NK*br+bk)=half2x4(*((device const float2x4*)xp));"               \
+    "il=(il+2<QK_NL)?il+2:il%2;wp=(il<2)?wp+1:wp;xp+=NK;"                                        \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                           \
+    "mm.run(tB0,tA,cT0);if(hi)mm.run(tB1,tA,cT1);}"
+
+/* moe_mm_tc_glu_<T>'s epilogue, after each dtype's head. */
+static const char metal_moe_mm_tc_glu_tail_source[] =
+        "threadgroup_barrier(mem_flags::mem_threadgroup);threadgroup float*sc=(threadgroup "
+        "float*)shmem;"
+        "cT0.store(tensor<threadgroup float,dextents<int32_t,2>,tensor_inline>(sc,"
+        "dextents<int32_t,2>(NR0,NR1H)));"
+        "if(hi)cT1.store(tensor<threadgroup float,dextents<int32_t,2>,tensor_inline>(sc+NR1H*NR0,"
+        "dextents<int32_t,2>(NR0,NR1H)));"
+        "threadgroup_barrier(mem_flags::mem_threadgroup);"
+        "for(uint j=uint(ti);j<uint(nr1)*32u;j+=128u){const uint r=j/32u,c=j%32u;"
+        "if(c<uint(nr0)){const uint o=r0+c;float "
+        "a=sc[r*64u+c],b=sc[r*64u+32u+c];" GEIST_METAL_MOE_GLU_ACT "y[p.yo+rl[r]*p.ys+o]=v;}}}\n";
+
+/* The grouped GEMMs' parameter blocks in the tensor-API unit. */
+static const char metal_moe_mm_tc_head_source[] =
+        "struct MQ{uint n,k,ps,es,tb;};\n"
+        "struct MQG{uint n,k,es,tb,wu,act,hx,hz,xbo,zbo;float alpha,limit;};\n";
 static const char metal_moe_mm_tc_q4k_source[] =
-        "struct MQ{uint n,k,ps,es;};\n" GEIST_METAL_MOE_MM_TC_KERNEL(
-                "q4k", "block_q4_K", "dq4", "16");
+        GEIST_METAL_MOE_MM_TC_KERNEL("q4k", "block_q4_K", "dq4", "16");
+static const char metal_moe_mm_tc_glu_q4k_source[] =
+        GEIST_METAL_MOE_MM_TC_GLU_KERNEL("q4k", "block_q4_K", "dq4", "16");
 static const char metal_moe_mm_tc_q6k_source[] =
         GEIST_METAL_MOE_MM_TC_KERNEL("q6k", "block_q6_K", "dq6b", "16");
+static const char metal_moe_mm_tc_glu_q6k_source[] =
+        GEIST_METAL_MOE_MM_TC_GLU_KERNEL("q6k", "block_q6_K", "dq6b", "16");
 static const char metal_moe_mm_tc_q80_source[] =
         GEIST_METAL_MOE_MM_TC_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_moe_mm_tc_glu_q80_source[] =
+        GEIST_METAL_MOE_MM_TC_GLU_KERNEL("q80", "bq80", "dq80", "2");
 static const char metal_moe_mm_tc_mx4_source[] =
         GEIST_METAL_MOE_MM_TC_KERNEL("mx4", "bmx4", "dqmx4", "2");
+static const char metal_moe_mm_tc_glu_mx4_source[] =
+        GEIST_METAL_MOE_MM_TC_GLU_KERNEL("mx4", "bmx4", "dqmx4", "2");
 static const char metal_moe_mm_tc_q50_source[] =
         GEIST_METAL_MOE_MM_TC_KERNEL("q50", "bq50", "dq50", "2");
+static const char metal_moe_mm_tc_glu_q50_source[] =
+        GEIST_METAL_MOE_MM_TC_GLU_KERNEL("q50", "bq50", "dq50", "2");
 
 static const char metal_moe_mm_q4k_source[] =
         GEIST_METAL_MOE_MM_KERNEL("q4k", "block_q4_K", "dq4", "16");
+static const char metal_moe_mm_glu_q4k_source[] =
+        GEIST_METAL_MOE_MM_GLU_KERNEL("q4k", "block_q4_K", "dq4", "16");
 static const char metal_moe_mm_q6k_source[] =
         GEIST_METAL_MOE_MM_KERNEL("q6k", "block_q6_K", "dq6b", "16");
+static const char metal_moe_mm_glu_q6k_source[] =
+        GEIST_METAL_MOE_MM_GLU_KERNEL("q6k", "block_q6_K", "dq6b", "16");
 static const char metal_moe_mm_q80_source[] = GEIST_METAL_MOE_MM_KERNEL("q80", "bq80", "dq80", "2");
+static const char metal_moe_mm_glu_q80_source[] =
+        GEIST_METAL_MOE_MM_GLU_KERNEL("q80", "bq80", "dq80", "2");
 static const char metal_moe_mm_mx4_source[] =
         GEIST_METAL_MOE_MM_KERNEL("mx4", "bmx4", "dqmx4", "2");
+static const char metal_moe_mm_glu_mx4_source[] =
+        GEIST_METAL_MOE_MM_GLU_KERNEL("mx4", "bmx4", "dqmx4", "2");
 static const char metal_moe_mm_q50_source[] = GEIST_METAL_MOE_MM_KERNEL("q50", "bq50", "dq50", "2");
+static const char metal_moe_mm_glu_q50_source[] =
+        GEIST_METAL_MOE_MM_GLU_KERNEL("q50", "bq50", "dq50", "2");
 
 #endif /* GEIST_METAL_SHADERS_H */
