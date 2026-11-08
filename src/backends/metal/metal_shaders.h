@@ -1336,17 +1336,26 @@ static const char metal_q4k_dq_source[] =
         "i=0;i<16;i++){r[i/4][i%4]=half(dl*float(q[i]&mask)-ml);}}\n";
 
 /* Q6_K 16-element dequant on a raw 210-byte block, as matmul_q6k_sg_fast
- * reads it: half(d * sc * (q - 32)). */
+ * reads it: half(d * sc * (q - 32)). Element 16 il + i of the block's 256
+ * takes its 4 low bits from ql (64 bytes per 128 elements; the high nibble
+ * for the second 64) and its 2 high bits from qh (bits 2 st of 32 bytes
+ * per 128, st = (il / 2) & 3). ql and qh are read as 16-bit words, four
+ * values per 32-bit word as llama.cpp's dequantize_q6_K does (#494: 16
+ * byte loads each before; the block is 2-byte aligned, 210 bytes), and
+ * each value keeps the exact d * sc * (q - 32). */
 static const char metal_q6k_dq_source[] =
-        "static inline void dq6(device const uchar*b,short il,thread half4x4&r){short k0=16*il;"
-        "short hi=k0>>7;short ih=k0&127;short st=ih>>5;short l0=ih&31;"
-        "device const uchar*ql=b+hi*64+l0+((st&1)?32:0);device const uchar*qh=b+128+hi*32+l0;"
-        "float d=float(as_type<half>(ushort(ushort(b[208])|(ushort(b[209])<<8))));"
-        "float dl=d*float(as_type<char>(b[192+hi*8+(l0>>4)+2*st]));short qs=(st>=2)?4:0;short "
-        "hs=2*st;"
-        "FOR_UNROLL(short i=0;i<16;i++){int "
-        "q=int(((uint(ql[i])>>qs)&15u)|(((uint(qh[i])>>hs)&3u)<<4u));"
-        "r[i/4][i%4]=half(dl*float(q-32));}}\n";
+        "static inline void dq6(device const uchar*b,short il,thread half4x4&r){"
+        "const short st=(il/2)&3;"
+        "device const ushort*ql=(device const ushort*)b+32*(il/8)+16*((il/2)&1)+8*(il&1);"
+        "device const ushort*qh=(device const ushort*)(b+128)+16*(il/8)+8*(il&1);"
+        "const float dl=float(*(device const half*)(b+208))*float(as_type<char>(b[192+il]));"
+        "const uint ml=st>1?0xF0F0F0F0u:0x0F0F0F0Fu,mh=0x03030303u<<(2*st);"
+        "const uint shl=st>1?0u:uint(4-2*st),shr=st>2?2u:0u,sl=st>1?4u:0u;"
+        "FOR_UNROLL(short i=0;i<4;i++){"
+        "const uint lo=(uint(ql[2*i])|(uint(ql[2*i+1])<<16))&ml;"
+        "const uint hb=(uint(qh[2*i])|(uint(qh[2*i+1])<<16))&mh;"
+        "const uint q=((hb<<shl)>>shr)|(lo>>sl);"
+        "FOR_UNROLL(short j=0;j<4;j++){r[i][j]=half(dl*float(int((q>>(8*j))&0xFFu)-32));}}}\n";
 
 static const char metal_q4k_mm_sg_source[] =
         "kernel void matmul_q4k_mm_sg(device const float*x[[buffer(0)]],device const "
@@ -4423,11 +4432,10 @@ static const char metal_moe2_source[] =
  *   biases at q.xbo / q.zbo floats). Each output is the per-projection
  *   tile's; the GLU dispatch and the gate / up rows in memory are gone.
  *   (A 128-row tile with both products measured 40 % slower on the M6.) */
-#define GEIST_METAL_MOE_TILE_HEAD                                \
-    "const uint2 tg=tq.yx;if(tg.x>=map[q.tb])return;const uint " \
-    "te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"               \
-    "ne=map[e+1u]-b0,r0=tg.y*64u,r1=(te>>16)*32u;"               \
-    "if(r0>=p.no)return;"                                        \
+#define GEIST_METAL_MOE_TILE_HEAD                                                       \
+    "if(tg.x>=map[q.tb])return;const uint te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e]," \
+    "ne=map[e+1u]-b0,r0=tg.y*64u,r1=(te>>16)*32u;"                                      \
+    "if(r0>=p.no)return;"                                                               \
     "device const uint*rl=map+q.n+1u+b0+r1;"
 
 static const char metal_moe_map_source[] =
@@ -4466,7 +4474,7 @@ static const char metal_moe_map_source[] =
     "kernel void moe_mm_" NAME "(device const float*x[[buffer(0)]],device const "                 \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "    \
     "uint*map[[buffer(4)]],constant MQ&q[[buffer(5)]],threadgroup char*shmem[[threadgroup(0)]],"  \
-    "uint3 tq[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort "   \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort "   \
     "sg[[simdgroup_index_in_threadgroup]]){\n" GEIST_METAL_MOE_TILE_HEAD                          \
     "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "              \
     "half*)(shmem+4096);"                                                                         \
@@ -4516,10 +4524,9 @@ static const char metal_moe_map_source[] =
     "uint*map[[buffer(4)]],constant MQG&q[[buffer(5)]],device const uchar*wu[[buffer(6)]],"     \
     "device const float*bg[[buffer(7)]],device const float*bu[[buffer(8)]],"                    \
     "threadgroup char*shmem[[threadgroup(0)]],"                                                 \
-    "uint3 tq[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort " \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]],ushort " \
     "sg[[simdgroup_index_in_threadgroup]]){\n"                                                  \
-    "const uint2 tg=tq.yx;if(tg.x>=map[q.tb])return;const uint "                                \
-    "te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"                                              \
+    "if(tg.x>=map[q.tb])return;const uint te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"         \
     "ne=map[e+1u]-b0,r0=tg.y*32u,r1=(te>>16)*32u;if(r0>=p.no)return;"                           \
     "device const uint*rl=map+q.n+1u+b0+r1;"                                                    \
     "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "            \
@@ -4583,7 +4590,7 @@ static const char metal_moe_mm_glu_tail_source[] =
     "kernel void moe_mm_tc_" NAME "(device const float*x[[buffer(0)]],device const "             \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],device const "   \
     "uint*map[[buffer(4)]],constant MQ&q[[buffer(5)]],threadgroup char*shmem[[threadgroup(0)]]," \
-    "uint3 tq[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
     "using namespace mpp::tensor_ops;" GEIST_METAL_MOE_TILE_HEAD                                 \
     "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "             \
     "half*)(shmem+4096);threadgroup float*sc=(threadgroup float*)shmem;"                         \
@@ -4631,10 +4638,9 @@ static const char metal_moe_mm_glu_tail_source[] =
     "uint*map[[buffer(4)]],constant MQG&q[[buffer(5)]],device const uchar*wu[[buffer(6)]],"      \
     "device const float*bg[[buffer(7)]],device const float*bu[[buffer(8)]],"                     \
     "threadgroup char*shmem[[threadgroup(0)]],"                                                  \
-    "uint3 tq[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
+    "uint3 tg[[threadgroup_position_in_grid]],ushort ti[[thread_index_in_threadgroup]]){\n"      \
     "using namespace mpp::tensor_ops;"                                                           \
-    "const uint2 tg=tq.yx;if(tg.x>=map[q.tb])return;const uint "                                 \
-    "te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"                                               \
+    "if(tg.x>=map[q.tb])return;const uint te=map[q.tb+1u+tg.x],e=te&0xffffu,b0=map[e],"          \
     "ne=map[e+1u]-b0,r0=tg.y*32u,r1=(te>>16)*32u;if(r0>=p.no)return;"                            \
     "device const uint*rl=map+q.n+1u+b0+r1;"                                                     \
     "threadgroup half*sa=(threadgroup half*)shmem;threadgroup half*sb=(threadgroup "             \

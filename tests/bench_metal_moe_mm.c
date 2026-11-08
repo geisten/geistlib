@@ -154,6 +154,28 @@ static void make_ids(size_t n, size_t m, size_t k, uint32_t *ids) {
     }
 }
 
+/* GEIST_BENCH_IDS=<file>: a model's routing instead, records of (n, m, k)
+ * uint32 then m * k uint32 ids; the GEIST_BENCH_IDS_REC-th (default 0)
+ * record of this n, m and k. false: none. */
+static bool load_ids(size_t n, size_t m, size_t k, uint32_t *ids) {
+    const char *path = getenv("GEIST_BENCH_IDS");
+    const char *rec  = getenv("GEIST_BENCH_IDS_REC");
+    long        want = rec != nullptr ? atol(rec) : 0;
+    FILE       *f    = path != nullptr ? fopen(path, "rb") : nullptr;
+    bool        ok   = false;
+    uint32_t    hd[3];
+    while (f != nullptr && !ok && fread(hd, 4, 3, f) == 3) {
+        const size_t nk = (size_t) hd[1] * hd[2];
+        if (hd[0] == n && hd[1] == m && hd[2] == k && want-- == 0)
+            ok = fread(ids, 4, nk, f) == nk;
+        else if (fseek(f, (long) (nk * 4), SEEK_CUR) != 0)
+            break;
+    }
+    if (f != nullptr)
+        fclose(f);
+    return ok;
+}
+
 /* A row: one projection (ffn == false) or gate + up + down (ffn). */
 struct row {
     const char        *name;
@@ -182,7 +204,8 @@ static int bench_row(struct geist_backend *be, const struct row *r, size_t m, in
     const size_t xr = r->per_slot ? nk : m, yc = r->ffn ? r->n_in : r->n_out;
     for (size_t i = 0; i < xr * r->n_in; i++)
         xs[i] = ((float) (rng_u32() >> 24) - 127.5f) / 64.0f;
-    make_ids(r->n, m, r->k, id);
+    if (!load_ids(r->n, m, r->k, id))
+        make_ids(r->n, m, r->k, id);
     if (v->buffer_create(be, xr * r->n_in * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bx) !=
                 GEIST_OK ||
         v->buffer_create(be, nk * yc * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &by) != GEIST_OK ||
