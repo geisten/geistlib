@@ -4,8 +4,8 @@
  * ends in one subgroupAdd per batch row. Assumes subgroup size 32 (the host
  * loops the size-agnostic matvec on other sizes).
  * Included after exactly one of:
- *   DT_Q4_0 / DT_Q4_1 / DT_Q8_0  32-element blocks; layouts as in
- *                                mv_legacy.glsl
+ *   DT_Q4_0 / DT_Q4_1 / DT_Q8_0 / DT_Q5_0 / DT_MXFP4  32-element blocks;
+ *             layouts as in mv_legacy.glsl
  *   DT_TQ2_0  layout and lane mapping as in matvec_tq2_0.comp
  *   DT_PQ2_0  layout and lane mapping as in matvec_pq2_0.comp (16 lanes per
  *             128-element block, two blocks per step)
@@ -58,17 +58,30 @@ layout(push_constant) uniform Push {
 
 #if defined(DT_Q8_0)
 const uint LPB = 8u;
-#elif defined(DT_Q4_0) || defined(DT_Q4_1)
+#elif defined(DT_Q4_0) || defined(DT_Q4_1) || defined(DT_Q5_0) || defined(DT_MXFP4)
 const uint LPB = 4u;
 #endif
-#if defined(DT_Q4_0) || defined(DT_Q4_1) || defined(DT_Q8_0)
+#if defined(DT_Q4_0) || defined(DT_Q4_1) || defined(DT_Q8_0) || defined(DT_Q5_0) || defined(DT_MXFP4)
+#define DT_LEGACY 1
 const uint BPI = 32u / LPB;
 #endif
 
-#if defined(DT_Q4_0) || defined(DT_Q8_0)
+#if defined(DT_Q4_0) || defined(DT_Q8_0) || defined(DT_Q5_0)
 float block_scale(uint bi, uint sc0) {
     uint word = w[sc0 + (bi >> 1u)];
     return unpackHalf2x16(word >> ((bi & 1u) * 16u)).x;
+}
+#elif defined(DT_MXFP4)
+/* kvalues_mxfp4 and mxfp4_e8m0_half as in mv_legacy.glsl */
+float mx4v(uint c) {
+    float m = float((0xC8643210u >> ((c & 7u) * 4u)) & 15u);
+    return (c & 8u) != 0u ? -m : m;
+}
+vec4 mx4(uint q) {
+    return vec4(mx4v(q & 15u), mx4v((q >> 8u) & 15u), mx4v((q >> 16u) & 15u), mx4v((q >> 24u) & 15u));
+}
+float e8m0_half(uint e) {
+    return uintBitsToFloat(e < 2u ? (0x00200000u << e) : ((e - 1u) << 23u));
 }
 #elif defined(DT_TQ2_0)
 vec4 trits(uint q, uint sh) {
@@ -120,7 +133,7 @@ void main() {
     uint wq = lane & 15u;
     uint nb = pc.blocks_per_row;
     uint sc0 = pc.n_out * nb * 8u;
-#elif defined(DT_Q4_0) || defined(DT_Q4_1) || defined(DT_Q8_0)
+#elif defined(DT_LEGACY)
     uint nb = pc.blocks_per_row;
     uint ib = lane / LPB;
     uint wq = lane % LPB;
@@ -130,10 +143,12 @@ void main() {
     for (uint t = 0u; t < TM; ++t) {
         s[t] = 0.0;
     }
-#if defined(DT_Q4_0)
+#if defined(DT_Q4_0) || defined(DT_MXFP4)
     uint sc0 = pc.n_out * nb * 4u;
 #elif defined(DT_Q8_0)
     uint sc0 = pc.n_out * nb * 8u;
+#elif defined(DT_Q5_0)
+    uint sc0 = pc.n_out * nb * 5u;
 #endif
 
     if (row < pc.n_out) {
@@ -371,6 +386,19 @@ void main() {
                 float d = block_scale(bi, sc0);
                 wlo = d * (vec4(unpack8(qw & 0x0F0F0F0Fu)) - vec4(8.0));
                 whi = d * (vec4(unpack8((qw >> 4u) & 0x0F0F0F0Fu)) - vec4(8.0));
+#elif defined(DT_Q5_0)
+                uint qh = w[bi * 5u];
+                uint qw = w[bi * 5u + 1u + wq];
+                float d = block_scale(bi, sc0);
+                uint hl = (((qh >> (wq * 4u)) & 15u) * 0x00204081u) & 0x01010101u;
+                uint hh = (((qh >> (wq * 4u + 16u)) & 15u) * 0x00204081u) & 0x01010101u;
+                wlo = d * (vec4(unpack8((qw & 0x0F0F0F0Fu) | (hl << 4u))) - vec4(16.0));
+                whi = d * (vec4(unpack8(((qw >> 4u) & 0x0F0F0F0Fu) | (hh << 4u))) - vec4(16.0));
+#elif defined(DT_MXFP4)
+                uint qw = w[bi * 4u + wq];
+                float d = e8m0_half((w[sc0 + (bi >> 2u)] >> ((bi & 3u) * 8u)) & 0xffu);
+                wlo = d * mx4(qw);
+                whi = d * mx4(qw >> 4u);
 #else
                 vec2 dm = unpackHalf2x16(w[bi * 5u]);
                 uint qw = w[bi * 5u + 1u + wq];

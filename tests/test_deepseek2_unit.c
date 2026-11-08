@@ -558,21 +558,25 @@ static int check_shape(const char *what, const struct mf_deepseek2 *g, float *sc
             fails += geist_expect(exact ? d <= 1e-3 : c >= 0.999,
                                   "a backend matches cpu_scalar within its tolerance");
         }
-        /* #376: Metal's GPU experts and device MLA against the reference
-         * and against its experts on the CPU. */
-        if (r == 0 && strcmp(more[i], "metal") == 0) {
+        /* #376: Metal's GPU experts and device MLA (#499: Vulkan's GPU
+         * experts) against the reference and against its experts on the CPU. */
+        if (r == 0 && (strcmp(more[i], "metal") == 0 || strcmp(more[i], "vulkan") == 0)) {
             static float cpu_exp[VOCAB];
             const double dr = rel_l2_d(other, ref);
-            printf("metal vs the double reference: relative L2 %.3g\n", dr);
-            fails += geist_expect(dr <= 1e-5, "metal matches the reference within 1e-5");
+            printf("%s vs the double reference: relative L2 %.3g\n", more[i], dr);
+            fails += geist_expect(dr <= 1e-5, "the GPU matches the reference within 1e-5");
             setenv("GEIST_MOE_HOT", "0", 1);
-            const int rc = check_backend("metal", g, OPTS.kv_mode, cpu_exp);
+            const int rc = check_backend(more[i], g, OPTS.kv_mode, cpu_exp);
             unsetenv("GEIST_MOE_HOT");
-            fails += geist_expect(rc == 0, "metal runs with its experts on the CPU");
+            fails += geist_expect(rc == 0, "the GPU runs with its experts on the CPU");
+            /* The CPU's experts are exact on cpu_neon (Metal's host); on x86
+             * cpu_x86 runs F32 weights as W8A8, so there the double
+             * reference above is the measure. */
             if (rc == 0) {
                 const double dc = rel_l2_f(other, cpu_exp);
-                printf("metal, experts on the GPU vs on the CPU: relative L2 %.3g\n", dc);
-                fails += geist_expect(dc <= 1e-5, "the GPU experts match the CPU experts");
+                printf("%s, experts on the GPU vs on the CPU: relative L2 %.3g\n", more[i], dc);
+                if (strcmp(more[i], "metal") == 0)
+                    fails += geist_expect(dc <= 1e-5, "the GPU experts match the CPU experts");
             }
         }
     }

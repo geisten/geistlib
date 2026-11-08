@@ -35,7 +35,7 @@ X(VK_PIPE_MATVEC_F32_SEL,         matvec_f32_sel_spv,          "matvec_f32_sel",
 X(VK_PIPE_MATVEC_Q4K_SEL,         matvec_q4k_sel_spv,          "matvec_q4k_sel",         4, PLAIN)
 X(VK_PIPE_MATVEC_Q6K_SEL,         matvec_q6k_sel_spv,          "matvec_q6k_sel",         4, PLAIN)
 X(VK_PIPE_MATVEC_Q5K_SEL,         matvec_q5k_sel_spv,          "matvec_q5k_sel",         4, PLAIN)
-X(VK_PIPE_MOE_TOPK,               moe_topk_spv,                "moe_topk",               3, PLAIN)
+X(VK_PIPE_MOE_TOPK,               moe_topk_spv,                "moe_topk",               5, PLAIN)
 X(VK_PIPE_ROWS_WSUM_ADD,          rows_wsum_add_spv,           "rows_wsum_add",          3, PLAIN)
 X(VK_PIPE_ROWS_GATHER,            rows_gather_spv,             "rows_gather",            3, PLAIN)
 X(VK_PIPE_MATMUL_F32,             matmul_f32_spv,              "matmul_f32",             3, TILED)
@@ -162,3 +162,28 @@ X(VK_PIPE_MM_Q5K_CM128_SB,        matmul_q5k_t128_sb_cm_spv,   "mm_q5k_cm128_sb"
 /* Q8_0 matvec over a batch (one row per workgroup row), for GEMMs too narrow
  * for the tensor-core tiles */
 X(VK_PIPE_MATVEC_Q8_0_MT,         matvec_q8_0_mt_spv,          "matvec_q8_0_mt",         3, PLAIN)
+/* #499: Q5_0 and MXFP4 linears (struct-of-arrays layouts, mv_legacy.glsl) */
+X(VK_PIPE_MATVEC_Q5_0,            matvec_q5_0_spv,             "matvec_q5_0",            3, PLAIN)
+X(VK_PIPE_MATMUL_Q5_0,            matmul_q5_0_spv,             "matmul_q5_0",            3, TILED)
+X(VK_PIPE_MM_Q5_0_CM,             matmul_q5_0_cm_spv,          "mm_q5_0_cm",             3, COOPMAT)
+X(VK_PIPE_MATVEC_MXFP4,           matvec_mxfp4_spv,            "matvec_mxfp4",           3, PLAIN)
+X(VK_PIPE_MATMUL_MXFP4,           matmul_mxfp4_spv,            "matmul_mxfp4",           3, TILED)
+X(VK_PIPE_MM_MXFP4_CM,            matmul_mxfp4_cm_spv,         "mm_mxfp4_cm",            3, COOPMAT)
+/* #499: the grouped and _sel matvecs of the 32-element-block experts */
+X(VK_PIPE_MATVEC_Q8_0_ID,         matvec_q8_0_id_spv,          "matvec_q8_0_id",         2, PLAIN)
+X(VK_PIPE_MATVEC_Q8_0_SEL,        matvec_q8_0_sel_spv,         "matvec_q8_0_sel",        4, PLAIN)
+X(VK_PIPE_MATVEC_Q5_0_ID,         matvec_q5_0_id_spv,          "matvec_q5_0_id",         2, PLAIN)
+X(VK_PIPE_MATVEC_Q5_0_SEL,        matvec_q5_0_sel_spv,         "matvec_q5_0_sel",        4, PLAIN)
+X(VK_PIPE_MATVEC_MXFP4_ID,        matvec_mxfp4_id_spv,         "matvec_mxfp4_id",        2, PLAIN)
+X(VK_PIPE_MATVEC_MXFP4_SEL,       matvec_mxfp4_sel_spv,        "matvec_mxfp4_sel",       4, PLAIN)
+/* #499: the experts' GLU with biases and the routed weighted sum (device route) */
+X(VK_PIPE_MOE_GLU,                moe_glu_spv,                 "moe_glu",                6, PLAIN)
+X(VK_PIPE_MOE_WSUM,               moe_wsum_spv,                "moe_wsum",               6, PLAIN)
+/* #499: a prefill chunk's slots bucketed by expert, then the grouped expert GEMMs */
+X(VK_PIPE_MOE_MAP,                moe_map_spv,                 "moe_map",                2, PLAIN)
+X(VK_PIPE_MOE_MM_Q4K_CM,          moe_mm_q4k_cm_spv,           "moe_mm_q4k_cm",          4, COOPMAT)
+X(VK_PIPE_MOE_MM_Q5K_CM,          moe_mm_q5k_cm_spv,           "moe_mm_q5k_cm",          4, COOPMAT)
+X(VK_PIPE_MOE_MM_Q6K_CM,          moe_mm_q6k_cm_spv,           "moe_mm_q6k_cm",          4, COOPMAT)
+X(VK_PIPE_MOE_MM_Q8_0_CM,         moe_mm_q8_0_cm_spv,          "moe_mm_q8_0_cm",         4, COOPMAT)
+X(VK_PIPE_MOE_MM_Q5_0_CM,         moe_mm_q5_0_cm_spv,          "moe_mm_q5_0_cm",         4, COOPMAT)
+X(VK_PIPE_MOE_MM_MXFP4_CM,        moe_mm_mxfp4_cm_spv,         "moe_mm_mxfp4_cm",        4, COOPMAT)

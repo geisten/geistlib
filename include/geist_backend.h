@@ -1250,6 +1250,14 @@ struct geist_backend_caps {
      * whose attention reads them there. Consumer: session allocation.
      * Opt-in after measuring: cpu_x86. */
     bool kv_dense_block;
+
+    /* deepseek2's latent attention runs on the device (#376): scale_f32 on
+     * row views, fused->linear_t_ids on per-head row views with a stride,
+     * attention at the absorbed MLA's 520-576-dim head. Consumer:
+     * deepseek2's mla_device; without it a GPU refuses the absorbed layout
+     * and assembles the decompressed one on the host. Set by metal (#499:
+     * vulkan has linear_t_ids for its experts, not the rest yet). */
+    bool mla_device;
 };
 
 /* ====================================================================== */
