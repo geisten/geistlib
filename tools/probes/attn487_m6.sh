@@ -114,7 +114,7 @@ def same(a, b):
         k += 1
     return k
 try:
-    nids = len(open(f"{out}/{n}_{p}.ids").read().split())
+    import os; nids = os.path.getsize(f"{out}/{n}_{p}.ids") // 4
 except OSError:
     nids = 0
 nw, b, l = toks(f"{out}/{n}_{p}_greedy_new.txt"), toks(f"{out}/{n}_{p}_greedy_base.txt"), toks(f"{out}/{n}_{p}_greedy_llama.txt")
