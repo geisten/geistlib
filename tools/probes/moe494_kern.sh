@@ -146,14 +146,14 @@ for line in open(f):
         row = (int(m.group(7)), f"{m.group(2)} {m.group(3)}")
         d[(m.group(1), row)].append(float(m.group(10)))
     else:
-        m = re.match(r"llama r\d+\s+MUL_MAT_ID\(type_a=(\w+),type_b=f32,n_mats=(\d+),n_used=(\d+),b=(\d),m=(\d+),n=(\d+),k=(\d+).*?([\d.]+) us/run", line)
+        m = re.match(r"(llama(?:\.sg)?) r\d+\s+MUL_MAT_ID\(type_a=(\w+),type_b=f32,n_mats=(\d+),n_used=(\d+),b=(\d),m=(\d+),n=(\d+),k=(\d+).*?([\d.]+) us/run", line)
         if not m: continue
-        sh = SH.get((m.group(2), m.group(3), m.group(4), m.group(5), m.group(7)))
-        if sh is None or m.group(1) not in LT: continue
-        row = (int(m.group(6)), f"{sh} {LT[m.group(1)]}")
-        d[("llama", row)].append(float(m.group(8)))
+        sh = SH.get((m.group(3), m.group(4), m.group(5), m.group(6), m.group(8)))
+        if sh is None or m.group(2) not in LT: continue
+        row = (int(m.group(7)), f"{sh} {LT[m.group(2)]}")
+        d[(m.group(1), row)].append(float(m.group(9)))
     if row not in order: order.append(row)
-vs = sorted({v for v, _ in d}, key=lambda x: (x != base, x == "llama", x))
+vs = sorted({v for v, _ in d}, key=lambda x: (x != base, x.startswith("llama"), x))
 print("| m | row | " + " | ".join(vs) + " |")
 print("|--:|---|" + "--:|" * len(vs))
 for r in sorted(order):
