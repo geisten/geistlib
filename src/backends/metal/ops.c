@@ -5081,7 +5081,7 @@ static void metal_moe_encode_mm(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, map->buffer, map->base_off, 4);
     metal_msg_send_set_bytes(st, enc, &q, sizeof q, 5);
     metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
-    const struct metal_size groups = {.width = tiles, .height = (p->n_out + 63u) / 64u, .depth = 1};
+    const struct metal_size groups = {.width = (p->n_out + 63u) / 64u, .height = tiles, .depth = 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM, groups);
     metal_msg_send_dispatch(
             st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
@@ -5513,7 +5513,7 @@ static struct metal_pipeline_h *metal_moe_mm_glu_pipe(const struct metal_state *
     metal_msg_send_set_buffer(st, enc, xb->buffer->buffer, xb->buffer->base_off, 7);
     metal_msg_send_set_buffer(st, enc, zb->buffer->buffer, zb->buffer->base_off, 8);
     metal_msg_send_set_threadgroup_memory(st, enc, 8192u, 0u);
-    const struct metal_size groups = {.width = tiles, .height = (inter + 31u) / 32u, .depth = 1};
+    const struct metal_size groups = {.width = (inter + 31u) / 32u, .height = tiles, .depth = 1};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MOE_MM_GLU, groups);
     metal_msg_send_dispatch(
             st, enc, groups, (struct metal_size) {.width = 32u, .height = 4u, .depth = 1});
