@@ -13,13 +13,13 @@
 #include <stdio.h>
 #include <string.h>
 
-enum { MAX_ROWS = 203, MAX_COLS = 2880, B_PAD = 3 };
+enum { MAX_N = 203 * 2880, MAX_COLS = 4096, B_PAD = 3 };
 
-static float g_x[MAX_ROWS * MAX_COLS];
+static float g_x[MAX_N];
 static float g_b[B_PAD + MAX_COLS];
-static float g_ref[MAX_ROWS * MAX_COLS];
-static float g_rows[MAX_ROWS * MAX_COLS];
-static float g_got[MAX_ROWS * MAX_COLS];
+static float g_ref[MAX_N];
+static float g_rows[MAX_N];
+static float g_got[MAX_N];
 
 static struct geist_tensor
 rows_view(struct geist_buffer *buf, size_t off_floats, size_t rows, size_t cols) {
@@ -117,7 +117,7 @@ int main(void) {
             continue;
         }
         for (size_t s = 0; s < sizeof shapes / sizeof shapes[0]; s++)
-            if (shapes[s][0] * shapes[s][1] <= (size_t) MAX_ROWS * MAX_COLS)
+            if (shapes[s][0] * shapes[s][1] <= (size_t) MAX_N && shapes[s][1] <= (size_t) MAX_COLS)
                 fails += check_shape(be, names[k], shapes[s][0], shapes[s][1]);
         printf("  %s: add_bias bit-identical to per-row add\n", names[k]);
         ran++;
