@@ -190,6 +190,10 @@ constexpr int VK_DSET_CACHE   = 4096;
 constexpr int VK_SEQ_CMDBUFS   = 1024;
 constexpr int VK_SEQ_ROLL_RING = 64; /* ring slots the VK_SEQ_ROTATE rolls may use */
 constexpr int VK_SEQ_ROTATE    = 64; /* dispatches per submit — keeps the GPU fed */
+/* The first submit of a sequence goes out after this many dispatches, so
+ * the GPU, idle since the last flush (a decode step's argmax), starts while
+ * the host still encodes the rest of the step (#514). */
+constexpr int VK_SEQ_FIRST_ROLL = 16;
 
 /* Cached descriptor set: decode re-binds the same (pipeline-layout,
  * buffers) tuple every token — building sets once kills the dominant

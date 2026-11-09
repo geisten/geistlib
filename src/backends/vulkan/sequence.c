@@ -459,7 +459,7 @@ void vk_seq_hazard(struct vk_state              *st,
     st->seq_in_cmd++;
     st->stat_dispatches++;
     vk_prof_stamp(st, (uint32_t) pipe);
-    if (st->seq_in_cmd >= VK_SEQ_ROTATE) {
+    if (st->seq_in_cmd >= (st->seq_cmd_idx == 0 ? VK_SEQ_FIRST_ROLL : VK_SEQ_ROTATE)) {
         (void) vk_seq_roll(st, VK_SEQ_ROLL_RING);
     }
     return GEIST_OK;
