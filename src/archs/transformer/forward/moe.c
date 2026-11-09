@@ -586,7 +586,57 @@ static size_t moe_split_parts(const struct moe_job *j, size_t seq, size_t thread
 /* Expert e over its rows: as one m-row block, or, for a batched decode's
  * rows (#245), row by row, so that a row's result does not depend on how
  * many other rows chose e. */
+/* #374 profile only: GEIST_MOE_UTIL=1 */
+static _Atomic int      g_util_on = -1;
+static _Atomic uint64_t g_util[2][8]; /* [decode, prefill][wall, busy, crit, calls, experts, rows, thr, splitwall] */
+static void             moe_util_print(void) {
+    for (int p = 0; p < 2; p++) {
+        uint64_t *u = (uint64_t *) g_util[p];
+        if (u[3] == 0)
+            continue;
+        fprintf(stderr,
+                "moe util %s: calls %llu wall %.1f ms busy %.1f ms (thr %llu) util %.1f%% crit-expert %.1f ms "
+                "(%.1f%% of wall) experts/call %.1f rows/expert %.1f\n",
+                p ? "prefill" : "decode",
+                (unsigned long long) u[3],
+                u[0] / 1e6,
+                u[1] / 1e6,
+                (unsigned long long) (u[6] / u[3]),
+                100.0 * (double) u[1] / ((double) u[0] * (double) (u[6] / u[3])),
+                u[2] / 1e6,
+                100.0 * (double) u[2] / (double) u[0],
+                (double) u[4] / (double) u[3],
+                (double) u[5] / (double) (u[4] ? u[4] : 1));
+    }
+}
+static bool moe_util_on(void) {
+    int v = atomic_load_explicit(&g_util_on, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("GEIST_MOE_UTIL");
+        v             = e != nullptr && e[0] == '1';
+        atomic_store(&g_util_on, v);
+        if (v)
+            atexit(moe_util_print);
+    }
+    return v != 0;
+}
+static _Atomic uint64_t g_util_crit_cur;
+static _Atomic uint64_t g_util_busy_cur;
+
+static bool moe_expert_inner(const struct moe_job *j, size_t e);
 static bool moe_expert(const struct moe_job *j, size_t e) {
+    if (!moe_util_on())
+        return moe_expert_inner(j, e);
+    const uint64_t t0 = geist_now_ns();
+    const bool     ok = moe_expert_inner(j, e);
+    const uint64_t dt = geist_now_ns() - t0;
+    atomic_fetch_add(&g_util_busy_cur, dt);
+    uint64_t c = atomic_load(&g_util_crit_cur);
+    while (dt > c && !atomic_compare_exchange_weak(&g_util_crit_cur, &c, dt)) {
+    }
+    return ok;
+}
+static bool moe_expert_inner(const struct moe_job *j, size_t e) {
     const size_t row0 = j->sess->moe_row_start[e];
     const size_t m    = j->sess->moe_row_start[e + 1] - row0;
     if (!j->decode_rows)
@@ -885,6 +935,12 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     const size_t tasks   = (j->n_hot > 0 && !launched) + j->n_active;
     const size_t threads = geist_par_max_threads();
     const size_t parts   = j->n_hot == 0 ? moe_split_parts(j, seq, threads) : 0;
+    const bool   util    = moe_util_on();
+    const uint64_t ut0   = util ? geist_now_ns() : 0;
+    if (util) {
+        atomic_store(&g_util_crit_cur, 0);
+        atomic_store(&g_util_busy_cur, 0);
+    }
     if (parts > 0) {
         struct moe_split sp = {.j = j, .parts = parts, .pass = 0};
         atomic_init(&sp.failed, false);
@@ -897,6 +953,16 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
     }
     moe_gpu_task(j); /* a thread library that gave the caller no range */
+    if (util) {
+        const int ph = seq > 1;
+        atomic_fetch_add(&g_util[ph][0], geist_now_ns() - ut0);
+        atomic_fetch_add(&g_util[ph][1], atomic_load(&g_util_busy_cur));
+        atomic_fetch_add(&g_util[ph][2], atomic_load(&g_util_crit_cur));
+        atomic_fetch_add(&g_util[ph][3], 1);
+        atomic_fetch_add(&g_util[ph][4], j->n_active);
+        atomic_fetch_add(&g_util[ph][5], n_sel);
+        atomic_fetch_add(&g_util[ph][6], parts > 0 ? threads : (tasks < threads ? tasks : threads));
+    }
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);
     if (j->gpu_status != GEIST_OK) {
     gpu_fail:

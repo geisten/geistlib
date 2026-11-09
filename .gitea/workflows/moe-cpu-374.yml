@@ -1,0 +1,128 @@
+name: moe-cpu-374
+
+# One-shot for #374 (profile branch only, not for main): MoE CPU prefill /
+# decode profile of gpt-oss-20b MXFP4 and DeepSeek-V2-Lite Q4_K_M on the
+# 9950X (cpu_x86, 16 threads), or an A/B of two revisions with
+# tools/bench_revision_ab.py, every measurement inside the desktop's bench
+# lock (with-desktop-lock pauses its CI runners).
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "profile | ab"
+        type: string
+        default: profile
+      models:
+        description: "gptoss;deepseek;qwen3moe (separated by ;)"
+        type: string
+        default: "gptoss;deepseek"
+      base:
+        description: "ab: baseline revision"
+        type: string
+        default: origin/main
+      new:
+        description: "ab: revision to compare"
+        type: string
+        default: ""
+      seq_lens:
+        description: "ab: prefill lengths"
+        type: string
+        default: "512"
+      decode_n:
+        description: "ab: decode steps"
+        type: string
+        default: "32"
+      cycles:
+        description: "ab: cycles (>= 6)"
+        type: string
+        default: "6"
+      env:
+        description: "extra VAR=VALUE for the bench, separated by ;"
+        type: string
+        default: ""
+
+jobs:
+  run:
+    name: moe-cpu-374 ${{ inputs.mode }} on geist-avx512
+    runs-on: geist-avx512
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: "16"
+      MODELS: ${{ inputs.models }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Models (host cache, sha256-checked)
+        run: |
+          set -eo pipefail
+          echo "GPTOSS=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf --sha256 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901)" >> "$GITHUB_ENV"
+          echo "DEEPSEEK=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/mradermacher/DeepSeek-V2-Lite-GGUF/resolve/0f37fdf276e8094747457f0ae4d40f2e8d2521f9/DeepSeek-V2-Lite.Q4_K_M.gguf --sha256 70985c39ba3e51a53e6ad6ae25ce29a3efc92b4802f61645760e1bc1eb89ad1a)" >> "$GITHUB_ENV"
+          echo "QWEN3MOE=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf --sha256 0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5)" >> "$GITHUB_ENV"
+      - name: Build (profile)
+        if: inputs.mode == 'profile'
+        run: |
+          make TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > build.log 2>&1 || { tail -50 build.log; exit 1; }
+          echo "LLAMA=$(scripts/ensure-llama-bench.sh cpu)" >> "$GITHUB_ENV"
+      - name: Profile
+        if: inputs.mode == 'profile'
+        env:
+          LOCK_NOTE: "#374 MoE CPU profile (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          mkdir -p out
+          { lscpu | head -20; uname -a; git rev-parse HEAD; } > out/env.txt
+          B=bin/linux/release/tests/bench_perf_sweep
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
+            LOCK_PRIO=batch LOCK_MAX=40 ~/bin/with-desktop-lock sh scripts/profile_374.sh $B "$F" cpu_x86 16 "$LLAMA" 2>&1 | tee -a out/profile.txt
+            if command -v perf > /dev/null; then
+              LOCK_PRIO=batch LOCK_MAX=10 ~/bin/with-desktop-lock perf record -F 499 -g -o out/perf-$m.data -- \
+                env GEIST_BENCH_BACKEND=cpu_x86 $B --gguf "$F" --seq-lens 512 --decode-n 0 --warmup 0 --repeats 1 --prompt-file docs/OFFLOAD.md > /dev/null 2>&1 &&
+                { echo "== perf prefill $m"; perf report -i out/perf-$m.data --no-children --sort symbol --stdio 2>/dev/null | grep -v '^#' | grep '%' | head -40; } | tee -a out/profile.txt
+              LOCK_PRIO=batch LOCK_MAX=10 ~/bin/with-desktop-lock perf record -F 499 -g -o out/perfd-$m.data -- \
+                env GEIST_BENCH_BACKEND=cpu_x86 $B --gguf "$F" --seq-lens 16 --decode-n 256 --warmup 0 --repeats 1 --prompt-file docs/OFFLOAD.md > /dev/null 2>&1 &&
+                { echo "== perf decode $m"; perf report -i out/perfd-$m.data --no-children --sort symbol --stdio 2>/dev/null | grep -v '^#' | grep '%' | head -40; } | tee -a out/profile.txt
+              rm -f out/perf*.data
+            else
+              echo "no perf on this host" | tee -a out/profile.txt
+            fi
+          done
+      - name: A/B
+        if: inputs.mode == 'ab'
+        env:
+          BASE: ${{ inputs.base }}
+          NEW: ${{ inputs.new }}
+          SEQ: ${{ inputs.seq_lens }}
+          DN: ${{ inputs.decode_n }}
+          CYC: ${{ inputs.cycles }}
+          XENV: ${{ inputs.env }}
+          LOCK_NOTE: "#374 MoE CPU A/B (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          mkdir -p out
+          git fetch origin
+          envs="--env GEIST_BENCH_BACKEND=cpu_x86"
+          for e in $(echo "$XENV" | tr ';' ' '); do envs="$envs --env $e"; done
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
+            echo "== $m" | tee -a out/report.txt
+            LOCK_PRIO=batch LOCK_MAX=90 ~/bin/with-desktop-lock python3 tools/bench_revision_ab.py \
+              --rev "base=$BASE" --rev "new=$NEW" --gguf "$F" --seq-lens "$SEQ" \
+              --decode-n "$DN" --repeats 1 --warmup 1 --cycles "$CYC" $envs \
+              --prompt-file docs/OFFLOAD.md \
+              --make-arg TARGET=linux --make-arg "BACKENDS=cpu_x86 cpu_scalar" \
+              --make-arg GEMM_PROVIDER=native --out-dir out/ab-$m 2>&1 | tee -a out/report.txt
+          done
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat out/profile.txt out/report.txt 2>/dev/null | grep -v '^\s*$' | tail -400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: moe-cpu-374
+          path: out/
+          if-no-files-found: warn
