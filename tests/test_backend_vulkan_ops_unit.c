@@ -338,6 +338,8 @@ static void test_argmax(size_t n, size_t tie_at) {
     check(got == (int32_t) best, "argmax");
     g_be->desc->vtbl->buffer_destroy(g_be, bx);
     free(x);
+}
+
 static struct geist_tensor
 dense3(struct geist_buffer *b, int dtype, size_t d0, size_t d1, size_t d2) {
     return (struct geist_tensor) {.buffer = b,
