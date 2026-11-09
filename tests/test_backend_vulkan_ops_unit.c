@@ -308,6 +308,38 @@ static void test_elementwise(size_t rows, size_t cols) {
     free(ref);
 }
 
+/* argmax_f32 against a host scan (#514: the unrolled loads and the
+ * subgroup reduction): the first of two equal maxima wins, a NaN never
+ * does, and n need not be a multiple of the lanes' stride. */
+static void test_argmax(size_t n, size_t tie_at) {
+    float *x = geist_test_fill(n, 0.31f, 0.3f, 8.0f, 0.0f);
+    if (n >= 3) {
+        x[n / 3] = NAN;
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < n; i++) {
+        if (x[i] > x[best] || isnan(x[best])) {
+            best = i;
+        }
+    }
+    if (tie_at < n && tie_at > best) {
+        x[tie_at] = x[best]; /* a later equal maximum: best stays */
+    } else if (tie_at < best) {
+        x[tie_at] = x[best]; /* an earlier one: it wins */
+        best      = tie_at;
+    }
+    struct geist_buffer *bx = dev_buf(x, n);
+    check(bx != nullptr, "argmax buffer");
+    struct geist_tensor tx  = geist_test_tensor_f32(bx, 2, 1, (int64_t) n, 0);
+    int32_t             got = -1;
+    check(geist_backend_fused_tbl(g_be)->argmax_f32(g_be, &tx, &got) == GEIST_OK,
+          "argmax dispatch");
+    printf("  argmax      %zu  got %d want %zu\n", n, got, best);
+    check(got == (int32_t) best, "argmax");
+    g_be->desc->vtbl->buffer_destroy(g_be, bx);
+    free(x);
+}
+
 /* rmsnorm and rmsnorm_add on VRAM-only buffers, against a double-precision
  * host reference. Both shaders reduce with one shared slot per subgroup, so
  * the 8-lane llvmpipe (and Intel's 8/16) must not overrun an array sized
@@ -552,6 +584,11 @@ int main(void) {
     test_rmsnorm(1, 640);
     test_rmsnorm(1, 4096);
     test_rmsnorm(2, 5000);
+    test_argmax(1, 1);
+    test_argmax(255, 3);
+    test_argmax(4096, 4000);
+    test_argmax(50304, 11);
+    test_argmax(151936, 151935);
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
     test_qgate(1, 24, 256);
