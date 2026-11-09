@@ -1,4 +1,15 @@
 #version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_control_flow_attributes : enable
+
+/* Index of the largest x (ties: the lowest index; NaN never wins, all-NaN
+ * gives 0xffffffff), one workgroup. A lane reads ARGMAX_UNROLL elements per
+ * step, 256 apart, as independent loads: one strided load per step left a
+ * vocabulary of 50k at ~200 dependent load latencies per lane, 20 us per
+ * token on the RTX 2080 Ti (#514). The lanes reduce within their subgroup
+ * (the maximum, then the lowest index holding it) and the subgroups' bests
+ * in shared memory. */
 
 layout(local_size_x = 256) in;
 
@@ -11,7 +22,9 @@ layout(push_constant) uniform Push {
     uint out_offset;
 } pc;
 
-shared float best_val[256];
+const uint ARGMAX_UNROLL = 8u;
+
+shared float best_val[256]; /* one slot per subgroup (any subgroup size) */
 shared uint best_idx[256];
 
 void main() {
@@ -19,31 +32,39 @@ void main() {
 
     float local_val = uintBitsToFloat(0xff800000u);
     uint local_idx = 0xffffffffu;
-    for (uint i = lid; i < pc.n; i += 256) {
-        float v = x[pc.x_offset + i];
-        if (v > local_val || (v == local_val && i < local_idx)) {
-            local_val = v;
-            local_idx = i;
+    for (uint i0 = lid; i0 < pc.n; i0 += 256u * ARGMAX_UNROLL) {
+        float v[ARGMAX_UNROLL];
+        [[unroll]] for (uint u = 0u; u < ARGMAX_UNROLL; ++u) {
+            uint i = i0 + u * 256u;
+            v[u] = i < pc.n ? x[pc.x_offset + i] : uintBitsToFloat(0x7fc00000u);
         }
-    }
-    best_val[lid] = local_val;
-    best_idx[lid] = local_idx;
-    barrier();
-
-    for (uint stride = 128; stride > 0; stride >>= 1) {
-        if (lid < stride) {
-            float rhs_val = best_val[lid + stride];
-            uint rhs_idx = best_idx[lid + stride];
-            if (rhs_val > best_val[lid] ||
-                (rhs_val == best_val[lid] && rhs_idx < best_idx[lid])) {
-                best_val[lid] = rhs_val;
-                best_idx[lid] = rhs_idx;
+        [[unroll]] for (uint u = 0u; u < ARGMAX_UNROLL; ++u) {
+            uint i = i0 + u * 256u;
+            if (v[u] > local_val || (v[u] == local_val && i < local_idx)) {
+                local_val = v[u];
+                local_idx = i;
             }
         }
-        barrier();
     }
-
-    if (lid == 0) {
-        token_id[pc.out_offset] = best_idx[0];
+    /* local_val is never NaN: a NaN fails both comparisons */
+    float m = subgroupMax(local_val);
+    uint mi = subgroupMin(local_val == m ? local_idx : 0xffffffffu);
+    if (subgroupElect()) {
+        best_val[gl_SubgroupID] = m;
+        best_idx[gl_SubgroupID] = mi;
+    }
+    barrier();
+    if (lid == 0u) {
+        float bv = best_val[0];
+        uint bi = best_idx[0];
+        for (uint s = 1u; s < gl_NumSubgroups; ++s) {
+            float v = best_val[s];
+            uint i = best_idx[s];
+            if (v > bv || (v == bv && i < bi)) {
+                bv = v;
+                bi = i;
+            }
+        }
+        token_id[pc.out_offset] = bi;
     }
 }
