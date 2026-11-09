@@ -30,7 +30,7 @@
  * v_b and the assembly run on the host, per head on the backend's kernels.
  *
  * On a GPU (#376: a backend with prims->scale_f32 that takes row views
- * and fused->linear_t_ids, Metal) both forms run on the device, no host
+ * and fused->linear_t_ids, and caps.mla_device: Metal) both forms run on the device, no host
  * round trip per layer: the latent's RMSNorm on its row view, K and V
  * assembled by strided copies (scale_f32 times 1), and absorbed, k_b / v_b
  * of every head as one linear_t_ids whose "experts" are the heads. A GPU
@@ -238,11 +238,13 @@ static float *host_vector(struct transformer_arch_state          *st,
 }
 
 /* MLA on the device (#376): a GPU backend with strided copies
- * (prims->scale_f32 on row views) and id-indexed matvecs. */
+ * (prims->scale_f32 on row views) and id-indexed matvecs that says it runs
+ * them on row views, and the attention, at MLA's shapes (caps.mla_device). */
 static bool mla_device(const struct transformer_arch_state *st) {
     const struct geist_backend_descriptor *d = st->backend->desc;
-    return strncmp(d->name, "cpu_", 4) != 0 && d->prims->scale_f32 != nullptr &&
-           d->fused != nullptr && d->fused->linear_t_ids != nullptr;
+    return strncmp(d->name, "cpu_", 4) != 0 && d->caps.mla_device &&
+           d->prims->scale_f32 != nullptr && d->fused != nullptr &&
+           d->fused->linear_t_ids != nullptr;
 }
 
 /* Absorbed MLA's per-head k_b [rank, nope] and v_b [mla_v_dim, rank], each
@@ -307,7 +309,8 @@ static bool mla_device(const struct transformer_arch_state *st) {
         geist_backend_set_error(st->backend,
                                 GEIST_E_UNSUPPORTED,
                                 "%s: the absorbed MLA layout (attn_k_b / attn_v_b) needs "
-                                "linear_t_ids and scale_f32 on a GPU, which %s lacks (#376)",
+                                "MLA on the device (linear_t_ids and scale_f32 on row views, "
+                                "576-dim attention), which %s lacks (#376)",
                                 ARCH,
                                 st->backend->desc->name);
         return GEIST_E_UNSUPPORTED;

@@ -759,6 +759,9 @@ vk_buffer_upload(struct geist_buffer *buf, size_t n_bytes, const uint8_t src[sta
         return GEIST_E_INVALID_ARG;
     }
     vk_seq_flush(buf->owner);
+    if (buf->buf == buf->owner->moe_map_ids) {
+        buf->owner->ids_gen++; /* new routed ids (#499): bucket them again */
+    }
     if (buf->host_alias != nullptr) {
         memcpy(buf->host_alias, src, n_bytes);
         return GEIST_OK;
@@ -795,6 +798,9 @@ void *vk_buffer_map(struct geist_buffer *buf) {
         return nullptr;
     }
     vk_seq_flush(buf->owner); /* host is about to read/write — drain the batch */
+    if (buf->buf == buf->owner->moe_map_ids) {
+        buf->owner->ids_gen++; /* the host may write routed ids (#499) */
+    }
     void *p = buf->host_alias != nullptr ? buf->host_alias : buf->mapped;
     if (p == nullptr) {
         return nullptr; /* device-local — caller falls back (download reports a failure) */
@@ -1080,6 +1086,9 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
         return GEIST_OK;
     }
     struct vk_state *st = dst->owner;
+    if (dst->buf == st->moe_map_ids) {
+        st->ids_gen++; /* routed ids (#499) may change */
+    }
     if (dst->buf != VK_NULL_HANDLE && src->buf != VK_NULL_HANDLE) {
         /* On-device copy appended to the sequence — keeps KV appends from
          * breaking the per-token batch (kv_store.c uses this path). */

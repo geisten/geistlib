@@ -27,7 +27,8 @@
  *             per block as the file, but each lane's quant load is
  *             contiguous and word-aligned. See mv_legacy.glsl. scale_first
  *             says where the scale sits in the file block (ggml's TQ2_0
- *             keeps it last);
+ *             keeps it last); e8m0_scale that it is one E8M0 byte, not an
+ *             f16 (MXFP4, #499);
  *   DENSE     not block-quantized (F32): n_in elements of elem_bytes.
  *
  * block_elems also sets `blocks_per_row` in the push block and the shape
@@ -45,6 +46,7 @@ struct vk_dtype {
     bool             has_linear;
     enum vk_pipe     mv, mm;
     int32_t          embed_code; /* VK_EMBED_DT_* (vk_limits.h), -1: none */
+    bool             e8m0_scale; /* SOA: one-byte scales (MXFP4) */
 };
 
 static const struct vk_dtype vk_dtypes[] = {
@@ -56,7 +58,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_F32,
          VK_PIPE_MATMUL_F32,
-         VK_EMBED_DT_F32},
+         VK_EMBED_DT_F32,
+         false},
         {GEIST_DTYPE_F16,
          1,
          2,
@@ -65,7 +68,8 @@ static const struct vk_dtype vk_dtypes[] = {
          false,
          VK_PIPE_COUNT,
          VK_PIPE_COUNT,
-         VK_EMBED_DT_F16},
+         VK_EMBED_DT_F16,
+         false},
         {GEIST_DTYPE_BF16,
          1,
          2,
@@ -74,7 +78,8 @@ static const struct vk_dtype vk_dtypes[] = {
          false,
          VK_PIPE_COUNT,
          VK_PIPE_COUNT,
-         VK_EMBED_DT_BF16},
+         VK_EMBED_DT_BF16,
+         false},
         {GEIST_DTYPE_Q4_0,
          Q4_0_BLOCK_ELEMS,
          Q4_0_BLOCK_BYTES,
@@ -83,7 +88,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q4_0,
          VK_PIPE_MATMUL_Q4_0,
-         VK_EMBED_DT_Q4_0},
+         VK_EMBED_DT_Q4_0,
+         false},
         {GEIST_DTYPE_Q4_1,
          Q4_1_BLOCK_ELEMS,
          Q4_1_BLOCK_BYTES,
@@ -92,7 +98,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q4_1,
          VK_PIPE_MATMUL_Q4_1,
-         VK_EMBED_DT_Q4_1},
+         VK_EMBED_DT_Q4_1,
+         false},
         {GEIST_DTYPE_Q8_0,
          Q8_0_BLOCK_ELEMS,
          Q8_0_BLOCK_BYTES,
@@ -101,7 +108,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q8_0,
          VK_PIPE_MATMUL_Q8_0,
-         VK_EMBED_DT_Q8_0},
+         VK_EMBED_DT_Q8_0,
+         false},
         {GEIST_DTYPE_Q4_K,
          Q4_K_BLOCK_ELEMS,
          Q4_K_BLOCK_BYTES,
@@ -110,7 +118,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q4K,
          VK_PIPE_MATMUL_Q4K,
-         VK_EMBED_DT_Q4_K},
+         VK_EMBED_DT_Q4_K,
+         false},
         {GEIST_DTYPE_Q5_K,
          Q5_K_BLOCK_ELEMS,
          Q5_K_BLOCK_BYTES,
@@ -119,7 +128,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q5K,
          VK_PIPE_MATMUL_Q5K,
-         VK_EMBED_DT_Q5_K},
+         VK_EMBED_DT_Q5_K,
+         false},
         {GEIST_DTYPE_Q6_K,
          Q6_K_BLOCK_ELEMS,
          Q6_K_BLOCK_BYTES,
@@ -128,7 +138,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_Q6K,
          VK_PIPE_MATMUL_Q6K,
-         VK_EMBED_DT_Q6_K},
+         VK_EMBED_DT_Q6_K,
+         false},
         {GEIST_DTYPE_PQ2_0,
          PQ2_0_BLOCK_ELEMS,
          PQ2_0_BLOCK_BYTES,
@@ -137,7 +148,8 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_PQ2_0,
          VK_PIPE_MATMUL_PQ2_0,
-         VK_EMBED_DT_PQ2_0},
+         VK_EMBED_DT_PQ2_0,
+         false},
         {GEIST_DTYPE_TQ2_0,
          TQ2_0_BLOCK_ELEMS,
          TQ2_0_BLOCK_BYTES,
@@ -146,7 +158,29 @@ static const struct vk_dtype vk_dtypes[] = {
          true,
          VK_PIPE_MATVEC_TQ2_0,
          VK_PIPE_MATMUL_TQ2_0,
-         -1},
+         -1,
+         false},
+        /* #499: DeepSeek-V2-Lite's down experts, GPT-OSS's experts */
+        {GEIST_DTYPE_Q5_0,
+         Q5_0_BLOCK_ELEMS,
+         Q5_0_BLOCK_BYTES,
+         VK_LAYOUT_SOA,
+         true,
+         true,
+         VK_PIPE_MATVEC_Q5_0,
+         VK_PIPE_MATMUL_Q5_0,
+         -1,
+         false},
+        {GEIST_DTYPE_MXFP4,
+         MXFP4_BLOCK_ELEMS,
+         MXFP4_BLOCK_BYTES,
+         VK_LAYOUT_SOA,
+         true,
+         true,
+         VK_PIPE_MATVEC_MXFP4,
+         VK_PIPE_MATMUL_MXFP4,
+         -1,
+         true},
 };
 
 /* The table row of `dt`, or nullptr when the backend has no GPU path. */
@@ -386,10 +420,11 @@ vk_w_cpu_m1(const float *x, const struct geist_weight *w, struct geist_backend *
 constexpr int VK_Q6K_GPU_BLOCK = 216;
 
 /* Bytes of an SOA copy of n_blocks blocks with qbytes quant bytes each:
- * the quants, then the f16 scales padded to a whole word. true on overflow. */
-[[nodiscard]] static bool vk_soa_bytes(size_t n_blocks, size_t qbytes, size_t *out) {
+ * the quants, then the scales of sbytes each (f16: 2, E8M0: 1) padded to a
+ * whole word. true on overflow. */
+[[nodiscard]] static bool vk_soa_bytes(size_t n_blocks, size_t qbytes, size_t sbytes, size_t *out) {
     size_t q, sc;
-    if (ckd_mul(&q, n_blocks, qbytes) || ckd_mul(&sc, n_blocks, (size_t) 2) ||
+    if (ckd_mul(&q, n_blocks, qbytes) || ckd_mul(&sc, n_blocks, sbytes) ||
         geist_ckd_round_up_pow2(sc, 4, &sc) || ckd_add(out, q, sc)) {
         return true;
     }
@@ -417,10 +452,12 @@ constexpr int VK_Q6K_GPU_BLOCK = 216;
         ovf = ckd_mul(&blocks, n_out, n_in / d->block_elems) ||
               ckd_mul(&bytes, blocks, (size_t) VK_Q6K_GPU_BLOCK);
         break;
-    case VK_LAYOUT_SOA:
-        ovf = ckd_mul(&blocks, n_out, n_in / d->block_elems) ||
-              vk_soa_bytes(blocks, (size_t) d->block_bytes - 2, &bytes);
+    case VK_LAYOUT_SOA: {
+        const size_t sb = d->e8m0_scale ? 1 : 2;
+        ovf             = ckd_mul(&blocks, n_out, n_in / d->block_elems) ||
+                          vk_soa_bytes(blocks, (size_t) d->block_bytes - sb, sb, &bytes);
         break;
+    }
     }
     return ovf ? 0 : bytes;
 }
@@ -429,7 +466,7 @@ constexpr int VK_Q6K_GPU_BLOCK = 216;
 struct vk_repack_job {
     const uint8_t *src;
     uint8_t       *packed, *sc;
-    size_t         bb, qbytes, qskip, scoff;
+    size_t         bb, qbytes, qskip, scoff, sbytes;
 };
 
 /* Blocks [i0, i1) into the 216-byte padded layout. */
@@ -454,9 +491,10 @@ static void vk_repack_soa(void *ctx, size_t i0, size_t i1) {
     const size_t                qbytes = job->qbytes;
     const size_t                qskip  = job->qskip;
     const size_t                scoff  = job->scoff;
+    const size_t                sbytes = job->sbytes;
     for (size_t i = i0; i < i1; ++i) {
         memcpy(qs + i * qbytes, src + i * bb + qskip, qbytes);
-        memcpy(sc + i * 2, src + i * bb + scoff, 2);
+        memcpy(sc + i * sbytes, src + i * bb + scoff, sbytes);
     }
 }
 
@@ -485,11 +523,14 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         geist_par_for(n_blocks, vk_repack_pad216, &job);
         return packed;
     }
-    job.qbytes = bb - 2;
-    job.qskip  = d->scale_first ? 2 : 0;
+    job.sbytes = d->e8m0_scale ? 1 : 2;
+    job.qbytes = bb - job.sbytes;
+    job.qskip  = d->scale_first ? job.sbytes : 0;
     job.scoff  = d->scale_first ? 0 : job.qbytes;
     job.sc     = packed + n_blocks * job.qbytes;
-    memset(job.sc + n_blocks * 2, 0, bytes - n_blocks * job.qbytes - n_blocks * 2); /* word pad */
+    memset(job.sc + n_blocks * job.sbytes,
+           0,
+           bytes - n_blocks * job.qbytes - n_blocks * job.sbytes); /* word pad */
     geist_par_for(n_blocks, vk_repack_soa, &job);
     return packed;
 }
@@ -550,8 +591,6 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
             }
             [[fallthrough]];
         case GEIST_DTYPE_Q3_K:
-        case GEIST_DTYPE_Q5_0:  /* no shader yet: the odd Q4_K_M tensor (#675) */
-        case GEIST_DTYPE_MXFP4: /* no shader yet: GPT-OSS's experts (#243) */
             return vk_resolve_host(be, w);
         case GEIST_DTYPE_F32:
         case GEIST_DTYPE_I8:
@@ -573,6 +612,8 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         case GEIST_DTYPE_TERNARY:
         case GEIST_DTYPE_CUSTOM:
         case GEIST_DTYPE_PQ2_0:
+        case GEIST_DTYPE_Q5_0:
+        case GEIST_DTYPE_MXFP4:
         case GEIST_DTYPE_COUNT:
             break;
         }
@@ -673,7 +714,9 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
         return s;
     }
     if (slot->gpu != nullptr) {
-        vk_buffer_destroy(be, slot->gpu);
+        vk_buffer_destroy(be, slot->gpu); /* flushes: nothing in flight reads the tables */
+        st->n_sel_tabs  = 0;              /* an address table may name the replaced copy */
+        st->seltab_used = 0;
     }
     *slot = (struct vk_weight_entry) {.host = w->raw, .gpu = gpu};
     if (fresh) {
@@ -708,6 +751,8 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     case VK_PIPE_MATVEC_Q8_0:
     case VK_PIPE_MATVEC_Q5K:
     case VK_PIPE_MATVEC_TQ2_0:
+    case VK_PIPE_MATVEC_Q5_0:
+    case VK_PIPE_MATVEC_MXFP4:
         return (n_out + VK_MV_ROWS_PER_WG - 1u) / VK_MV_ROWS_PER_WG;
     case VK_PIPE_MATMUL_Q4K:
     case VK_PIPE_MATMUL_TQ2_0:
@@ -716,6 +761,8 @@ uint32_t vk_linear_gx(enum vk_pipe pipe, uint32_t n_out) {
     case VK_PIPE_MATMUL_Q4_1:
     case VK_PIPE_MATMUL_Q8_0:
     case VK_PIPE_MATMUL_Q5K:
+    case VK_PIPE_MATMUL_Q5_0:
+    case VK_PIPE_MATMUL_MXFP4:
         return (n_out + VK_MM_ROWS_PER_WG - 1u) / VK_MM_ROWS_PER_WG;
     case VK_PIPE_MATVEC_PQ2_0:
         /* one row per lane x 8 k-slices (warps) */
@@ -738,6 +785,8 @@ uint32_t vk_linear_gy(enum vk_pipe pipe, uint32_t m) {
     case VK_PIPE_MATMUL_Q5K:
     case VK_PIPE_MATMUL_TQ2_0:
     case VK_PIPE_MATMUL_PQ2_0:
+    case VK_PIPE_MATMUL_Q5_0:
+    case VK_PIPE_MATMUL_MXFP4:
         return (m + VK_MM_TOKENS_PER_WG - 1u) / VK_MM_TOKENS_PER_WG;
     case VK_PIPE_MATMUL_Q6K:
     case VK_PIPE_MATMUL_F32:
@@ -786,6 +835,10 @@ void vk_linear_cm_route(struct vk_state *st,
         cm = VK_PIPE_MM_Q4_0_CM;
     } else if (*pipe == VK_PIPE_MATMUL_TQ2_0) {
         cm = VK_PIPE_MM_TQ2_0_CM;
+    } else if (*pipe == VK_PIPE_MATMUL_Q5_0) {
+        cm = VK_PIPE_MM_Q5_0_CM; /* #499: the 64 x 64 legacy frame */
+    } else if (*pipe == VK_PIPE_MATMUL_MXFP4) {
+        cm = VK_PIPE_MM_MXFP4_CM;
     } else if (*pipe == VK_PIPE_MATMUL_PQ2_0) {
         /* 128-token tile from a full tile of tokens up; the 128 x 64 tile below
          * it (a 128-wide tile would run half empty at the default chunk of 64) */
@@ -2378,13 +2431,18 @@ static enum vk_pipe vk_grouped_pipe(uint16_t dtype, bool sel) {
         return sel ? VK_PIPE_MATVEC_Q5K_SEL : VK_PIPE_MATVEC_Q5K_ID;
     case GEIST_DTYPE_Q6_K:
         return sel ? VK_PIPE_MATVEC_Q6K_SEL : VK_PIPE_MATVEC_Q6K_ID;
+    case GEIST_DTYPE_Q8_0: /* #499 */
+        return sel ? VK_PIPE_MATVEC_Q8_0_SEL : VK_PIPE_MATVEC_Q8_0_ID;
+    case GEIST_DTYPE_Q5_0:
+        return sel ? VK_PIPE_MATVEC_Q5_0_SEL : VK_PIPE_MATVEC_Q5_0_ID;
+    case GEIST_DTYPE_MXFP4:
+        return sel ? VK_PIPE_MATVEC_MXFP4_SEL : VK_PIPE_MATVEC_MXFP4_ID;
     case GEIST_DTYPE_F16:
     case GEIST_DTYPE_BF16:
     case GEIST_DTYPE_I8:
     case GEIST_DTYPE_U8:
     case GEIST_DTYPE_Q4_0:
     case GEIST_DTYPE_Q4_1:
-    case GEIST_DTYPE_Q8_0:
     case GEIST_DTYPE_Q3_K:
     case GEIST_DTYPE_IQ2_S:
     case GEIST_DTYPE_IQ3_S:
@@ -2397,8 +2455,6 @@ static enum vk_pipe vk_grouped_pipe(uint16_t dtype, bool sel) {
     case GEIST_DTYPE_TERNARY:
     case GEIST_DTYPE_CUSTOM:
     case GEIST_DTYPE_PQ2_0:
-    case GEIST_DTYPE_Q5_0:
-    case GEIST_DTYPE_MXFP4:
     case GEIST_DTYPE_COUNT:
         break;
     }
@@ -2414,9 +2470,11 @@ static struct geist_buffer *vk_grouped_weight(struct vk_state *st, const struct 
     return b != nullptr && b->addr != 0 && b->device_mem ? b : nullptr;
 }
 
-/* What the grouped and _sel matvecs dispatch on: x and y on the device,
- * the weight geometry and the slots' row strides in 32 bits (xs = 0 when
- * every slot reads one x row), x vec4-aligned for the quantized kernels. */
+/* What the grouped and _sel matvecs dispatch on: x and y on the device
+ * (x in device memory unless any_x: #499's linear_t_ids reads it where it
+ * lies), the weight geometry and the slots' row strides in 32 bits (xs = 0
+ * when every slot reads one x row), x vec4-aligned for the quantized
+ * kernels. */
 struct vk_grouped_geom {
     uint32_t xo, yo, n_in, n_out, xs, ys, blocks_per_row, gx;
 };
@@ -2425,13 +2483,14 @@ struct vk_grouped_geom {
                                                        const char                *op,
                                                        const struct geist_weight *w0,
                                                        bool                       x_per_slot,
+                                                       bool                       any_x,
                                                        const struct geist_tensor *t_x,
                                                        const struct geist_tensor *t_y,
                                                        VkDescriptorBufferInfo     bi[static 2],
                                                        struct vk_grouped_geom    *g) {
     const struct vk_dtype *ld = vk_linear_dtype((enum geist_dtype) w0->dtype);
-    if (ld == nullptr || !t_x->buffer->device_mem || !vk_tensor_gpu(t_x, &bi[0], &g->xo) ||
-        !vk_tensor_gpu(t_y, &bi[1], &g->yo)) {
+    if (ld == nullptr || (!any_x && !t_x->buffer->device_mem) ||
+        !vk_tensor_gpu(t_x, &bi[0], &g->xo) || !vk_tensor_gpu(t_y, &bi[1], &g->yo)) {
         return GEIST_E_UNSUPPORTED;
     }
     if (vk_ckd_u32((size_t) w0->n_in, &g->n_in) || vk_ckd_u32((size_t) w0->n_out, &g->n_out) ||
@@ -2470,7 +2529,7 @@ vk_linear_t_grouped(struct geist_backend            *be,
     VkDescriptorBufferInfo  bi[2];
     struct vk_grouped_geom  g;
     const enum geist_status gs =
-            vk_grouped_geom(be, "linear_t_grouped", w[0], true, t_x, t_y, bi, &g);
+            vk_grouped_geom(be, "linear_t_grouped", w[0], true, false, t_x, t_y, bi, &g);
     if (gs != GEIST_OK) {
         return gs;
     }
@@ -2635,11 +2694,33 @@ struct vk_push_gather {
             be, VK_PIPE_ROWS_GATHER, bi, acc, &push, sizeof push, (d32 + 255u) / 256u, n32, 1);
 }
 
-/* ---- Routing on the device with the experts split (#162) ------------- */
+/* ---- Routing on the device (#162, #499) ------------------------------ */
 
 struct vk_push_topk {
-    uint32_t n, k, norm, flag, ls, lo, io, wo;
+    uint32_t n, k, norm, flag, ls, lo, io, wo, gate, hb, bo, hs, so, ng, tg;
+    float    scale;
 };
+static_assert(sizeof(struct vk_push_topk) == (size_t) 16 * sizeof(uint32_t),
+              "moe_topk.comp push block");
+
+/* moe_topk.comp runs the router `a` names (#499: every gating, the router
+ * and selection biases, the groups and the scale), for m rows of n <=
+ * VK_MOE_TOPK_MAX_N logits; shared by the op and the probe. */
+static bool vk_moe_route_ok(const struct geist_moe_route_args *a) {
+    if (a == nullptr) {
+        return true; /* the probe's plain softmax router */
+    }
+    /* the three gatings are 0..2; anything else came from outside the enum */
+    if ((uint32_t) a->gating > (uint32_t) GEIST_MOE_ROUTE_SIGMOID || a->n == 0 ||
+        a->n > VK_MOE_TOPK_MAX_N || a->k == 0 || a->k > a->n || !isfinite(a->w_scale)) {
+        return false;
+    }
+    if (a->n_group > 1) {
+        return a->n % a->n_group == 0 && a->n / a->n_group >= 2 && a->topk_group >= 1 &&
+               a->topk_group <= a->n_group;
+    }
+    return true;
+}
 
 [[nodiscard]] static enum geist_status vk_moe_route(struct geist_backend              *be,
                                                     const struct geist_moe_route_args *a,
@@ -2647,41 +2728,65 @@ struct vk_push_topk {
                                                     struct geist_buffer               *ids,
                                                     size_t                             flag_offset,
                                                     struct geist_tensor               *t_w) {
-    VkDescriptorBufferInfo bi[3];
-    uint32_t               lo, wo, ls, n32, k32, m32, io, fo;
+    VkDescriptorBufferInfo bi[5];
+    uint32_t               lo, wo, ls, n32, k32, m32, io, fo, bo = 0, so = 0, ng = 0, tg = 0;
     if (a == nullptr)
         return GEIST_E_INVALID_ARG;
-    /* moe_topk.comp: softmax gating, no router bias (#373: GPT-OSS's
-     * routes on the host here), none of DeepSeek's options (#376). */
-    if (a->gating != GEIST_MOE_ROUTE_SOFTMAX || a->bias != nullptr || a->sel_bias != nullptr ||
-        a->n_group > 1 || (a->w_scale != 0.0f && a->w_scale != 1.0f))
+    if (!vk_moe_route_ok(a))
         return GEIST_E_UNSUPPORTED;
     const size_t m = a->m, n = a->n, k = a->k;
-    const bool   norm = a->norm;
     if (m == 0) {
         return GEIST_OK;
     }
-    if (k == 0 || k > n || n > VK_MOE_TOPK_MAX_N || ids == nullptr || ids->buf == VK_NULL_HANDLE ||
-        ids->base_off % 4 != 0 || (ids->base_off + flag_offset) % 4 != 0 ||
-        !vk_tensor_gpu(t_lg, &bi[0], &lo) || !vk_tensor_gpu(t_w, &bi[2], &wo) ||
-        vk_ckd_u32(n, &n32) || vk_ckd_u32(k, &k32) || vk_ckd_u32(m, &m32) ||
+    if (ids == nullptr || ids->buf == VK_NULL_HANDLE || ids->base_off % 4 != 0 ||
+        (ids->base_off + flag_offset) % 4 != 0 || !vk_tensor_gpu(t_lg, &bi[0], &lo) ||
+        !vk_tensor_gpu(t_w, &bi[2], &wo) || vk_ckd_u32(n, &n32) || vk_ckd_u32(k, &k32) ||
+        vk_ckd_u32(m, &m32) ||
         vk_ckd_u32(t_lg->ndim >= 2 ? (size_t) t_lg->stride[t_lg->ndim - 2] : n, &ls) ||
-        vk_ckd_u32(ids->base_off / 4, &io) || vk_ckd_u32((ids->base_off + flag_offset) / 4, &fo)) {
+        vk_ckd_u32(ids->base_off / 4, &io) || vk_ckd_u32((ids->base_off + flag_offset) / 4, &fo) ||
+        (a->n_group > 1 && (vk_ckd_u32(a->n_group, &ng) || vk_ckd_u32(a->topk_group, &tg)))) {
         return GEIST_E_UNSUPPORTED;
     }
-    bi[1] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
-    const struct vk_push_topk push   = {n32, k32, norm ? 1u : 0u, fo, ls, lo, io, wo};
-    const struct vk_access    acc[3] = {
+    /* An absent bias binds the logits again; the shader does not read it. */
+    bi[3] = bi[0];
+    bi[4] = bi[0];
+    if ((a->bias != nullptr && (vk_t_n(a->bias) < n || !vk_tensor_gpu(a->bias, &bi[3], &bo))) ||
+        (a->sel_bias != nullptr &&
+         (vk_t_n(a->sel_bias) < n || !vk_tensor_gpu(a->sel_bias, &bi[4], &so)))) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    bi[1]               = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
+    struct vk_state *st = be->state;
+    st->ids_gen++; /* new ids: linear_t_ids buckets them again */
+    const struct vk_push_topk push   = {.n     = n32,
+                                        .k     = k32,
+                                        .norm  = a->norm ? 1u : 0u,
+                                        .flag  = fo,
+                                        .ls    = ls,
+                                        .lo    = lo,
+                                        .io    = io,
+                                        .wo    = wo,
+                                        .gate  = (uint32_t) a->gating,
+                                        .hb    = a->bias != nullptr ? 1u : 0u,
+                                        .bo    = bo,
+                                        .hs    = a->sel_bias != nullptr ? 1u : 0u,
+                                        .so    = so,
+                                        .ng    = ng,
+                                        .tg    = tg,
+                                        .scale = a->w_scale};
+    const struct vk_access    acc[5] = {
             vk_acc_tensor(t_lg, false),
             vk_acc((uint64_t) ids->base_off, (uint64_t) ids->bytes, true), /* ids and flag */
-            vk_acc((uint64_t) wo * 4u, (uint64_t) m32 * k32 * 4u, true)};
+            vk_acc((uint64_t) wo * 4u, (uint64_t) m32 * k32 * 4u, true),
+            a->bias != nullptr ? vk_acc_tensor(a->bias, false) : vk_acc(0, 0, false),
+            a->sel_bias != nullptr ? vk_acc_tensor(a->sel_bias, false) : vk_acc(0, 0, false)};
     return vk_seq_dispatch_acc(be, VK_PIPE_MOE_TOPK, bi, acc, &push, sizeof push, m32, 1, 1);
 }
 
 constexpr int VK_SEL_TAB_MAX = 512; /* experts per layer linear_t_sel takes */
 
 struct vk_push_sel {
-    uint32_t n_in, n_out, blocks_per_row, pad, x_offset, y_offset, x_stride, y_stride, ids_off,
+    uint32_t n_in, n_out, blocks_per_row, x_div, x_offset, y_offset, x_stride, y_stride, ids_off,
             tab_off;
 };
 static_assert(sizeof(struct vk_push_sel) <= VK_PUSH_RANGE, "sel push block");
@@ -2750,7 +2855,7 @@ static_assert(sizeof(struct vk_push_sel) <= VK_PUSH_RANGE, "sel push block");
     uint32_t                k32, io;
     struct vk_grouped_geom  g;
     const enum geist_status gs =
-            vk_grouped_geom(be, "linear_t_sel", w0, x_per_slot, t_x, t_y, bi, &g);
+            vk_grouped_geom(be, "linear_t_sel", w0, x_per_slot, false, t_x, t_y, bi, &g);
     if (gs != GEIST_OK) {
         return gs;
     }
@@ -2762,6 +2867,7 @@ static_assert(sizeof(struct vk_push_sel) <= VK_PUSH_RANGE, "sel push block");
     const struct vk_push_sel push   = {.n_in           = g.n_in,
                                        .n_out          = g.n_out,
                                        .blocks_per_row = g.blocks_per_row,
+                                       .x_div          = 1,
                                        .x_offset       = g.xo,
                                        .y_offset       = g.yo,
                                        .x_stride       = g.xs,
@@ -2787,6 +2893,430 @@ static void *vk_map_marked(struct geist_backend *be, uint64_t mark, struct geist
         return nullptr;
     }
     return buf->host_alias != nullptr ? buf->host_alias : buf->mapped;
+}
+
+/* ---- Mixture-of-experts on the device (#499) ------------------------ */
+
+/* The routed experts' FFN on the device, as Metal's (#201, #471, #482):
+ * moe_route above, linear_t_ids (the _sel matvecs for a decode step's few
+ * rows, moe_map + the grouped tensor-core GEMM for a chunk), glu and
+ * moe_weighted_sum. */
+
+constexpr uint32_t VK_SEL_IDS = 0x80000000u; /* sel_n of a linear_t_ids table */
+/* From this many tokens linear_t_ids buckets the slots by expert and runs
+ * the grouped GEMM (as Metal's moe_mm, #482); below, a matvec per slot. */
+constexpr size_t VK_MOE_MM_MIN_M = 9;
+
+/* The grouped GEMM for an expert dtype, or VK_PIPE_COUNT: needs the tensor
+ * cores at 32 lanes, as the dense tensor-core GEMMs. */
+static enum vk_pipe vk_moe_mm_pipe(const struct vk_state *st, uint16_t dtype) {
+    enum vk_pipe p = VK_PIPE_COUNT;
+    switch ((enum geist_dtype) dtype) {
+    case GEIST_DTYPE_Q4_K:
+        p = VK_PIPE_MOE_MM_Q4K_CM;
+        break;
+    case GEIST_DTYPE_Q5_K:
+        p = VK_PIPE_MOE_MM_Q5K_CM;
+        break;
+    case GEIST_DTYPE_Q6_K:
+        p = VK_PIPE_MOE_MM_Q6K_CM;
+        break;
+    case GEIST_DTYPE_Q8_0:
+        p = VK_PIPE_MOE_MM_Q8_0_CM;
+        break;
+    case GEIST_DTYPE_Q5_0:
+        p = VK_PIPE_MOE_MM_Q5_0_CM;
+        break;
+    case GEIST_DTYPE_MXFP4:
+        p = VK_PIPE_MOE_MM_MXFP4_CM;
+        break;
+    case GEIST_DTYPE_F32:
+    case GEIST_DTYPE_F16:
+    case GEIST_DTYPE_BF16:
+    case GEIST_DTYPE_I8:
+    case GEIST_DTYPE_U8:
+    case GEIST_DTYPE_Q4_0:
+    case GEIST_DTYPE_Q4_1:
+    case GEIST_DTYPE_Q3_K:
+    case GEIST_DTYPE_IQ2_S:
+    case GEIST_DTYPE_IQ3_S:
+    case GEIST_DTYPE_TQ1_0:
+    case GEIST_DTYPE_TQ2_0:
+    case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_IQ4_NL:
+    case GEIST_DTYPE_IQ4_XS:
+    case GEIST_DTYPE_BINARY:
+    case GEIST_DTYPE_TERNARY:
+    case GEIST_DTYPE_CUSTOM:
+    case GEIST_DTYPE_PQ2_0:
+    case GEIST_DTYPE_COUNT:
+        break;
+    }
+    return p != VK_PIPE_COUNT && st->subgroup_size == 32u && st->pipes[p] != VK_NULL_HANDLE
+                   ? p
+                   : VK_PIPE_COUNT;
+}
+
+/* linear_t_ids reaches an expert weight of w's dtype on this device: an id
+ * matvec, and from VK_MOE_MM_MIN_M rows the grouped GEMM. */
+static bool vk_ids_weight_ok(const struct vk_state *st, const struct geist_weight *w, size_t m) {
+    const enum vk_pipe mv = w != nullptr ? vk_grouped_pipe(w->dtype, true) : VK_PIPE_COUNT;
+    return mv != VK_PIPE_COUNT && st->pipes[mv] != VK_NULL_HANDLE &&
+           vk_linear_dtype((enum geist_dtype) w->dtype) != nullptr &&
+           (m < VK_MOE_MM_MIN_M || vk_moe_mm_pipe(st, w->dtype) != VK_PIPE_COUNT);
+}
+
+/* The address table of linear_t_ids' n experts (expert e's copy here holds
+ * the bytes at w0->raw + e * w0->raw_nbytes), built on its first call and
+ * then reused, in seltab with linear_t_sel's: its byte offset there, or
+ * UINT32_MAX when an expert has no copy here. */
+static uint32_t vk_ids_table(struct geist_backend *be, size_t n, const struct geist_weight *w0) {
+    struct vk_state *st  = be->state;
+    const uint32_t   tag = (uint32_t) n | VK_SEL_IDS;
+    for (uint32_t i = 0; i < st->n_sel_tabs; i++)
+        if (st->sel_key[i] == w0->raw && st->sel_n[i] == tag)
+            return st->sel_off[i];
+    uint64_t tab[VK_SEL_TAB_MAX];
+    for (size_t e = 0; e < n; e++) {
+        const struct geist_buffer *b =
+                vk_weight_lookup(st, (const uint8_t *) w0->raw + e * w0->raw_nbytes);
+        if (b == nullptr || b->addr == 0) {
+            return UINT32_MAX;
+        }
+        tab[e] = b->addr + b->base_off;
+    }
+    if (st->seltab == nullptr &&
+        vk_buffer_create(
+                be, VK_SEL_TAB_BYTES, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_HOST, &st->seltab) !=
+                GEIST_OK) {
+        return UINT32_MAX;
+    }
+    if (st->n_sel_tabs == VK_SEL_TABS || st->seltab_used + n * 8u > VK_SEL_TAB_BYTES) {
+        st->n_sel_tabs  = 0; /* full: start over, after the work reading it */
+        st->seltab_used = 0;
+        vk_seq_flush(st);
+    }
+    const uint32_t at = st->seltab_used;
+    memcpy((uint8_t *) st->seltab->mapped + at, tab, n * sizeof tab[0]);
+    st->seltab_used += (uint32_t) (n * sizeof tab[0]);
+    st->sel_key[st->n_sel_tabs] = w0->raw;
+    st->sel_n[st->n_sel_tabs]   = tag;
+    st->sel_off[st->n_sel_tabs] = at;
+    st->n_sel_tabs++;
+    return at;
+}
+
+struct vk_push_map {
+    uint32_t n, mk, io, mo, bn, tb, rk;
+};
+
+struct vk_push_moe_mm {
+    uint32_t n_in, n_out, blocks_per_row, x_div, x_offset, y_offset, x_stride, y_stride, tab_off,
+            mo, n, tb;
+};
+static_assert(sizeof(struct vk_push_moe_mm) == (size_t) 12 * sizeof(uint32_t),
+              "moe_mm_cm_body.glsl push block");
+
+/* A chunk's experts as grouped GEMMs (#499): moe_map buckets the mk slots,
+ * then one dispatch multiplies every expert's tiles. */
+[[nodiscard]] static enum geist_status vk_ids_grouped(struct geist_backend         *be,
+                                                      enum vk_pipe                  pipe,
+                                                      size_t                        n,
+                                                      size_t                        mk,
+                                                      size_t                        x_rows,
+                                                      uint32_t                      x_div,
+                                                      uint32_t                      tab_at,
+                                                      const struct geist_buffer    *ids,
+                                                      const struct vk_grouped_geom *g,
+                                                      const VkDescriptorBufferInfo  bxy[static 2]) {
+    struct vk_state *st = be->state;
+    /* map: [n + 1] offsets, [mk] sorted slots, [1 + tiles] the tile list,
+     * [mk] the ranks */
+    const size_t tiles = mk / VK_MOE_MM_BN + (n < mk ? n : mk);
+    const size_t tb = n + 1 + mk, rk = tb + 1 + tiles, words = rk + mk;
+    uint32_t     n32, mk32, tb32, rk32, tiles32, io, mo;
+    if (vk_ckd_u32(n, &n32) || vk_ckd_u32(mk, &mk32) || vk_ckd_u32(tb, &tb32) ||
+        vk_ckd_u32(rk, &rk32) || vk_ckd_u32(tiles, &tiles32) ||
+        vk_ckd_u32(ids->base_off / 4, &io) || words > SIZE_MAX / 4) {
+        return vk_too_wide(be, "linear_t_ids");
+    }
+    /* gate and up of a layer bucket the same ids as down: once */
+    const bool same = st->moe_map != nullptr && st->moe_map_ids == ids->buf &&
+                      st->moe_map_off == ids->base_off && st->moe_map_mk == mk &&
+                      st->moe_map_n == n && st->moe_map_gen == st->ids_gen;
+    if (st->moe_map == nullptr || st->moe_map->bytes < words * 4) {
+        if (st->moe_map != nullptr) {
+            vk_buffer_destroy(be, st->moe_map); /* flushes the work reading it */
+            st->moe_map = nullptr;
+        }
+        const enum geist_status cs = vk_buffer_create(
+                be, words * 4, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_DEVICE, &st->moe_map);
+        if (cs != GEIST_OK) {
+            return cs;
+        }
+    }
+    if (st->moe_map->base_off % 4 != 0 || vk_ckd_u32(st->moe_map->base_off / 4, &mo)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const VkDescriptorBufferInfo bm[2] = {{.buffer = ids->buf, .range = VK_WHOLE_SIZE},
+                                          {.buffer = st->moe_map->buf, .range = VK_WHOLE_SIZE}};
+    const struct vk_push_map     pm    = {
+            .n = n32, .mk = mk32, .io = io, .mo = mo, .bn = VK_MOE_MM_BN, .tb = tb32, .rk = rk32};
+    const struct vk_access am[2] = {
+            vk_acc((uint64_t) ids->base_off, (uint64_t) mk * 4u, false),
+            vk_acc((uint64_t) st->moe_map->base_off, (uint64_t) words * 4u, true)};
+    if (!same) {
+        const enum geist_status s =
+                vk_seq_dispatch_acc(be, VK_PIPE_MOE_MAP, bm, am, &pm, sizeof pm, 1, 1, 1);
+        if (s != GEIST_OK) {
+            st->moe_map_ids = VK_NULL_HANDLE;
+            return s;
+        }
+        st->moe_map_ids = ids->buf;
+        st->moe_map_off = ids->base_off;
+        st->moe_map_mk  = mk;
+        st->moe_map_n   = n;
+        st->moe_map_gen = st->ids_gen;
+    }
+    const VkDescriptorBufferInfo bi[4]  = {bxy[0],
+                                           bxy[1],
+                                           {.buffer = st->seltab->buf, .range = VK_WHOLE_SIZE},
+                                           {.buffer = st->moe_map->buf, .range = VK_WHOLE_SIZE}};
+    const struct vk_push_moe_mm  push   = {.n_in           = g->n_in,
+                                           .n_out          = g->n_out,
+                                           .blocks_per_row = g->blocks_per_row,
+                                           .x_div          = x_div,
+                                           .x_offset       = g->xo,
+                                           .y_offset       = g->yo,
+                                           .x_stride       = g->xs,
+                                           .y_stride       = g->ys,
+                                           .tab_off        = tab_at / 8u,
+                                           .mo             = mo,
+                                           .n              = n32,
+                                           .tb             = tb32};
+    const struct vk_access       acc[4] = {
+            vk_acc((uint64_t) g->xo * 4u, ((uint64_t) (x_rows - 1u) * g->xs + g->n_in) * 4u, false),
+            vk_acc((uint64_t) g->yo * 4u, ((uint64_t) (mk - 1u) * g->ys + g->n_out) * 4u, true),
+            vk_acc((uint64_t) tab_at, (uint64_t) n * 8u, false),
+            vk_acc((uint64_t) st->moe_map->base_off, (uint64_t) words * 4u, false)};
+    return vk_seq_dispatch_acc(be,
+                               pipe,
+                               bi,
+                               acc,
+                               &push,
+                               sizeof push,
+                               tiles32,
+                               (g->n_out + VK_MOE_MM_ROWS - 1u) / VK_MOE_MM_ROWS,
+                               1);
+}
+
+[[nodiscard]] static enum geist_status vk_linear_t_ids(struct geist_backend      *be,
+                                                       size_t                     n,
+                                                       size_t                     m,
+                                                       size_t                     k,
+                                                       bool                       x_per_slot,
+                                                       const struct geist_weight *w0,
+                                                       const struct geist_tensor *experts,
+                                                       const struct geist_buffer *ids,
+                                                       const struct geist_tensor *t_x,
+                                                       struct geist_tensor       *t_y) {
+    (void) experts; /* each expert's copy here is found by its bytes, w0->raw + e * raw_nbytes */
+    struct vk_state *st = be->state;
+    size_t           mk = 0;
+    if (m == 0 || k == 0) {
+        return GEIST_OK;
+    }
+    if (w0 == nullptr || !st->bda || !vk_ids_weight_ok(st, w0, 1) || n == 0 || n > VK_SEL_TAB_MAX ||
+        ids == nullptr || ids->buf == VK_NULL_HANDLE || ids->base_off % 4 != 0 ||
+        ckd_mul(&mk, m, k)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const uint32_t tab_at = vk_ids_table(be, n, w0);
+    if (tab_at == UINT32_MAX) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    VkDescriptorBufferInfo  bi[4];
+    struct vk_grouped_geom  g;
+    const enum geist_status gs =
+            vk_grouped_geom(be, "linear_t_ids", w0, true, true, t_x, t_y, bi, &g);
+    if (gs != GEIST_OK) {
+        return gs;
+    }
+    uint32_t     mk32, k32, io;
+    const size_t x_rows = x_per_slot ? mk : m;
+    if (vk_ckd_u32(mk, &mk32) || vk_ckd_u32(k, &k32) || vk_ckd_u32(ids->base_off / 4, &io)) {
+        return vk_too_wide(be, "linear_t_ids");
+    }
+    const uint32_t     x_div = x_per_slot ? 1u : k32;
+    const enum vk_pipe mm    = vk_moe_mm_pipe(st, w0->dtype);
+    if (m >= VK_MOE_MM_MIN_M && mm != VK_PIPE_COUNT && g.n_in % 32u == 0 && g.xo % 4u == 0 &&
+        g.xs % 4u == 0) {
+        return vk_ids_grouped(be, mm, n, mk, x_rows, x_div, tab_at, ids, &g, bi);
+    }
+    if (mk32 > 65535u) {
+        return GEIST_E_UNSUPPORTED; /* the slots are the dispatch's y */
+    }
+    bi[2] = (VkDescriptorBufferInfo) {.buffer = st->seltab->buf, .range = VK_WHOLE_SIZE};
+    bi[3] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
+    const struct vk_push_sel push   = {.n_in           = g.n_in,
+                                       .n_out          = g.n_out,
+                                       .blocks_per_row = g.blocks_per_row,
+                                       .x_div          = x_div,
+                                       .x_offset       = g.xo,
+                                       .y_offset       = g.yo,
+                                       .x_stride       = g.xs,
+                                       .y_stride       = g.ys,
+                                       .ids_off        = io,
+                                       .tab_off        = tab_at / 8u};
+    const struct vk_access   acc[4] = {
+            vk_acc((uint64_t) g.xo * 4u, ((uint64_t) (x_rows - 1u) * g.xs + g.n_in) * 4u, false),
+            vk_acc((uint64_t) g.yo * 4u, ((uint64_t) (mk32 - 1u) * g.ys + g.n_out) * 4u, true),
+            vk_acc((uint64_t) tab_at, (uint64_t) n * 8u, false),
+            vk_acc((uint64_t) io * 4u, (uint64_t) mk32 * 4u, false)};
+    return vk_seq_dispatch_acc(
+            be, vk_grouped_pipe(w0->dtype, true), bi, acc, &push, sizeof push, g.gx, mk32, 1);
+}
+
+/* An F32 operand of rows x cols on a device buffer: its element offset and
+ * row stride (contiguous, or a strided [rows, cols] view). */
+static bool vk_rows_view(const struct geist_tensor *t,
+                         size_t                     rows,
+                         size_t                     cols,
+                         VkDescriptorBufferInfo    *bi,
+                         uint32_t                  *off,
+                         uint32_t                  *stride) {
+    size_t r, c, rs;
+    if (t == nullptr || !vk_t_geom(t, &r, &c, &rs) || !vk_tensor_gpu(t, bi, off)) {
+        return false;
+    }
+    if (r == 1 && c == rows * cols) {
+        return !vk_ckd_u32(cols, stride);
+    }
+    return r == rows && c == cols && !vk_ckd_u32(rs, stride);
+}
+
+struct vk_push_glu {
+    uint32_t n, act, hx, hz, hi, xo, xs, zo, zs, yo, ys, xbo, zbo, io;
+    float    alpha, limit;
+};
+static_assert(sizeof(struct vk_push_glu) == (size_t) 16 * sizeof(uint32_t),
+              "moe_glu.comp push block");
+
+[[nodiscard]] static enum geist_status vk_glu(struct geist_backend        *be,
+                                              const struct geist_glu_args *a,
+                                              const struct geist_tensor   *t_x,
+                                              const struct geist_tensor   *t_z,
+                                              struct geist_tensor         *t_y) {
+    VkDescriptorBufferInfo bi[6];
+    struct vk_push_glu     p = {0};
+    size_t                 rows, cols, rs;
+    uint32_t               rows32;
+    if (a == nullptr || (a->act != GEIST_GLU_SILU && a->act != GEIST_GLU_SWIGLU_OAI) ||
+        !vk_t_geom(t_x, &rows, &cols, &rs)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (rows == 1 && t_x->ndim == 2) { /* a contiguous [rows, cols] */
+        rows = (size_t) t_x->shape[0];
+        cols = (size_t) t_x->shape[1];
+    }
+    if (!vk_rows_view(t_x, rows, cols, &bi[0], &p.xo, &p.xs) ||
+        !vk_rows_view(t_z, rows, cols, &bi[1], &p.zo, &p.zs) ||
+        !vk_rows_view(t_y, rows, cols, &bi[2], &p.yo, &p.ys) || vk_ckd_u32(cols, &p.n) ||
+        vk_ckd_u32(rows, &rows32) || rows32 > 65535u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* Absent operands bind x again; the shader does not read them. */
+    bi[3]   = bi[0];
+    bi[4]   = bi[0];
+    bi[5]   = bi[0];
+    p.act   = (uint32_t) a->act;
+    p.alpha = a->alpha;
+    p.limit = a->limit;
+    if ((a->x_bias != nullptr && !vk_tensor_gpu(a->x_bias, &bi[3], &p.xbo)) ||
+        (a->z_bias != nullptr && !vk_tensor_gpu(a->z_bias, &bi[4], &p.zbo))) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    p.hx = a->x_bias != nullptr ? 1u : 0u;
+    p.hz = a->z_bias != nullptr ? 1u : 0u;
+    if (a->ids != nullptr) {
+        if (a->ids->buf == VK_NULL_HANDLE || a->ids->base_off % 4 != 0 ||
+            vk_ckd_u32(a->ids->base_off / 4, &p.io)) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        bi[5] = (VkDescriptorBufferInfo) {.buffer = a->ids->buf, .range = VK_WHOLE_SIZE};
+        p.hi  = 1u;
+    }
+    const struct vk_access acc[6] = {
+            vk_acc_tensor(t_x, false),
+            vk_acc_tensor(t_z, false),
+            vk_acc_tensor(t_y, true),
+            p.hx != 0u ? vk_acc_all(false) : vk_acc(0, 0, false),
+            p.hz != 0u ? vk_acc_all(false) : vk_acc(0, 0, false),
+            p.hi != 0u ? vk_acc((uint64_t) p.io * 4u, (uint64_t) rows32 * 4u, false)
+                       : vk_acc(0, 0, false)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_MOE_GLU, bi, acc, &p, sizeof p, (p.n + 255u) / 256u, rows32, 1);
+}
+
+struct vk_push_moe_wsum {
+    uint32_t d, k, yo, ys, wo, ao, as, oo, os, hb, bo, io;
+};
+static_assert(sizeof(struct vk_push_moe_wsum) == (size_t) 12 * sizeof(uint32_t),
+              "moe_wsum.comp push block");
+
+[[nodiscard]] static enum geist_status vk_moe_weighted_sum(struct geist_backend      *be,
+                                                           size_t                     m,
+                                                           size_t                     k,
+                                                           size_t                     d,
+                                                           const struct geist_tensor *t_w,
+                                                           const struct geist_tensor *t_y,
+                                                           const struct geist_tensor *t_add,
+                                                           const struct geist_tensor *bias,
+                                                           const struct geist_buffer *ids,
+                                                           struct geist_tensor       *t_out) {
+    VkDescriptorBufferInfo  bi[6];
+    struct vk_push_moe_wsum p  = {0};
+    size_t                  mk = 0;
+    uint32_t                m32;
+    if (m == 0) {
+        return GEIST_OK;
+    }
+    if (k == 0 || ckd_mul(&mk, m, k) || !vk_rows_view(t_y, mk, d, &bi[0], &p.yo, &p.ys) ||
+        !vk_tensor_gpu(t_w, &bi[1], &p.wo) || vk_t_n(t_w) < mk ||
+        !vk_rows_view(t_add, m, d, &bi[2], &p.ao, &p.as) ||
+        !vk_rows_view(t_out, m, d, &bi[3], &p.oo, &p.os) || vk_ckd_u32(d, &p.d) ||
+        vk_ckd_u32(k, &p.k) || vk_ckd_u32(m, &m32) || m32 > 65535u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    bi[4] = bi[0];
+    bi[5] = bi[0];
+    if (bias != nullptr && ids != nullptr) {
+        if (!vk_tensor_gpu(bias, &bi[4], &p.bo) || ids->buf == VK_NULL_HANDLE ||
+            ids->base_off % 4 != 0 || vk_ckd_u32(ids->base_off / 4, &p.io)) {
+            return GEIST_E_UNSUPPORTED;
+        }
+        bi[5] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
+        p.hb  = 1u;
+    }
+    const struct vk_access acc[6] = {
+            vk_acc_tensor(t_y, false),
+            vk_acc_tensor(t_w, false),
+            vk_acc_tensor(t_add, false),
+            vk_acc_tensor(t_out, true),
+            p.hb != 0u ? vk_acc_all(false) : vk_acc(0, 0, false),
+            p.hb != 0u ? vk_acc((uint64_t) p.io * 4u, (uint64_t) mk * 4u, false)
+                       : vk_acc(0, 0, false)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_MOE_WSUM, bi, acc, &p, sizeof p, (p.d + 255u) / 256u, m32, 1);
+}
+
+/* GEIST_FUSED_MOE_DEVICE: the router (vk_moe_route_ok) and the three
+ * expert weights' dtypes at q->m rows. Residency is the arch's: it asks
+ * only for layers whose every expert it resolved here. */
+static bool vk_moe_device_ok(const struct vk_state *st, const struct geist_fusion_query *q) {
+    return q->m >= 1 && q->m <= VK_MAX_M && st->bda && vk_moe_route_ok(q->moe_route) &&
+           vk_ids_weight_ok(st, q->gate_w, q->m) && vk_ids_weight_ok(st, q->up_w, q->m) &&
+           vk_ids_weight_ok(st, q->down_w, q->m);
 }
 
 [[nodiscard]] static enum geist_status
@@ -3713,8 +4243,9 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
     case GEIST_FUSED_RMSNORM_ADD_NORM:
     case GEIST_FUSED_FFN_GATE_UP_SILU:
     case GEIST_FUSED_ATTN_ROPE_APPEND:
-    case GEIST_FUSED_MOE_DEVICE:
         break;
+    case GEIST_FUSED_MOE_DEVICE:
+        return vk_moe_device_ok(st, q);
     }
     return false;
 }
@@ -3793,6 +4324,9 @@ static const struct geist_backend_fused vk_fused = {
         .rows_weighted_sum       = vk_rows_weighted_sum,
         .rows_gather             = vk_rows_gather,
         .moe_route               = vk_moe_route,
+        .linear_t_ids            = vk_linear_t_ids,
+        .moe_weighted_sum        = vk_moe_weighted_sum,
+        .glu                     = vk_glu,
         .linear_t_sel            = vk_linear_t_sel,
         .submit_mark             = vk_submit_mark,
         .map_marked              = vk_map_marked,

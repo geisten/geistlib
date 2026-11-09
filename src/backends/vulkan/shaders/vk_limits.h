@@ -35,6 +35,11 @@
 /* moe_topk: the most experts a router row may have (the row sits in shared
  * memory). */
 #define VK_MOE_TOPK_MAX_N 512u
+/* moe_mm_*_cm (#499): the grouped expert GEMM's tile, VK_MOE_MM_ROWS weight
+ * rows x VK_MOE_MM_BN routed slots of one expert (8 subgroups of 32 x
+ * VK_MOE_MM_BN / 2); moe_map buckets the slots into tiles of VK_MOE_MM_BN. */
+#define VK_MOE_MM_ROWS 128u
+#define VK_MOE_MM_BN 64u
 /* matvec_pq2_0: one row per lane of a 32-lane slice. */
 #define VK_MV_PQ2_0_ROWS_PER_WG 32u
 /* ffn_gate_up_gelu_q4k: NUM_ROWS rows in one 32-lane workgroup. */

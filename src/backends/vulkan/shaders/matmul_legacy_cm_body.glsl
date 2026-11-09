@@ -3,10 +3,10 @@
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
-/* Q8_0 / Q4_0 / Q4_1 / TQ2_0 GEMM on tensor cores — the frame of
+/* Q8_0 / Q4_0 / Q4_1 / TQ2_0 / Q5_0 / MXFP4 GEMM on tensor cores — the frame of
  * matmul_q4k_cm.comp (64x64 tile, BK = 32, double-buffered: one barrier per
  * step) with a legacy-block A stage, picked by DT_Q8_0, DT_Q4_0, DT_Q4_1 or
- * DT_TQ2_0 in the including .comp. One k-step is exactly one 32-element
+ * DT_TQ2_0 (#499: DT_Q5_0, DT_MXFP4) in the including .comp. One k-step is exactly one 32-element
  * block (TQ2_0: one of a 256-element block's eight 32-element runs), so each
  * row needs one scale per step. Weight
  * layout as in mm_legacy.glsl: LPB quant words per block (8 for Q8_0, 4 for
@@ -14,7 +14,8 @@
  * quant words; Q4_1 keeps its native 20-byte block (d | m << 16, then the
  * quants). In both 4-bit types byte j holds element j (low nibble) and
  * j + 16 (high). TQ2_0 keeps the SOA layout of matvec_tq2_0.comp; its
- * values d * {-1, 0, 1} are exact in f16.
+ * values d * {-1, 0, 1} are exact in f16. Q5_0 and MXFP4 keep the
+ * struct-of-arrays layouts of mv_legacy.glsl.
  * Requires n_out % 64 == 0, rows % 16 == 0 (n_in % 32 == 0 is the format's).
  * Dispatch: gx = n_out/64, gy = ceil(rows/64). */
 
@@ -40,6 +41,16 @@ layout(push_constant) uniform Push {
 const uint LPB = 8u;
 #elif defined(DT_Q4_0) || defined(DT_Q4_1)
 const uint LPB = 4u;
+#endif
+#if defined(DT_MXFP4)
+/* kvalues_mxfp4 and mxfp4_e8m0_half as in mv_legacy.glsl */
+float mx4v(uint c) {
+    float m = float((0xC8643210u >> ((c & 7u) * 4u)) & 15u);
+    return (c & 8u) != 0u ? -m : m;
+}
+float e8m0_half(uint e) {
+    return uintBitsToFloat(e < 2u ? (0x00200000u << e) : ((e - 1u) << 23u));
+}
 #endif
 const uint BM = 64;
 const uint BN = 64;
@@ -80,6 +91,27 @@ void stage(uint buf, uint ks, uint lid, uint row0, uint tb0) {
             uint qw = w[bi * 5u + 1u + u] >> (hk * 4u);
             for (uint j = 0; j < 4u; j++) {
                 Ash[buf][abase + u * 4u + j] = float16_t(dm.x * float((qw >> (8u * j)) & 15u) + dm.y);
+            }
+        }
+#elif defined(DT_Q5_0)
+        /* 5 words per block: the high bits, then the quants */
+        uint sw = w[pc.n_out * pc.blocks_per_row * 5u + (bi >> 1u)];
+        float d = unpackHalf2x16(sw >> ((bi & 1u) * 16u)).x;
+        uint qh = w[bi * 5u] >> (hk * 16u);
+        for (uint u = 0; u < 4u; u++) {
+            uint qw = w[bi * 5u + 1u + u] >> (hk * 4u);
+            for (uint j = 0; j < 4u; j++) {
+                uint q = ((qw >> (8u * j)) & 15u) | (((qh >> (u * 4u + j)) & 1u) << 4u);
+                Ash[buf][abase + u * 4u + j] = float16_t(d * (float(q) - 16.0));
+            }
+        }
+#elif defined(DT_MXFP4)
+        uint ew = w[pc.n_out * pc.blocks_per_row * 4u + (bi >> 2u)];
+        float d = e8m0_half((ew >> ((bi & 3u) * 8u)) & 0xffu);
+        for (uint u = 0; u < 4u; u++) {
+            uint qw = w[bi * 4u + u] >> (hk * 4u);
+            for (uint j = 0; j < 4u; j++) {
+                Ash[buf][abase + u * 4u + j] = float16_t(d * mx4v((qw >> (8u * j)) & 15u));
             }
         }
 #else

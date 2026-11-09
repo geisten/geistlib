@@ -1,22 +1,43 @@
 #version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 #include "vk_limits.h"
 
-/* Mixture-of-experts routing on the device (#162): workgroup t takes row t
- * of logits and writes the k largest of its first n -- ranked by (logit
- * descending, id ascending), as the host's moe_route_topk -- into
- * ids[io + t * k + j], their softmax probabilities over all n into
- * w[wo + t * k + j], renormalised over the k when norm. A non-finite logit
- * sets ids[flag] to 1 (it ranks as -inf) and still writes k ids < n.
+/* Mixture-of-experts routing on the device (#162; #499: every router
+ * fused->moe_route names): workgroup t takes row t of the logits, plus the
+ * router bias bs[bo + i] when hb, and writes the k picks into
+ * ids[io + t * k + j] and their weights into w[wo + t * k + j], as the
+ * host's moe_route does it:
  *
- * Each logit's rank is the count of logits ahead of it in that order, so
- * the k picks need one pass over the row in shared memory, not k
- * reductions. n <= VK_MOE_TOPK_MAX_N. Dispatch: gx = rows. */
+ *   plain (gate 0, no selection bias, no groups, scale 1): the k largest
+ *     logits, ranked by (logit descending, id ascending) as moe_route_topk,
+ *     weighted by their softmax probabilities over all n, renormalised
+ *     over the k when norm;
+ *   otherwise the scores sc[i] (gate 0 the softmax over all n, 1 the
+ *     logit, 2 its sigmoid) plus the selection bias sb[so + i] (hs) rank
+ *     the experts; with ng > 1 groups of n / ng, a group scoring the sum
+ *     of its two best, only the tg best groups (ties: the lower group) stay
+ *     eligible; the k best eligible are picked (ties: the lower id). Their
+ *     weights are the unbiased scores (gate 1: the softmax over the k
+ *     picked logits), over their sum clamped below at 2^-14 when norm,
+ *     times scale (0: 1).
+ *
+ * A non-finite (biased) logit, or fewer eligible experts than k, sets
+ * ids[flag] to 1 (the logit ranks as -inf) and still writes k ids < n.
+ *
+ * Each candidate's rank is the count of candidates ahead of it in that
+ * order, so the k picks need one pass over the row in shared memory, not
+ * k reductions; the row's maximum and the softmax's sum reduce within the
+ * subgroups first (one barrier each). n <= VK_MOE_TOPK_MAX_N.
+ * Dispatch: gx = rows. */
 
 layout(local_size_x = 128) in;
 
 layout(set = 0, binding = 0) readonly buffer L { float lg[]; };
 layout(set = 0, binding = 1) buffer I { uint ids[]; };
 layout(set = 0, binding = 2) buffer W { float w[]; };
+layout(set = 0, binding = 3) readonly buffer B { float bs[]; };
+layout(set = 0, binding = 4) readonly buffer S { float sb[]; };
 
 layout(push_constant) uniform Push {
     uint n;
@@ -27,24 +48,43 @@ layout(push_constant) uniform Push {
     uint lo;   /* elements into lg */
     uint io;   /* words into ids */
     uint wo;   /* elements into w */
+    uint gate; /* 0 softmax, 1 softmax over the selected, 2 sigmoid */
+    uint hb;   /* router bias present: bs[bo + i] */
+    uint bo;
+    uint hs;   /* selection bias present: sb[so + i] */
+    uint so;
+    uint ng;   /* groups (<= 1: none) */
+    uint tg;   /* groups kept */
+    float scale;
 } pc;
 
-shared float sh[VK_MOE_TOPK_MAX_N];
-shared float sel[VK_MOE_TOPK_MAX_N];
-shared float red[128];
+shared float sh[VK_MOE_TOPK_MAX_N];  /* the (biased) logits, -inf if not finite */
+shared float slv[VK_MOE_TOPK_MAX_N]; /* the selection scores */
+shared float sel[VK_MOE_TOPK_MAX_N]; /* plain: the picked logits by rank */
+shared uint pick[VK_MOE_TOPK_MAX_N]; /* the picked ids by rank */
+shared float gsc[VK_MOE_TOPK_MAX_N / 2u];
+shared uint gok[VK_MOE_TOPK_MAX_N / 2u];
+shared float red[128]; /* one partial per subgroup */
 shared uint bad;
+shared uint n_ok;
 
 void main() {
     uint t = gl_WorkGroupID.x;
     uint ti = gl_LocalInvocationID.x;
     uint base = pc.lo + t * pc.ls;
     const float NEG = uintBitsToFloat(0xff800000u);
+    bool plain = pc.gate == 0u && pc.hs == 0u && pc.ng <= 1u &&
+                 (pc.scale == 0.0 || pc.scale == 1.0);
     if (ti == 0u) {
         bad = 0u;
+        n_ok = 0u;
     }
     barrier();
     for (uint i = ti; i < pc.n; i += 128u) {
         float v = lg[base + i];
+        if (pc.hb != 0u) {
+            v += bs[pc.bo + i];
+        }
         if ((floatBitsToUint(v) & 0x7f800000u) == 0x7f800000u) {
             atomicOr(bad, 1u);
             v = NEG;
@@ -52,38 +92,119 @@ void main() {
         sh[i] = v;
     }
     barrier();
+    /* the row's largest logit and the softmax's sum */
+    float mx = NEG;
     for (uint i = ti; i < pc.n; i += 128u) {
-        float v = sh[i];
-        uint r = 0u;
-        for (uint j = 0u; j < pc.n; ++j) {
-            float u = sh[j];
-            r += (u > v || (u == v && j < i)) ? 1u : 0u;
-        }
-        if (r < pc.k) {
-            ids[pc.io + t * pc.k + r] = i;
-            sel[r] = v;
-        }
+        mx = max(mx, sh[i]);
+    }
+    mx = subgroupMax(mx);
+    if (subgroupElect()) {
+        red[gl_SubgroupID] = mx;
     }
     barrier();
-    float mx = bad != 0u ? 0.0 : sel[0];
+    for (uint g = 0u; g < gl_NumSubgroups; ++g) {
+        mx = max(mx, red[g]);
+    }
+    mx = bad != 0u ? 0.0 : mx;
+    barrier();
     float z = 0.0;
     for (uint i = ti; i < pc.n; i += 128u) {
         float v = sh[i];
         z += v == NEG ? 0.0 : exp(v - mx);
     }
-    red[ti] = z;
+    z = subgroupAdd(z);
+    if (subgroupElect()) {
+        red[gl_SubgroupID] = z;
+    }
     barrier();
-    for (uint s = 64u; s > 0u; s >>= 1u) {
-        if (ti < s) {
-            red[ti] += red[ti + s];
+    z = 0.0;
+    for (uint g = 0u; g < gl_NumSubgroups; ++g) {
+        z += red[g];
+    }
+    /* selection scores */
+    for (uint i = ti; i < pc.n; i += 128u) {
+        float v = sh[i];
+        float sc = v;
+        if (!plain) {
+            if (pc.gate == 0u) {
+                sc = z > 0.0 ? exp(v - mx) / z : 0.0;
+            } else if (pc.gate == 2u) {
+                sc = 1.0 / (1.0 + exp(-v));
+            }
+            if (pc.hs != 0u) {
+                sc += sb[pc.so + i];
+            }
+        }
+        slv[i] = sc;
+    }
+    barrier();
+    /* groups: the tg best by the sum of their two best scores */
+    uint per = pc.ng > 1u ? pc.n / pc.ng : pc.n;
+    if (pc.ng > 1u) {
+        for (uint g = ti; g < pc.ng; g += 128u) {
+            uint g0 = g * per;
+            float a = max(slv[g0], slv[g0 + 1u]);
+            float b = min(slv[g0], slv[g0 + 1u]);
+            for (uint i = 2u; i < per; ++i) {
+                float x = slv[g0 + i];
+                if (x > a) {
+                    b = a;
+                    a = x;
+                } else if (x > b) {
+                    b = x;
+                }
+            }
+            gsc[g] = a + b;
+        }
+        barrier();
+        for (uint g = ti; g < pc.ng; g += 128u) {
+            float v = gsc[g];
+            uint r = 0u;
+            for (uint j = 0u; j < pc.ng; ++j) {
+                float u = gsc[j];
+                r += (u > v || (u == v && j < g)) ? 1u : 0u;
+            }
+            gok[g] = r < pc.tg ? 1u : 0u;
         }
         barrier();
     }
-    if (ti == 0u) {
-        z = red[0];
-        if (bad != 0u) {
-            ids[pc.flag] = 1u;
+    /* rank the eligible */
+    for (uint i = ti; i < pc.n; i += 128u) {
+        if (pc.ng > 1u && gok[i / per] == 0u) {
+            continue;
         }
+        atomicAdd(n_ok, 1u);
+        float v = slv[i];
+        uint r = 0u;
+        for (uint j = 0u; j < pc.n; ++j) {
+            if (pc.ng > 1u && gok[j / per] == 0u) {
+                continue;
+            }
+            float u = slv[j];
+            r += (u > v || (u == v && j < i)) ? 1u : 0u;
+        }
+        if (r < pc.k) {
+            ids[pc.io + t * pc.k + r] = i;
+            sel[r] = sh[i];
+            pick[r] = i;
+        }
+    }
+    barrier();
+    if (ti != 0u) {
+        return;
+    }
+    if (n_ok < pc.k) {
+        bad = 1u;
+        for (uint j = n_ok; j < pc.k; ++j) {
+            ids[pc.io + t * pc.k + j] = 0u;
+            pick[j] = 0u;
+            sel[j] = NEG;
+        }
+    }
+    if (bad != 0u) {
+        ids[pc.flag] = 1u;
+    }
+    if (plain) {
         float tot = 0.0;
         for (uint j = 0u; j < pc.k; ++j) {
             float p = z > 0.0 ? exp(sel[j] - mx) / z : 0.0;
@@ -95,5 +216,31 @@ void main() {
                 w[pc.wo + t * pc.k + j] /= tot;
             }
         }
+        return;
+    }
+    /* the unbiased scores of the picked (gate 1: their softmax) */
+    float m2 = sel[0];
+    for (uint j = 1u; j < pc.k; ++j) {
+        m2 = max(m2, sel[j]);
+    }
+    float z2 = 0.0;
+    if (pc.gate == 1u) {
+        for (uint j = 0u; j < pc.k; ++j) {
+            z2 += exp(sel[j] - m2);
+        }
+    }
+    float sum = 0.0;
+    for (uint j = 0u; j < pc.k; ++j) {
+        float v = sel[j];
+        float wd = pc.gate == 1u ? exp(v - m2) / z2
+                 : pc.gate == 2u ? 1.0 / (1.0 + exp(-v))
+                                 : (z > 0.0 ? exp(v - mx) / z : 0.0);
+        w[pc.wo + t * pc.k + j] = wd;
+        sum += wd;
+    }
+    float den = pc.norm != 0u ? max(sum, 6.103515625e-5) : 1.0;
+    float scl = pc.scale != 0.0 ? pc.scale : 1.0;
+    for (uint j = 0u; j < pc.k; ++j) {
+        w[pc.wo + t * pc.k + j] = w[pc.wo + t * pc.k + j] / den * scl;
     }
 }

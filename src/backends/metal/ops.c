@@ -5749,6 +5749,8 @@ const struct geist_backend_descriptor geist_backend_metal =
                                           .lookup_tables_on_host = true,
                                           /* metal_linear_t switches on the resolver's dtypes. */
                                           .resolve_weight_complete = true,
+                                          /* deepseek2's latent attention (#376) */
+                                          .mla_device = true,
                                           /* deltanet_mix encodes 64-token sub-chunks internally
                                            * (#322), so DN models keep preferred_m_max. */
                                           .dn_subchunk = true,

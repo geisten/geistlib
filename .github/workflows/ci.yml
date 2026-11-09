@@ -1129,6 +1129,10 @@ jobs:
                    test_backend_vulkan_linear_grouped_unit \
                    test_backend_vulkan_stage_unit \
                    test_qwen3moe_unit \
+                   test_moe_device_unit \
+                   test_moe_grouped_unit \
+                   test_gpt_oss_unit \
+                   test_deepseek2_unit \
                    test_gguf_release_range_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt

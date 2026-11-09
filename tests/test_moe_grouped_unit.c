@@ -25,7 +25,9 @@
  *     a prefill chunk took before): within 1e-3 of the scale;
  *   - its own second run: bit-identical (the bucketing keeps slot order).
  * supported(GEIST_FUSED_MOE_DEVICE) says yes for these dtypes at m = 512
- * and no for F32 there (no grouped GEMM: the chunk stays on the host).
+ * (Metal; #499: Vulkan where it has tensor cores, elsewhere linear_t_ids
+ * runs a matvec per slot, to the same bounds) and no for F32 there (no
+ * grouped GEMM: the chunk stays on the host).
  *
  * The experts' FFN in one call (#486, fused->moe_ffn_ids), per dtype: gate
  * and up of 256 (K-quants) or 160 outputs (a ragged 64-wide tile), down of
@@ -356,7 +358,14 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                                           .gate_w = &w[0],
                                           .up_w   = &w[0],
                                           .down_w = &w[0]};
-    fails += geist_expect(f->supported(be, &qq), "supported(GEIST_FUSED_MOE_DEVICE) at m = 512");
+    /* #499: Vulkan's grouped GEMM needs tensor cores; without them (lavapipe)
+     * the probe says no and linear_t_ids still runs a chunk (a matvec per
+     * slot), which the checks below hold to the same bounds. */
+    const bool chunk = f->supported(be, &qq);
+    if (strcmp(be->desc->name, "metal") == 0)
+        fails += geist_expect(chunk, "supported(GEIST_FUSED_MOE_DEVICE) at m = 512");
+    else if (!chunk)
+        printf("  %s: no grouped GEMM here (the probe says no at m = 512)\n", q->name);
     /* Not exact in half: the GEMM's staging rounds them. */
     for (size_t i = 0; i < nkmax * N_IN; i++)
         xs[i] = (float) rng_u8() / 64.0f - 2.0f + (float) rng_u8() / 65536.0f;
