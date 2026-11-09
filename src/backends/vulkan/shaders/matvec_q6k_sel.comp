@@ -6,4 +6,5 @@
 #include "vk_limits.h"
 #define MV_SEL
 #define MV_SG_REDUCE /* #505: the MoE decode matvecs sum each warp in registers */
+#define MV_X_GLOBAL
 #include "matvec_q6k_id_body.glsl"

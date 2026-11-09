@@ -4,12 +4,21 @@
  * (byte e of the weight rows), X_BASE and Y_BASE (element offsets of the
  * x and y rows). MV_SG_REDUCE (with the subgroup arithmetic extension): a
  * warp's lanes are summed with subgroupAdd where a subgroup is one 32-lane
- * warp (#505). Dispatch: gx = ceil(n_out / 8). */
+ * warp (#505). MV_X_GLOBAL: x is read where it lies, not staged in shared
+ * memory. Dispatch: gx = ceil(n_out / 8). */
 
 layout(local_size_x = 256) in;
 
 shared float red[256];
+#ifdef MV_X_GLOBAL
+/* #505: x straight from memory (L1 / L2), no 24 KB staging per workgroup:
+ * that shared memory capped Turing at two of these workgroups per SM */
+#define x_shared false
+#define XSH(i) x4[0]
+#else
 shared vec4 xsh[1536];
+#define XSH(i) xsh[i]
+#endif
 
 void main() {
     MV_BEGIN
@@ -19,6 +28,7 @@ void main() {
     uint row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + warp;
 
     uint nv = pc.n_in >> 2u;
+#ifndef MV_X_GLOBAL
     bool x_shared = nv <= 1536u;
     if (x_shared) {
         uint xbase = (X_BASE) >> 2u;
@@ -27,6 +37,7 @@ void main() {
         }
         barrier();
     }
+#endif
 
     float sum = 0.0;
     if (row < pc.n_out) {
@@ -65,8 +76,8 @@ void main() {
                                 ((((qh1 >> (8u * j)) >> qh_shift) & 3u) << 4u));
             }
             uint xe = (b * 256u + e0) >> 2u;
-            vec4 xa = x_shared ? xsh[xe] : x4[((X_BASE) >> 2u) + xe];
-            vec4 xb = x_shared ? xsh[xe + 1u] : x4[((X_BASE) >> 2u) + xe + 1u];
+            vec4 xa = x_shared ? XSH(xe) : x4[((X_BASE) >> 2u) + xe];
+            vec4 xb = x_shared ? XSH(xe + 1u) : x4[((X_BASE) >> 2u) + xe + 1u];
             float xq = dot(q_lo, xa) + dot(q_hi, xb);
             float xs = dot(xa + xb, vec4(1.0));
             sum += d * float(sc) * (xq - 32.0 * xs);
