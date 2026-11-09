@@ -518,7 +518,8 @@ static void moe_stage_attach(const struct transformer_arch_state *st,
                          moe_profile_prefill_rows(
                                  st->moe_prof, th >= 4 ? th / 4 : 1, L * n_exp, prow + L * n_exp);
     size_t     n_cand  = 0;
-    for (size_t k = 0; cand != nullptr && prow != nullptr && k < n_rank; k++) {
+    /* rank[k].idx is e * L + layer: no layers, no candidates */
+    for (size_t k = 0; L > 0 && cand != nullptr && prow != nullptr && k < n_rank; k++) {
         const size_t l = rank[k].idx % L, e = rank[k].idx / L;
         if (e >= n_exp || mg->twins[(l * slots + e) * 3].raw != nullptr)
             continue;

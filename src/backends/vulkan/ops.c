@@ -2700,7 +2700,8 @@ struct vk_push_topk {
     uint32_t n, k, norm, flag, ls, lo, io, wo, gate, hb, bo, hs, so, ng, tg;
     float    scale;
 };
-static_assert(sizeof(struct vk_push_topk) == 16 * 4, "moe_topk.comp push block");
+static_assert(sizeof(struct vk_push_topk) == (size_t) 16 * sizeof(uint32_t),
+              "moe_topk.comp push block");
 
 /* moe_topk.comp runs the router `a` names (#499: every gating, the router
  * and selection biases, the groups and the scale), for m rows of n <=
@@ -3013,7 +3014,8 @@ struct vk_push_moe_mm {
     uint32_t n_in, n_out, blocks_per_row, x_div, x_offset, y_offset, x_stride, y_stride, tab_off,
             mo, n, tb;
 };
-static_assert(sizeof(struct vk_push_moe_mm) == 12 * 4, "moe_mm_cm_body.glsl push block");
+static_assert(sizeof(struct vk_push_moe_mm) == (size_t) 12 * sizeof(uint32_t),
+              "moe_mm_cm_body.glsl push block");
 
 /* A chunk's experts as grouped GEMMs (#499): moe_map buckets the mk slots,
  * then one dispatch multiplies every expert's tiles. */
@@ -3197,7 +3199,8 @@ struct vk_push_glu {
     uint32_t n, act, hx, hz, hi, xo, xs, zo, zs, yo, ys, xbo, zbo, io;
     float    alpha, limit;
 };
-static_assert(sizeof(struct vk_push_glu) == 16 * 4, "moe_glu.comp push block");
+static_assert(sizeof(struct vk_push_glu) == (size_t) 16 * sizeof(uint32_t),
+              "moe_glu.comp push block");
 
 [[nodiscard]] static enum geist_status vk_glu(struct geist_backend        *be,
                                               const struct geist_glu_args *a,
@@ -3258,7 +3261,8 @@ static_assert(sizeof(struct vk_push_glu) == 16 * 4, "moe_glu.comp push block");
 struct vk_push_moe_wsum {
     uint32_t d, k, yo, ys, wo, ao, as, oo, os, hb, bo, io;
 };
-static_assert(sizeof(struct vk_push_moe_wsum) == 12 * 4, "moe_wsum.comp push block");
+static_assert(sizeof(struct vk_push_moe_wsum) == (size_t) 12 * sizeof(uint32_t),
+              "moe_wsum.comp push block");
 
 [[nodiscard]] static enum geist_status vk_moe_weighted_sum(struct geist_backend      *be,
                                                            size_t                     m,
