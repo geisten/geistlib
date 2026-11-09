@@ -1,0 +1,105 @@
+=== en
+0.09.159.352 I kl_divergence: computing over 25 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :  14.902056 ±   0.594292
+Mean PPL(base)                :  14.872010 ±   0.589341
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.82%
+Mean ln(PPL(Q)/PPL(base))     :   0.002018 ±   0.002430
+Mean PPL(Q)/PPL(base)         :   1.002020 ±   0.002435
+Mean PPL(Q)-PPL(base)         :   0.030046 ±   0.036313
+Mean    KLD:   0.003069 ±   0.000153
+Maximum KLD:   0.493296
+99.9%   KLD:   0.130048
+99.0%   KLD:   0.039971
+95.0%   KLD:   0.011518
+90.0%   KLD:   0.006270
+Median  KLD:   0.000711
+10.0%   KLD:   0.000019
+ 5.0%   KLD:   0.000002
+ 1.0%   KLD:  -0.000001
+ 0.1%   KLD:  -0.000004
+Minimum KLD:  -0.000055
+Mean    Δp:  0.066 ± 0.021 %
+Maximum Δp: 44.152%
+Median  Δp:  0.000%
+RMS Δp    :  1.716 ± 0.114 %
+Same top p: 97.914 ± 0.179 %
+=== de
+0.01.420.293 I kl_divergence: computing over 23 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :  12.931707 ±   0.515225
+Mean PPL(base)                :  12.888848 ±   0.512114
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.94%
+Mean ln(PPL(Q)/PPL(base))     :   0.003320 ±   0.001329
+Mean PPL(Q)/PPL(base)         :   1.003325 ±   0.001334
+Mean PPL(Q)-PPL(base)         :   0.042859 ±   0.017382
+Mean    KLD:   0.001402 ±   0.000062
+Maximum KLD:   0.209752
+99.9%   KLD:   0.055712
+99.0%   KLD:   0.016349
+95.0%   KLD:   0.005492
+90.0%   KLD:   0.003142
+Median  KLD:   0.000349
+10.0%   KLD:   0.000003
+ 5.0%   KLD:   0.000000
+ 1.0%   KLD:  -0.000002
+ 0.1%   KLD:  -0.000012
+Minimum KLD:  -0.000049
+Mean    Δp: -0.041 ± 0.015 %
+Maximum Δp: 14.101%
+Median  Δp: -0.000%
+RMS Δp    :  1.123 ± 0.055 %
+Same top p: 98.278 ± 0.170 %
+=== c
+0.01.424.365 I kl_divergence: computing over 26 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :   3.494627 ±   0.111423
+Mean PPL(base)                :   3.492433 ±   0.111036
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.95%
+Mean ln(PPL(Q)/PPL(base))     :   0.000628 ±   0.001026
+Mean PPL(Q)/PPL(base)         :   1.000628 ±   0.001027
+Mean PPL(Q)-PPL(base)         :   0.002194 ±   0.003592
+Mean    KLD:   0.001327 ±   0.000074
+Maximum KLD:   0.287466
+99.9%   KLD:   0.068823
+99.0%   KLD:   0.019230
+95.0%   KLD:   0.005799
+90.0%   KLD:   0.002829
+Median  KLD:   0.000055
+10.0%   KLD:  -0.000000
+ 5.0%   KLD:  -0.000002
+ 1.0%   KLD:  -0.000004
+ 0.1%   KLD:  -0.000019
+Minimum KLD:  -0.000042
+Mean    Δp: -0.001 ± 0.016 %
+Maximum Δp: 17.134%
+Median  Δp:  0.000%
+RMS Δp    :  1.316 ± 0.092 %
+Same top p: 99.005 ± 0.122 %
+=== py
+0.01.840.987 I kl_divergence: computing over 11 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :   2.256630 ±   0.104435
+Mean PPL(base)                :   2.211967 ±   0.092903
+Cor(ln(PPL(Q)), ln(PPL(base))):  96.28%
+Mean ln(PPL(Q)/PPL(base))     :   0.019991 ±   0.012760
+Mean PPL(Q)/PPL(base)         :   1.020192 ±   0.013017
+Mean PPL(Q)-PPL(base)         :   0.044664 ±   0.029228
+Mean    KLD:   0.001202 ±   0.000100
+Maximum KLD:   0.165303
+99.9%   KLD:   0.053607
+99.0%   KLD:   0.020185
+95.0%   KLD:   0.006016
+90.0%   KLD:   0.002711
+Median  KLD:   0.000007
+10.0%   KLD:  -0.000001
+ 5.0%   KLD:  -0.000002
+ 1.0%   KLD:  -0.000004
+ 0.1%   KLD:  -0.000004
+Minimum KLD:  -0.000006
+Mean    Δp:  0.023 ± 0.019 %
+Maximum Δp: 15.454%
+Median  Δp:  0.000%
+RMS Δp    :  1.021 ± 0.071 %
+Same top p: 99.287 ± 0.159 %
+done

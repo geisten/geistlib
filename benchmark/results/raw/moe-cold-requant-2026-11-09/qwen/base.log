@@ -1,0 +1,15 @@
+cold: 0 of 128 experts per layer (Q8_0, least); their share of the selections: profile 0.00 %, held-out 0.00 %
+$W/qwen-base.gguf: 144 expert tensors rewritten, 31.80 GB of tensor data
+=== en
+0.13.947.262 I perplexity: calculating perplexity over 25 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.30.471.776 I Final estimate: PPL = 14.9259 +/- 0.59520
+=== de
+0.02.217.464 I perplexity: calculating perplexity over 23 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.18.178.080 I Final estimate: PPL = 12.9130 +/- 0.51461
+=== c
+0.02.196.612 I perplexity: calculating perplexity over 26 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.21.115.991 I Final estimate: PPL = 3.4974 +/- 0.11157
+=== py
+0.02.186.906 I perplexity: calculating perplexity over 11 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.09.605.916 I Final estimate: PPL = 2.2544 +/- 0.10391
+done

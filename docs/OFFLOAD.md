@@ -363,6 +363,7 @@ No new vtable slot for v0: upload, `linear_t` and download exist.
 | Offload on unified memory (Metal) | never: one memory, nothing to move; #49 showed Metal alone wins |
 | FFN-block granularity instead of per linear | activation transfers show up in the v0 profile |
 | Skipping the router's low-weight experts (Strata's `ROUTE_TAIL_SKIP`) | never as a default: every setting that removes real work misses the 0.5 % perplexity bar ([MOE_ROUTE_TAIL_2026-10-30.md](../benchmark/results/MOE_ROUTE_TAIL_2026-10-30.md), #240) |
+| Cold experts in lower precision (HOBBIT's mixed-precision expert cache) | not worth it: Q3_K holds the 0.5 % bar only on Qwen3-30B's least-used half (11.7 % of the selections), no more experts fit in VRAM, and Q3_K/IQ2_S experts are slower per token than Q4_K on Metal and cpu_neon ([MOE_COLD_EXPERT_PRECISION_2026-11-09.md](../benchmark/results/MOE_COLD_EXPERT_PRECISION_2026-11-09.md), #247) |
 
 ### Experts across GPUs, and fewer experts (#248)
 
