@@ -1376,6 +1376,17 @@ size_t transformer_head_dim_max(const struct transformer_arch_state *st) {
             st->m_max = 512;
         }
     }
+    /* On a CPU backend the chunk goes to the kernels' row limit (caps.max_m,
+     * 128) for the same reason (#374): at 64 rows a chunk gives an expert
+     * ~6-10 of them (DeepSeek-V2-Lite, gpt-oss-20b), near the decode
+     * kernels' efficiency, and every chunk streams the experts' weights
+     * again. 128 on the 9950X: pp512 gpt-oss-20b 86 -> 94, DeepSeek-V2-Lite
+     * 214 -> 266, Qwen3-30B-A3B 200 -> 247 tok/s. A hybrid (DeltaNet) model
+     * keeps the cap above. */
+    if (st->config.moe_n_experts > 0 && st->config.dn_n_v_heads == 0 && be->desc != nullptr &&
+        strncmp(be->desc->name, "cpu_", 4) == 0 && be->desc->caps.max_m > st->m_max) {
+        st->m_max = be->desc->caps.max_m;
+    }
 
     /* Per-model prefill knobs (prefill_tuning.h): the chunk gets the delta
      * for this family and weight size, and its OpenMP spin policy becomes
