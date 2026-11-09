@@ -447,6 +447,97 @@ bool attention_kv_items(size_t       i0,
     return true;
 }
 
+/* The heads [h0, h0 + nh) of query t, all of KV head kv_h, for
+ * attention_sinks_items: every K / V row is read (and widened) once for
+ * the whole run instead of once per head; each head's arithmetic is the
+ * one-head sequence (block by block, scores, running max, exp, values in
+ * key order). */
+enum { SINKS_RUN_MAX = 16 };
+static void attention_sinks_run(size_t       t,
+                                size_t       h0,
+                                size_t       nh,
+                                size_t       kv_h,
+                                size_t       n_kv,
+                                size_t       q_offset,
+                                size_t       n_q_heads,
+                                size_t       n_kv_heads,
+                                size_t       head_dim,
+                                size_t       sliding_window,
+                                bool         f16,
+                                const float *q,
+                                const void  *k,
+                                const void  *v,
+                                const float *sinks,
+                                float       *out) {
+    float        row[ATTN_F16_HEAD_DIM_MAX];
+    float        scores[SINKS_RUN_MAX][ATTN_F32_BLOCK];
+    float        max_score[SINKS_RUN_MAX];
+    double       sum_exp[SINKS_RUN_MAX];
+    const size_t q_pos = q_offset + t;
+    size_t       s_lo  = 0;
+    if (sliding_window > 0 && q_pos + 1 > sliding_window)
+        s_lo = q_pos + 1 - sliding_window;
+    const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1; /* inclusive */
+    const size_t base = t * n_q_heads + h0;
+    for (size_t g = 0; g < nh; g++) {
+        float *outv = out + (base + g) * head_dim;
+        for (size_t i = 0; i < head_dim; i++)
+            outv[i] = 0.0f;
+        /* The sink is one more logit with a zero value row: the softmax
+         * starts at its max with sum exp(0) = 1 and nothing accumulated. */
+        max_score[g] = sinks[h0 + g];
+        sum_exp[g]   = 1.0;
+    }
+    for (size_t b0 = s_lo; b0 <= s_hi && n_kv > 0; b0 += ATTN_F32_BLOCK) {
+        const size_t n = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
+        for (size_t j = 0; j < n; j++) {
+            const float *kr =
+                    kv_row(k, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
+            for (size_t g = 0; g < nh; g++) {
+                const float *qv  = q + (base + g) * head_dim;
+                float        dot = 0.0f;
+                for (size_t i = 0; i < head_dim; i++)
+                    dot += qv[i] * kr[i];
+                scores[g][j] = dot;
+            }
+        }
+        for (size_t g = 0; g < nh; g++) {
+            float *outv      = out + (base + g) * head_dim;
+            float  block_max = max_score[g];
+            for (size_t j = 0; j < n; j++)
+                if (scores[g][j] > block_max)
+                    block_max = scores[g][j];
+            if (block_max > max_score[g]) {
+                const float d = max_score[g] - block_max;
+                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
+                sum_exp[g] *= c;
+                for (size_t i = 0; i < head_dim; i++)
+                    outv[i] *= c;
+                max_score[g] = block_max;
+            }
+            for (size_t j = 0; j < n; j++) {
+                scores[g][j] = expf(fmaxf(scores[g][j] - max_score[g], ATTN_EXP_FLOOR));
+                sum_exp[g] += scores[g][j];
+            }
+        }
+        for (size_t j = 0; j < n; j++) {
+            const float *vr =
+                    kv_row(v, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
+            for (size_t g = 0; g < nh; g++) {
+                float *outv = out + (base + g) * head_dim;
+                for (size_t i = 0; i < head_dim; i++)
+                    outv[i] += scores[g][j] * vr[i];
+            }
+        }
+    }
+    for (size_t g = 0; g < nh; g++) {
+        float      *outv    = out + (base + g) * head_dim;
+        const float inv_sum = (float) (1.0 / sum_exp[g]);
+        for (size_t i = 0; i < head_dim; i++)
+            outv[i] *= inv_sum;
+    }
+}
+
 void attention_sinks_items(size_t       i0,
                            size_t       i1,
                            size_t       n_kv,
@@ -462,60 +553,34 @@ void attention_sinks_items(size_t       i0,
                            const float *sinks,
                            float       *out) {
     const size_t group = n_q_heads / n_kv_heads;
-    float        row[ATTN_F16_HEAD_DIM_MAX];
-    float        scores[ATTN_F32_BLOCK];
-    for (size_t idx = i0; idx < i1; idx++) {
-        const size_t t     = idx / n_q_heads;
-        const size_t h     = idx - t * n_q_heads;
-        const size_t kv_h  = h / group;
-        const size_t q_pos = q_offset + t;
-        size_t       s_lo  = 0;
-        if (sliding_window > 0 && q_pos + 1 > sliding_window)
-            s_lo = q_pos + 1 - sliding_window;
-        const size_t s_hi = q_pos < n_kv ? q_pos : n_kv - 1; /* inclusive */
-        const float *qv   = q + idx * head_dim;
-        float       *outv = out + idx * head_dim;
-        for (size_t i = 0; i < head_dim; i++)
-            outv[i] = 0.0f;
-        /* The sink is one more logit with a zero value row: the softmax
-         * starts at its max with sum exp(0) = 1 and nothing accumulated. */
-        float  max_score = sinks[h];
-        double sum_exp   = 1.0;
-        for (size_t b0 = s_lo; b0 <= s_hi && n_kv > 0; b0 += ATTN_F32_BLOCK) {
-            const size_t n         = s_hi - b0 < ATTN_F32_BLOCK ? s_hi - b0 + 1 : ATTN_F32_BLOCK;
-            float        block_max = max_score;
-            for (size_t j = 0; j < n; j++) {
-                const float *kr =
-                        kv_row(k, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
-                float dot = 0.0f;
-                for (size_t i = 0; i < head_dim; i++)
-                    dot += qv[i] * kr[i];
-                scores[j] = dot;
-                if (dot > block_max)
-                    block_max = dot;
-            }
-            if (block_max > max_score) {
-                const float d = max_score - block_max;
-                const float c = d < ATTN_EXP_FLOOR ? 0.0f : expf(d);
-                sum_exp *= c;
-                for (size_t i = 0; i < head_dim; i++)
-                    outv[i] *= c;
-                max_score = block_max;
-            }
-            for (size_t j = 0; j < n; j++) {
-                scores[j] = expf(fmaxf(scores[j] - max_score, ATTN_EXP_FLOOR));
-                sum_exp += scores[j];
-            }
-            for (size_t j = 0; j < n; j++) {
-                const float *vr =
-                        kv_row(v, f16, ((b0 + j) * n_kv_heads + kv_h) * head_dim, head_dim, row);
-                for (size_t i = 0; i < head_dim; i++)
-                    outv[i] += scores[j] * vr[i];
-            }
-        }
-        const float inv_sum = (float) (1.0 / sum_exp);
-        for (size_t i = 0; i < head_dim; i++)
-            outv[i] *= inv_sum;
+    /* Runs of consecutive items of one query that share a KV head (#374:
+     * gpt-oss's 64 query heads read 8 KV heads). */
+    for (size_t idx = i0; idx < i1;) {
+        const size_t t    = idx / n_q_heads;
+        const size_t h    = idx - t * n_q_heads;
+        const size_t kv_h = h / group;
+        size_t       nh   = (kv_h + 1) * group - h; /* to the group's end */
+        if (nh > i1 - idx)
+            nh = i1 - idx;
+        if (nh > SINKS_RUN_MAX)
+            nh = SINKS_RUN_MAX;
+        attention_sinks_run(t,
+                            h,
+                            nh,
+                            kv_h,
+                            n_kv,
+                            q_offset,
+                            n_q_heads,
+                            n_kv_heads,
+                            head_dim,
+                            sliding_window,
+                            f16,
+                            q,
+                            k,
+                            v,
+                            sinks,
+                            out);
+        idx += nh;
     }
 }
 
