@@ -1,0 +1,65 @@
+# Scratch (agent/issue-514-vk-probe, never merged): one probe script on the
+# desktop's RTX 2080 Ti for revisions of geistlib, under the bench + GPU locks.
+#   tea actions workflows dispatch --login git.geisten.net --repo geisten/geistlib \
+#     --ref agent/issue-514-vk-probe -i revs="main=origin/main" -i script=vk514_screen.sh vk-probe-514.yml
+name: vk-probe-514
+
+on:
+  workflow_dispatch:
+    inputs:
+      revs:
+        description: "revisions (label=rev), space separated; the first is the baseline"
+        default: "main=origin/main"
+      script:
+        description: "probe script under tools/probes of this branch"
+        default: vk514_screen.sh
+      model:
+        description: "olmoe | qwen3moe | gptoss | llama3b"
+        default: olmoe
+      args:
+        description: "extra args for the script"
+        default: ""
+
+jobs:
+  probe:
+    runs-on: geist-vulkan
+    timeout-minutes: 170
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: model
+        env:
+          MODEL_KEY: ${{ inputs.model }}
+        run: |
+          set -eo pipefail
+          U=""
+          case "$MODEL_KEY" in
+          olmoe) U=https://huggingface.co/allenai/OLMoE-1B-7B-0125-Instruct-GGUF/resolve/2ac1d2731792/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf; H=4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f ;;
+          qwen3moe) U=https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf; H=0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5 ;;
+          gptoss) U=https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf; H=27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901 ;;
+          llama3b) M=$HOME/geist-models/llama-3.2-3b-Q4_K_M.gguf ;;
+          *) echo "unknown model $MODEL_KEY"; exit 1 ;;
+          esac
+          [ -z "$U" ] || M=$(python3 tools/fetch_bench_model.py --url "$U" --sha256 "$H")
+          test -f "$M"
+          echo "MODEL_PATH=$M" >> "$GITHUB_ENV"
+      - name: probe
+        env:
+          REVS: ${{ inputs.revs }}
+          ARGS: ${{ inputs.args }}
+        run: |
+          set -eo pipefail
+          export PROBE_OUT="$RUNNER_TEMP/probe"
+          rm -rf "$PROBE_OUT"; mkdir -p "$PROBE_OUT"
+          git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
+          # shellcheck disable=SC2086
+          sh "tools/probes/${{ inputs.script }}" "$MODEL_PATH" $ARGS
+          cat "$PROBE_OUT"/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: vk-probe-514-${{ github.run_id }}
+          path: ${{ runner.temp }}/probe/
+          if-no-files-found: ignore
