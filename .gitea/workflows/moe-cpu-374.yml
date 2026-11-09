@@ -115,6 +115,21 @@ jobs:
               --make-arg TARGET=linux --make-arg "BACKENDS=cpu_x86 cpu_scalar" \
               --make-arg GEMM_PROVIDER=native --out-dir out/ab-$m 2>&1 | tee -a out/report.txt
           done
+      - name: Logits, 64- vs 128-row chunks (#507)
+        if: inputs.mode == 'logits'
+        env:
+          LOCK_NOTE: "#507 chunk 64 vs 128 logits (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          mkdir -p out
+          git fetch origin
+          git worktree add --detach "$RUNNER_TEMP/c507" origin/agent/issue-374-moe-cpu-chunk
+          make -C "$RUNNER_TEMP/c507" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build.log 2>&1 || { tail -40 out/build.log; exit 1; }
+          git -C "$RUNNER_TEMP/c507" rev-parse HEAD | tee out/head.txt
+          LOCK_PRIO=batch LOCK_MAX=40 ~/bin/with-desktop-lock sh tools/probes/chunk507_logits.sh \
+            "$RUNNER_TEMP/c507/bin/linux/release" cpu_x86 "$PWD/out/logits" "$GPTOSS" "$DEEPSEEK" "$QWEN3MOE" 2>&1 | tee out/report.txt
+          grep -h "backend=" out/logits/log_* | sort | uniq -c | tee -a out/report.txt
+          git worktree remove --force "$RUNNER_TEMP/c507"
       - name: Job summary
         if: always()
         run: |
