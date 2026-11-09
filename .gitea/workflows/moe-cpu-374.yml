@@ -119,7 +119,7 @@ jobs:
         if: inputs.mode == 'logits' || inputs.mode == 'ref'
         env:
           LOCK_NOTE: "#507 chunk 64 vs 128 logits (run ${{ github.run_id }})"
-          MODE: ${{ inputs.mode }}
+          PROBE_MODE: ${{ inputs.mode }}
         run: |
           set -o pipefail
           mkdir -p out
@@ -127,12 +127,12 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/c507" origin/agent/issue-374-moe-cpu-chunk
           make -C "$RUNNER_TEMP/c507" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build.log 2>&1 || { tail -40 out/build.log; exit 1; }
           git -C "$RUNNER_TEMP/c507" rev-parse HEAD | tee out/head.txt
-          if [ "$MODE" = logits ]; then
+          if [ "$PROBE_MODE" = logits ]; then
             LOCK_PRIO=batch LOCK_MAX=40 ~/bin/with-desktop-lock sh tools/probes/chunk507_logits.sh \
               "$RUNNER_TEMP/c507/bin/linux/release" cpu_x86 "$PWD/out/logits" "$GPTOSS" "$DEEPSEEK" "$QWEN3MOE" 2>&1 | tee out/report.txt
             grep -h "backend=" out/logits/log_* | sort | uniq -c | tee -a out/report.txt
           fi
-          if [ "$MODE" = ref ]; then
+          if [ "$PROBE_MODE" = ref ]; then
             make -C "$RUNNER_TEMP/c507" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin >> out/build.log 2>&1
             LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock sh tools/probes/chunk507_ref.sh \
               "$RUNNER_TEMP/c507/bin/linux/release" "$PWD/out/ref" "$GPTOSS" "$DEEPSEEK" "$QWEN3MOE" 2>&1 | tee -a out/report.txt
