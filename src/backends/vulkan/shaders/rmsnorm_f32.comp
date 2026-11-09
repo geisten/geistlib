@@ -1,6 +1,7 @@
 #version 450
 #extension GL_KHR_shader_subgroup_arithmetic : enable
 #extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_EXT_control_flow_attributes : enable
 
 layout(local_size_x = 256) in;
 
@@ -31,14 +32,7 @@ layout(push_constant) uniform Push {
  * lanes, Intel 8 or 16. */
 shared float partial[256];
 
-void main() {
-    uint row = gl_WorkGroupID.x;
-    uint lid = gl_LocalInvocationID.x;
-    float sum = 0.0;
-    for (uint j = lid; j < pc.feat; j += 256) {
-        float v = x[pc.x_offset + row * pc.feat + j];
-        sum = fma(v, v, sum);
-    }
+float row_total(float sum) {
     sum = subgroupAdd(sum);
     if (subgroupElect()) {
         partial[gl_SubgroupID] = sum;
@@ -48,10 +42,53 @@ void main() {
     for (uint i = 0; i < gl_NumSubgroups; i++) {
         total += partial[i];
     }
+    return total;
+}
 
-    float inv = inversesqrt(total / float(pc.feat) + pc.eps);
+/* A row of up to 256 * N: a lane's N elements are loaded by an unrolled
+ * loop, so the N loads are in flight together, and stay in registers for
+ * the second pass. The runtime-bound loop below issues them one after
+ * another; at 2048 that was eight dependent load latencies per pass (#514).
+ * Same sums in the same order as that loop: the results are identical. */
+#define RMS_REG(N)                                                              \
+    {                                                                           \
+        float v[N];                                                             \
+        [[unroll]] for (uint i = 0u; i < N; ++i) {                              \
+            uint j = lid + i * 256u;                                            \
+            v[i] = j < pc.feat ? x[xo + j] : 0.0;                               \
+        }                                                                       \
+        float sum = 0.0;                                                        \
+        [[unroll]] for (uint i = 0u; i < N; ++i) {                              \
+            sum = fma(v[i], v[i], sum);                                         \
+        }                                                                       \
+        float inv = inversesqrt(row_total(sum) / float(pc.feat) + pc.eps);      \
+        [[unroll]] for (uint i = 0u; i < N; ++i) {                              \
+            uint j = lid + i * 256u;                                            \
+            if (j < pc.feat) {                                                  \
+                y[yo + j] = v[i] * inv * w[pc.w_offset + j];                    \
+            }                                                                   \
+        }                                                                       \
+        return;                                                                 \
+    }
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+    uint xo = pc.x_offset + row * pc.feat;
+    uint yo = pc.y_offset + row * pc.feat;
+    if (pc.feat <= 256u) RMS_REG(1u)
+    if (pc.feat <= 512u) RMS_REG(2u)
+    if (pc.feat <= 1024u) RMS_REG(4u)
+    if (pc.feat <= 2048u) RMS_REG(8u)
+    if (pc.feat <= 4096u) RMS_REG(16u)
+
+    float sum = 0.0;
     for (uint j = lid; j < pc.feat; j += 256) {
-        uint idx = row * pc.feat + j;
-        y[pc.y_offset + idx] = x[pc.x_offset + idx] * inv * w[pc.w_offset + j];
+        float v = x[xo + j];
+        sum = fma(v, v, sum);
+    }
+    float inv = inversesqrt(row_total(sum) / float(pc.feat) + pc.eps);
+    for (uint j = lid; j < pc.feat; j += 256) {
+        y[yo + j] = x[xo + j] * inv * w[pc.w_offset + j];
     }
 }

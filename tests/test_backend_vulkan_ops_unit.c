@@ -546,6 +546,12 @@ int main(void) {
     test_elementwise(7, 129);
     test_rmsnorm(3, 2048);
     test_rmsnorm(1, 1000);
+    /* each register-cached width of rmsnorm_f32 (#514) and the loop past it */
+    test_rmsnorm(16, 128);
+    test_rmsnorm(2, 300);
+    test_rmsnorm(1, 640);
+    test_rmsnorm(1, 4096);
+    test_rmsnorm(2, 5000);
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
     test_qgate(1, 24, 256);
