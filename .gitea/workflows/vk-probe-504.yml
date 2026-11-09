@@ -14,6 +14,9 @@ on:
       args:
         description: "args for the script"
         default: ""
+      revs:
+        description: "geistlib revisions (label=rev), space separated"
+        default: "new=origin/agent/issue-504-vulkan-mla main=origin/main"
 
 jobs:
   probe:
@@ -26,6 +29,7 @@ jobs:
       - name: probe
         env:
           ARGS: ${{ inputs.args }}
+          REVS: ${{ inputs.revs }}
         run: |
           set -eo pipefail
           export PROBE_OUT="$RUNNER_TEMP/probe"
