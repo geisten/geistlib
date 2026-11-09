@@ -2,7 +2,9 @@
  * matvec_q6k_id_body.glsl. The includer declares x4, y and pc and defines
  * MV_BEGIN (statements opening main), W2_LOAD(i) (weight uvec2 i), W_ROW(e)
  * (byte e of the weight rows), X_BASE and Y_BASE (element offsets of the
- * x and y rows). Dispatch: gx = ceil(n_out / 8). */
+ * x and y rows). MV_SG_REDUCE (with the subgroup arithmetic extension): a
+ * warp's lanes are summed with subgroupAdd where a subgroup is one 32-lane
+ * warp (#505). Dispatch: gx = ceil(n_out / 8). */
 
 layout(local_size_x = 256) in;
 
@@ -71,6 +73,15 @@ void main() {
         }
     }
 
+#ifdef MV_SG_REDUCE
+    if (gl_SubgroupSize == 32u) {
+        sum = subgroupAdd(sum);
+        if (lane == 0u && row < pc.n_out) {
+            y[(Y_BASE) + row] = sum;
+        }
+        return;
+    }
+#endif
     red[lid] = sum;
     barrier();
     for (uint stride = 16u; stride > 0u; stride >>= 1u) {

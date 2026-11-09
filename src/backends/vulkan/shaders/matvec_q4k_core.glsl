@@ -2,6 +2,8 @@
  * matvec_q4k_id_body.glsl. The includer declares x4, y and pc and defines
  * MV_BEGIN (statements opening main), W_LOAD(i) / W4_LOAD(i) (weight word /
  * uvec4 i), X_BASE and Y_BASE (element offsets of the x and y rows).
+ * MV_SG_REDUCE (with the subgroup arithmetic extension): a warp's lanes are
+ * summed with subgroupAdd where a subgroup is one 32-lane warp (#505).
  * Dispatch: gx = ceil(n_out / 8). */
 
 layout(local_size_x = 64) in;
@@ -80,6 +82,21 @@ void main() {
         }
     }
 
+#ifdef MV_SG_REDUCE
+    if (gl_SubgroupSize == 32u) {
+        float v = 0.0;
+        [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+            float s = subgroupAdd(temp[n]);
+            if (lane == n) {
+                v = s;
+            }
+        }
+        if (lane < num_rows) {
+            y[(Y_BASE) + first_row + lane] = v;
+        }
+        return;
+    }
+#endif
     [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
         tmpsh[wrp][n][lane] = temp[n];
     }

@@ -1,6 +1,9 @@
 #version 450
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 #include "vk_limits.h"
 #define MV_SEL
+#define MV_SG_REDUCE /* #505: the MoE decode matvecs sum each warp in registers */
 #include "matvec_q6k_id_body.glsl"
