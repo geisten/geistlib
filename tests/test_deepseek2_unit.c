@@ -34,11 +34,13 @@
  *     cpu_scalar. A third split shape with a 512-dim latent (a 520-dim KV
  *     head, past the quantized caches' 512) runs on every CPU backend, an
  *     INT8 KV request getting the F16 cache instead;
- *   - Metal (#376), every shape: the experts on the GPU (dense lead layer,
- *     DeepSeek's router on the device) and the latent attention on the
- *     device, within 1e-5 of the double reference and of its own run with
- *     the experts on the CPU (GEIST_MOE_HOT=0). A GPU without device MLA
- *     (Vulkan) refuses the split layout, saying so.
+ *   - Metal (#376) and Vulkan (#504), every shape: the experts on the GPU
+ *     (dense lead layer, DeepSeek's router on the device) and the latent
+ *     attention on the device, within 1e-5 of the double reference and (Metal)
+ *     of its own run with the experts on the CPU (GEIST_MOE_HOT=0). A GPU
+ *     without device MLA (caps.mla_device) refuses the split layout, saying
+ *     so. Vulkan's default cache for the 520-dim head (F16) stays within
+ *     1e-3 of its FP32 one.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -50,6 +52,7 @@
 #include "gguf_reader.h"
 
 #include <geist.h>
+#include <geist_backend.h>
 #include <geist_util.h>
 
 #include <math.h>
@@ -457,7 +460,7 @@ static int check_backend(const char                *name,
     o.kv_mode                   = kv;
     const bool gpu              = strncmp(name, "cpu_", 4) != 0;
     if (geist_model_load_from_memory(b.b, b.n, be, &m) != GEIST_OK && g->split && gpu &&
-        strcmp(name, "metal") != 0) {
+        !be->desc->caps.mla_device) {
         const char *e = geist_backend_errmsg(be);
         printf("%s refuses the split layout: %s\n", name, e != nullptr ? e : "?");
         fails = geist_expect(e != nullptr && strstr(e, "absorbed") != nullptr,
@@ -611,6 +614,18 @@ static int check_wide(void) {
     const char  *cpus[] = {"cpu_scalar", "cpu_neon", "cpu_x86"};
     if (check_backend("cpu_scalar", &g, GEIST_KV_FP32, scalar) != 0)
         return fails + geist_expect(false, "cpu_scalar runs the wide head");
+    /* Vulkan (#504): its default for the wide head is the F16 cache
+     * (caps.kv_f16_by_default), against its FP32 one (F16 against FP32:
+     * 1.4e-4 on the CPU backends with F32 activations). */
+    if (check_backend("vulkan", &g, GEIST_KV_FP32, f32) == 0) {
+        const int r = check_backend("vulkan", &g, GEIST_KV_AUTO, dflt);
+        fails += geist_expect(r == 0, "Vulkan runs the wide head with its default cache");
+        if (r == 0) {
+            const double d = rel_l2_f(dflt, f32);
+            printf("vulkan default (F16) cache vs FP32 KV: relative L2 %.3g\n", d);
+            fails += geist_expect(d <= 1e-3, "Vulkan's F16 cache stays near its FP32 one");
+        }
+    }
     for (size_t i = 0; i < sizeof cpus / sizeof cpus[0]; i++) {
         if (check_backend(cpus[i], &g, GEIST_KV_FP32, f32) != 0)
             continue;

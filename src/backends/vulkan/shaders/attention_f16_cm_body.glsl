@@ -9,12 +9,18 @@
  * coopMatMulAdd per head_dim/16 tile -- no array-of-coopmat-in-a-loop
  * (measured 4x slower elsewhere, see matmul_pq2_0_cm_body.glsl).
  *
- * HD (the head_dim, 96 / 128 / 256 / 512) is fixed per variant by the including
- * .comp; the host routes only that head_dim to it. One workgroup writes
- * OHD = min(HD, 256) output columns (OT = OHD / 16 named O accumulators): at
- * HD 512 gl_WorkGroupID.z picks the half, both halves recompute QK^T over
- * all 512, which keeps the shared memory at ~41 KiB (Turing's default
- * limit is 48) and the accumulators at 16 per subgroup.
+ * HD (the head_dim, 96 / 128 / 192 / 256 / 512 / 576) is fixed per variant
+ * by the including .comp; the host routes only that head_dim to it. One
+ * workgroup writes OHD = min(HD, 256) output columns (OT = OHD / 16 named O
+ * accumulators): at HD 512 gl_WorkGroupID.z picks the half, both halves
+ * recompute QK^T over all 512, which keeps the shared memory at ~41 KiB
+ * (Turing's default limit is 48) and the accumulators at 16 per subgroup.
+ * HD 576 (absorbed MLA's one KV head, #504) writes thirds of 192: halves of
+ * 288 would need 47.5 KiB and 18 accumulators.
+ *
+ * KV_F32 (defined by the including .comp): K and V come from an FP32 cache
+ * (the default for heads past 512, #375) and are rounded to half in the
+ * shared tiles, as Q always is, instead of in the cache.
  *
  * sliding_window > 0 limits row q to keys [q + 1 - window, q], as
  * attention_f16.comp does; key tiles before the first row's window are
@@ -41,8 +47,15 @@
 layout(local_size_x = 32) in;
 
 layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
+#ifdef KV_F32
+layout(set = 0, binding = 1) readonly buffer K { vec4 k4[]; };
+layout(set = 0, binding = 2) readonly buffer V { vec4 v4[]; };
+#define PACK_KV pack_f32x8
+#else
 layout(set = 0, binding = 1) readonly buffer K { f16vec4 k4[]; };
 layout(set = 0, binding = 2) readonly buffer V { f16vec4 v4[]; };
+#define PACK_KV pack_f16x8
+#endif
 layout(set = 0, binding = 3) writeonly buffer Out { float out_v[]; };
 
 layout(push_constant) uniform Push {
@@ -62,7 +75,14 @@ layout(push_constant) uniform Push {
 const uint BR = 16u;
 const uint BC = 16u;
 const uint HD_U4 = uint(HD) / 8u; /* uvec4 (8 f16) per K/Q row */
-const uint OHD   = HD > 256 ? 256u : uint(HD);
+#if HD > 512
+#define OHD_M 192
+#elif HD > 256
+#define OHD_M 256
+#else
+#define OHD_M HD
+#endif
+const uint OHD   = uint(OHD_M);
 const uint O_U4  = OHD / 8u; /* uvec4 per V row slice this workgroup reads */
 const uint OT    = OHD / 16u;
 
@@ -135,7 +155,7 @@ void main() {
             uint j    = idx % HD_U4;
             uint kpos = min(kv0 + c, pc.n_kv - 1u);
             uint base = (pc.k_offset >> 2u) + kpos * kv_row4 + kv_head * hd4 + j * 2u;
-            Ksh[idx]  = pack_f16x8(k4[base], k4[base + 1u]);
+            Ksh[idx]  = PACK_KV(k4[base], k4[base + 1u]);
         }
         barrier();
 
@@ -172,7 +192,7 @@ void main() {
     }
 
     /* ---- pass B: exp(s - m_final), accumulate l and O = P @ V ----
-     * OT (6, 8 or 16) named accumulators, not an array indexed in a loop
+     * OT (6, 8, 12 or 16) named accumulators, not an array indexed in a loop
      * (measured 4x slower elsewhere, see matmul_pq2_0_cm_body.glsl). */
 #define GEIST_ATTN_CM_DECLO(N)                                                        \
     coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> O##N =          \
@@ -183,15 +203,17 @@ void main() {
     GEIST_ATTN_CM_DECLO(3)
     GEIST_ATTN_CM_DECLO(4)
     GEIST_ATTN_CM_DECLO(5)
-#if HD > 96
+#if OHD_M > 96
     GEIST_ATTN_CM_DECLO(6)
     GEIST_ATTN_CM_DECLO(7)
 #endif
-#if HD > 128
+#if OHD_M > 128
     GEIST_ATTN_CM_DECLO(8)
     GEIST_ATTN_CM_DECLO(9)
     GEIST_ATTN_CM_DECLO(10)
     GEIST_ATTN_CM_DECLO(11)
+#endif
+#if OHD_M > 192
     GEIST_ATTN_CM_DECLO(12)
     GEIST_ATTN_CM_DECLO(13)
     GEIST_ATTN_CM_DECLO(14)
@@ -206,14 +228,14 @@ void main() {
             uint j    = idx % HD_U4;
             uint kpos = min(kv0 + c, pc.n_kv - 1u);
             uint base = (pc.k_offset >> 2u) + kpos * kv_row4 + kv_head * hd4 + j * 2u;
-            Ksh[idx]  = pack_f16x8(k4[base], k4[base + 1u]);
+            Ksh[idx]  = PACK_KV(k4[base], k4[base + 1u]);
         }
         for (uint idx = lid; idx < BC * O_U4; idx += 32u) {
             uint c     = idx / O_U4;
             uint j     = idx % O_U4;
             uint kpos  = min(kv0 + c, pc.n_kv - 1u);
             uint vbase = (pc.v_offset >> 2u) + kpos * kv_row4 + kv_head * hd4 + (ocol_u4 + j) * 2u;
-            Vsh[idx]   = pack_f16x8(v4[vbase], v4[vbase + 1u]);
+            Vsh[idx]   = PACK_KV(v4[vbase], v4[vbase + 1u]);
         }
         barrier();
 
@@ -276,15 +298,17 @@ void main() {
         GEIST_ATTN_CM_PV(3, 6u)
         GEIST_ATTN_CM_PV(4, 8u)
         GEIST_ATTN_CM_PV(5, 10u)
-#if HD > 96
+#if OHD_M > 96
         GEIST_ATTN_CM_PV(6, 12u)
         GEIST_ATTN_CM_PV(7, 14u)
 #endif
-#if HD > 128
+#if OHD_M > 128
         GEIST_ATTN_CM_PV(8, 16u)
         GEIST_ATTN_CM_PV(9, 18u)
         GEIST_ATTN_CM_PV(10, 20u)
         GEIST_ATTN_CM_PV(11, 22u)
+#endif
+#if OHD_M > 192
         GEIST_ATTN_CM_PV(12, 24u)
         GEIST_ATTN_CM_PV(13, 26u)
         GEIST_ATTN_CM_PV(14, 28u)
@@ -319,15 +343,17 @@ void main() {
     GEIST_ATTN_CM_FINISH(O3, 3u)
     GEIST_ATTN_CM_FINISH(O4, 4u)
     GEIST_ATTN_CM_FINISH(O5, 5u)
-#if HD > 96
+#if OHD_M > 96
     GEIST_ATTN_CM_FINISH(O6, 6u)
     GEIST_ATTN_CM_FINISH(O7, 7u)
 #endif
-#if HD > 128
+#if OHD_M > 128
     GEIST_ATTN_CM_FINISH(O8, 8u)
     GEIST_ATTN_CM_FINISH(O9, 9u)
     GEIST_ATTN_CM_FINISH(O10, 10u)
     GEIST_ATTN_CM_FINISH(O11, 11u)
+#endif
+#if OHD_M > 192
     GEIST_ATTN_CM_FINISH(O12, 12u)
     GEIST_ATTN_CM_FINISH(O13, 13u)
     GEIST_ATTN_CM_FINISH(O14, 14u)

@@ -59,13 +59,20 @@
 /* qkv_prep_f{16,32}: one head row in shared memory. */
 #define VK_QKV_PREP_MAX_HEAD_DIM 512u
 
-/* attention_f{16,32} and attn_part_f16: q staged in shared memory. */
-#define VK_ATTN_MAX_HEAD_DIM 512u
-/* attn_part_f16{,_g2}: lanes per workgroup (>= VK_ATTN_MAX_HEAD_DIM / 4: a
- * lane per 4-wide dim slice), the largest tile of key positions it scores at
- * once, and the most q-heads of a GQA group one workgroup serves (q staged
- * as MAX_GROUP x MAX_HEAD_DIM floats; the _g2 variant serves up to 2). */
+/* attention_f{16,32}: q staged in shared memory. 576: absorbed MLA's one
+ * KV head of [k_pe | latent] (DeepSeek-V3, GigaChat3; #504). */
+#define VK_ATTN_MAX_HEAD_DIM 576u
+/* attention_sinks_f{16,32}: the same, for GPT-OSS-type heads. */
+#define VK_ATTN_SINKS_MAX_HEAD_DIM 512u
+/* attn_part_f16{,_g2}: lanes per workgroup (>= VK_ATTN_PART_MAX_HEAD_DIM /
+ * 4: a lane per 4-wide dim slice), the largest tile of key positions it
+ * scores at once, and the most q-heads of a GQA group one workgroup serves
+ * (q staged as MAX_GROUP x MAX_HEAD_DIM floats; the _g2 variant serves up
+ * to 2). attn_part_{f16,f32}_mla: the same kernel for heads past 512 (the
+ * absorbed MLA's 576), at VK_ATTN_PART_MLA_WG lanes. */
+#define VK_ATTN_PART_MAX_HEAD_DIM 512u
 #define VK_ATTN_PART_WG 128u
+#define VK_ATTN_PART_MLA_WG 256u
 #define VK_ATTN_PART_TILE_MAX 64u
 #define VK_ATTN_PART_MAX_GROUP 4u
 /* attn_part_f16 dispatch size the host aims for (ops.c). */

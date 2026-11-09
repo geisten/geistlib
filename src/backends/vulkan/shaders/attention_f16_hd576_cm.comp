@@ -1,0 +1,8 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Tensor-core prefill attention, head_dim 576 (absorbed MLA's one KV head,
+ * #504), three column thirds in z. Body and notes:
+ * attention_f16_cm_body.glsl. */
+#define HD 576
+#include "attention_f16_cm_body.glsl"

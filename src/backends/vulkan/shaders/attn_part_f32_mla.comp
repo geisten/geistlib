@@ -1,0 +1,11 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+/* attn_part_f16_mla.comp on the FP32 cache, which heads past 512 get by
+ * default (#375). Body and notes: attn_part_f16_body.glsl. */
+#define GROUP 4u
+#define PART_WG VK_ATTN_PART_MLA_WG
+#define PART_MAX_HD VK_ATTN_MAX_HEAD_DIM
+#define PART_MLA 1
+#define KV_F32 1
+#include "attn_part_f16_body.glsl"
