@@ -21,7 +21,11 @@
 #include "kivi.h"
 #include "par.h"
 
+#include "clock.h"
 #include <math.h>
+#include <stdatomic.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -315,6 +319,28 @@ enum geist_status transformer_kv_store_append_row(struct transformer_layer_forwa
     return s;
 }
 
+/* #374 profile only: GEIST_MOE_UTIL=1 prints the host sinks attention's time. */
+static _Atomic uint64_t g_sinks_ns[2], g_sinks_n[2];
+static void             sinks_prof_print(void) {
+    for (int p = 0; p < 2; p++)
+        if (atomic_load(&g_sinks_n[p]))
+            fprintf(stderr, "sinks attention %s: %.1f ms in %llu calls\n", p ? "prefill" : "decode",
+                    (double) atomic_load(&g_sinks_ns[p]) / 1e6, (unsigned long long) atomic_load(&g_sinks_n[p]));
+}
+static void sinks_prof_add(int p, uint64_t ns) {
+    static _Atomic int on = -1;
+    if (atomic_load(&on) < 0) {
+        const char *e = getenv("GEIST_MOE_UTIL");
+        atomic_store(&on, e != nullptr && e[0] == '1');
+        if (atomic_load(&on))
+            atexit(sinks_prof_print);
+    }
+    if (atomic_load(&on)) {
+        atomic_fetch_add(&g_sinks_ns[p], ns);
+        atomic_fetch_add(&g_sinks_n[p], 1);
+    }
+}
+
 /* Attention with sinks (#243) on the host: the (query, head) rows split
  * over threads, attention_sinks_items each. */
 struct attn_sinks_job {
@@ -397,7 +423,9 @@ kv_store_attention_sinks(struct transformer_layer_forward_ctx *ctx,
     if (ok) {
         j.q   = (const float *) ((const uint8_t *) j.q + t_q->offset);
         j.out = (float *) ((uint8_t *) j.out + t_out->offset);
+        const uint64_t t_s0 = geist_now_ns();
         geist_par_for(ctx->seq * st->n_q_heads, attn_sinks_range, &j);
+        sinks_prof_add(ctx->seq > 1, geist_now_ns() - t_s0);
     }
     struct geist_buffer *mapped[] = {
             t_q->buffer, ctx->k_cache_buf, ctx->v_cache_buf, t_out->buffer};
