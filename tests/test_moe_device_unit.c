@@ -339,6 +339,31 @@ static int test_route(struct geist_backend *be) {
     bad[5] = NAN;
     fails += check_route(be, "route with a NaN", 1, 16, 4, true, false, nullptr, bad, true);
     fails += check_route(be, "route with a NaN and a bias", 1, 16, 4, false, true, bias, bad, true);
+
+    /* #514: the router widths of OLMoE (64, top 8) and Qwen3-MoE (128, top
+     * 8, renormalised), the widest the one-subgroup path takes on 32 lanes
+     * (256) and one past it, with ties across lanes and a NaN. */
+    static float wide[2 * 300], wbias[300];
+    for (size_t i = 0; i < 300; i++) {
+        wide[i]       = (float) rng_u8() / 32.0f - 4.0f;
+        wide[300 + i] = (float) ((i * 7) % 5); /* ties: every fifth value */
+        wbias[i]      = (float) rng_u8() / 64.0f - 2.0f;
+    }
+    static const size_t widths[] = {64, 128, 256, 257};
+    for (size_t i = 0; i < sizeof widths / sizeof widths[0]; i++) {
+        const size_t n = widths[i];
+        float        rows[2 * 300];
+        memcpy(rows, wide, n * sizeof(float));
+        memcpy(rows + n, wide + 300, n * sizeof(float));
+        char what[64];
+        snprintf(what, sizeof what, "route n=%zu k=8", n);
+        fails += check_route(be, what, 2, n, 8, false, false, nullptr, rows, false);
+        snprintf(what, sizeof what, "route n=%zu k=8 renormalised, bias", n);
+        fails += check_route(be, what, 2, n, 8, true, false, wbias, rows, false);
+        rows[n / 2] = NAN;
+        snprintf(what, sizeof what, "route n=%zu with a NaN", n);
+        fails += check_route(be, what, 1, n, 8, true, false, nullptr, rows, true);
+    }
     return fails;
 }
 

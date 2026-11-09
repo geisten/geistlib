@@ -1,6 +1,7 @@
 #version 450
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_control_flow_attributes : enable
 #include "vk_limits.h"
 
 /* Mixture-of-experts routing on the device (#162; #499: every router
@@ -68,6 +69,85 @@ shared float red[128]; /* one partial per subgroup */
 shared uint bad;
 shared uint n_ok;
 
+/* The plain router in one subgroup (#514), without shared memory or a
+ * barrier: lane l holds the logits l, l + S, ... (S the subgroup size), the
+ * row's maximum and the softmax's sum reduce in registers, and each of the
+ * k picks is a subgroupMax over the lanes' best untaken logits, ties to the
+ * lowest id (subgroupMin), so the picks come out in rank order as above.
+ * The weights are the same softmax probabilities; only the order of the
+ * sum's terms differs. The workgroup path took 10.7 us per OLMoE layer
+ * (64 experts, top 8) on the RTX 2080 Ti, llama.cpp's topk_moe 4.5 us. */
+const uint SG_PER = 8u; /* logits per lane: n <= 8 * the subgroup size */
+
+void topk_subgroup(uint t, uint base) {
+    const float NEG = uintBitsToFloat(0xff800000u);
+    uint lane = gl_SubgroupInvocationID;
+    uint sgs = gl_SubgroupSize;
+    float v[SG_PER];
+    uint nonfinite = 0u;
+    float mx = NEG;
+    [[unroll]] for (uint c = 0u; c < SG_PER; ++c) {
+        uint i = lane + c * sgs;
+        float x = NEG;
+        if (i < pc.n) {
+            x = lg[base + i];
+            if (pc.hb != 0u) {
+                x += bs[pc.bo + i];
+            }
+            if ((floatBitsToUint(x) & 0x7f800000u) == 0x7f800000u) {
+                nonfinite = 1u;
+                x = NEG;
+            }
+        }
+        v[c] = x;
+        mx = max(mx, x);
+    }
+    bool bad_row = subgroupMax(nonfinite) != 0u;
+    mx = bad_row ? 0.0 : subgroupMax(mx);
+    float z = 0.0;
+    [[unroll]] for (uint c = 0u; c < SG_PER; ++c) {
+        z += v[c] == NEG ? 0.0 : exp(v[c] - mx);
+    }
+    z = subgroupAdd(z);
+    uint taken = 0u;
+    float tot = 0.0;
+    uint io0 = pc.io + t * pc.k;
+    uint wo0 = pc.wo + t * pc.k;
+    for (uint r = 0u; r < pc.k; ++r) {
+        float bv = NEG;
+        uint bi = 0xffffffffu;
+        [[unroll]] for (uint c = 0u; c < SG_PER; ++c) {
+            uint i = lane + c * sgs;
+            if (i < pc.n && (taken & (1u << c)) == 0u && (bi == 0xffffffffu || v[c] > bv)) {
+                bv = v[c];
+                bi = i;
+            }
+        }
+        float m = subgroupMax(bv);
+        uint win = subgroupMin(bv == m ? bi : 0xffffffffu);
+        if (win % sgs == lane) {
+            taken |= 1u << (win / sgs);
+        }
+        if (lane == 0u) {
+            float p = z > 0.0 ? exp(m - mx) / z : 0.0;
+            ids[io0 + r] = win;
+            w[wo0 + r] = p;
+            tot += p;
+        }
+    }
+    if (lane != 0u) {
+        return;
+    }
+    if (bad_row) {
+        ids[pc.flag] = 1u;
+    }
+    if (pc.norm != 0u && tot > 0.0) {
+        for (uint r = 0u; r < pc.k; ++r) {
+            w[wo0 + r] /= tot;
+        }
+    }
+}
+
 void main() {
     uint t = gl_WorkGroupID.x;
     uint ti = gl_LocalInvocationID.x;
@@ -75,6 +155,12 @@ void main() {
     const float NEG = uintBitsToFloat(0xff800000u);
     bool plain = pc.gate == 0u && pc.hs == 0u && pc.ng <= 1u &&
                  (pc.scale == 0.0 || pc.scale == 1.0);
+    if (plain && gl_SubgroupSize >= 32u && pc.n <= SG_PER * gl_SubgroupSize && pc.k <= pc.n) {
+        if (gl_SubgroupID == 0u) {
+            topk_subgroup(t, base);
+        }
+        return;
+    }
     if (ti == 0u) {
         bad = 0u;
         n_ok = 0u;
