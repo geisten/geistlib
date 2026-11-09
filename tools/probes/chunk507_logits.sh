@@ -51,3 +51,4 @@ bits = open(f'{o}/final_{n}_64.bin','rb').read() == open(f'{o}/final_{n}_128.bin
 print(f"| {n} | {be} | {'identical' if bits else f'{fm:.3g} / {fr:.3g}'} | {'yes' if ft else 'NO'} | {mx:.3g} / {rl:.3g} | {agree}/{k} | {same}/{len(g64)}" + ("" if first is None else f" (first differs at step {first})") + " |")
 PY
 done
+rm -f "$O"/*.bin # large (vocab x 128 rows); the table above is the result
