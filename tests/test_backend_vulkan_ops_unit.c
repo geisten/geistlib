@@ -417,13 +417,13 @@ static void test_row_views(size_t rows, size_t cols, size_t off, size_t stride) 
     printf("  rmsnorm view %zux%zu @%zu/%zu  max_abs %.2e\n", rows, cols, off, stride, e);
     check(e < 1e-5, "rmsnorm on a row view, the gaps untouched");
 
-    /* scale: the normed view into y's view (offset 0), then y's view into a
-     * contiguous tensor, then zeros into y's view */
+    /* scale: the normed view (the device's bytes) into y's view (offset 0),
+     * then y's view into a contiguous tensor, then zeros into y's view */
     float *yref = malloc(n * sizeof(float));
     memcpy(yref, x, n * sizeof(float));
     for (size_t r = 0; r < rows; r++)
         for (size_t i = 0; i < cols; i++)
-            yref[r * stride + i] = ref[r * stride + off + i] * 0.5f;
+            yref[r * stride + i] = got[r * stride + off + i] * 0.5f;
     check(g_be->desc->prims->scale_f32(g_be, &tx, 0.5f, &ty) == GEIST_OK, "scale view -> view");
     check(download(by, got, n), "scale download");
     e = geist_test_max_abs(n, got, yref);
