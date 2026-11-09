@@ -1,0 +1,9 @@
+#version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#include "vk_limits.h"
+
+/* rope_append_body.glsl with an F16 KV cache (offsets in f16 elements). */
+#define KV_T float16_t
+#include "rope_append_body.glsl"

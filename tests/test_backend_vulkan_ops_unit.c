@@ -338,6 +338,169 @@ static void test_argmax(size_t n, size_t tie_at) {
     check(got == (int32_t) best, "argmax");
     g_be->desc->vtbl->buffer_destroy(g_be, bx);
     free(x);
+static struct geist_tensor
+dense3(struct geist_buffer *b, int dtype, size_t d0, size_t d1, size_t d2) {
+    return (struct geist_tensor) {.buffer = b,
+                                  .dtype  = dtype,
+                                  .layout = GEIST_LAYOUT_DENSE,
+                                  .ndim   = 3,
+                                  .shape  = {(int64_t) d0, (int64_t) d1, (int64_t) d2},
+                                  .stride = {(int64_t) (d1 * d2), (int64_t) d2, 1}};
+}
+
+/* The largest |a - b| of n values, F16 when f16 (raw halves). */
+static double cache_diff(const uint8_t *a, const uint8_t *b, size_t n, bool f16) {
+    double e = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        float x, y;
+        if (f16) {
+            uint16_t ha, hb;
+            memcpy(&ha, a + 2 * i, 2);
+            memcpy(&hb, b + 2 * i, 2);
+            x = fp16_to_fp32(ha);
+            y = fp16_to_fp32(hb);
+        } else {
+            memcpy(&x, a + 4 * i, 4);
+            memcpy(&y, b + 4 * i, 4);
+        }
+        e = fmax(e, fabs((double) x - (double) y));
+    }
+    return e;
+}
+
+/* attn_rope_append (#514) against the Vulkan ops it replaces: per-head
+ * rmsnorm (with_norm), rope_apply over n_rot, scale_f32 and the F16 or F32
+ * KV append at row qp. The same arithmetic in the same order; the driver
+ * may contract differently, so within 1e-6 of the scale, not bit for bit. */
+static void test_rope_append(size_t rows,
+                             size_t qh,
+                             size_t kvh,
+                             size_t hd,
+                             size_t n_rot,
+                             size_t qp,
+                             bool   with_norm,
+                             bool   f16) {
+    const struct geist_backend_vtbl  *v  = g_be->desc->vtbl;
+    const struct geist_backend_fused *f  = geist_backend_fused_tbl(g_be);
+    const size_t                      nq = rows * qh * hd, nk = rows * kvh * hd;
+    const size_t                      crow = qp + rows, ncach = crow * kvh * hd;
+    const size_t                      cfl   = f16 ? (ncach + 1) / 2 : ncach; /* floats */
+    const float                       scale = 0.08838835f;
+    float                            *q     = geist_test_fill(nq, 0.37f, 0.3f, 4.0f, 0.0f),
+          *k                                = geist_test_fill(nk, 0.29f, 0.3f, 3.0f, 0.0f),
+          *vv                               = geist_test_fill(nk, 0.17f, 0.3f, 2.0f, 0.0f),
+          *qw                               = geist_test_fill(hd, 0.13f, 0.3f, 1.5f, 1.0f),
+          *kw = geist_test_fill(hd, 0.11f, 0.3f, 1.5f, 1.0f), *co = malloc(rows * n_rot * 4),
+          *si = malloc(rows * n_rot * 4), *zero = calloc(cfl, sizeof(float));
+    for (size_t i = 0; i < rows * n_rot; i++) {
+        const float a = (float) (qp + i / n_rot) * 0.37f / (float) (1u + i % n_rot);
+        co[i]         = cosf(a);
+        si[i]         = sinf(a);
+    }
+    struct geist_buffer *bq[2] = {dev_buf(q, nq), dev_buf(q, nq)},
+                        *bk[2] = {dev_buf(k, nk), dev_buf(k, nk)}, *bv = dev_buf(vv, nk),
+                        *bqw = dev_buf(qw, hd), *bkw = dev_buf(kw, hd),
+                        *bc = dev_buf(co, rows * n_rot), *bs = dev_buf(si, rows * n_rot),
+                        *bkc[2] = {dev_buf(zero, cfl), dev_buf(zero, cfl)},
+                        *bvc[2] = {dev_buf(zero, cfl), dev_buf(zero, cfl)};
+    check(bq[0] && bq[1] && bk[0] && bk[1] && bv && bqw && bkw && bc && bs && bkc[0] && bkc[1] &&
+                  bvc[0] && bvc[1] && f->attn_rope_append != nullptr,
+          "rope_append buffers");
+    const int           cdt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
+    struct geist_tensor tq  = dense3(bq[0], GEIST_DTYPE_F32, rows, qh, hd),
+                        tk  = dense3(bk[0], GEIST_DTYPE_F32, rows, kvh, hd),
+                        tv  = dense3(bv, GEIST_DTYPE_F32, rows, kvh, hd),
+                        tkc = dense3(bkc[0], cdt, crow, kvh, hd),
+                        tvc = dense3(bvc[0], cdt, crow, kvh, hd),
+                        tqw = geist_test_tensor_f32(bqw, 1, (int64_t) hd, 0, 0),
+                        tkw = geist_test_tensor_f32(bkw, 1, (int64_t) hd, 0, 0),
+                        tc  = geist_test_tensor_f32(bc, 2, (int64_t) rows, (int64_t) n_rot, 0),
+                        ts  = geist_test_tensor_f32(bs, 2, (int64_t) rows, (int64_t) n_rot, 0);
+    enum geist_status   st  = f->attn_rope_append(g_be,
+                                                  &tq,
+                                                  &tk,
+                                                  &tv,
+                                                  with_norm ? &tqw : nullptr,
+                                                  with_norm ? &tkw : nullptr,
+                                                  &tc,
+                                                  &ts,
+                                                  1e-6f,
+                                                  scale,
+                                                  qp,
+                                                  &tkc,
+                                                  &tvc);
+    check(st == GEIST_OK, "rope_append dispatch");
+    /* the separate ops on the copies */
+    struct geist_tensor
+            tq2  = dense3(bq[1], GEIST_DTYPE_F32, rows, qh, hd),
+            tk2  = dense3(bk[1], GEIST_DTYPE_F32, rows, kvh, hd),
+            qh2  = geist_test_tensor_f32(bq[1], 2, (int64_t) (rows * qh), (int64_t) hd, 0),
+            kh2  = geist_test_tensor_f32(bk[1], 2, (int64_t) (rows * kvh), (int64_t) hd, 0),
+            qrow = geist_test_tensor_f32(bq[1], 2, (int64_t) rows, (int64_t) (qh * hd), 0),
+            tkc2 = dense3(bkc[1], cdt, crow, kvh, hd), tvc2 = dense3(bvc[1], cdt, crow, kvh, hd);
+    const struct geist_backend_primitives *p = g_be->desc->prims;
+    st                                       = GEIST_OK;
+    if (with_norm)
+        st = p->rmsnorm(g_be, &qh2, &tqw, 1e-6f, &qh2);
+    if (st == GEIST_OK)
+        st = p->rope_apply(g_be, &tq2, &tc, &ts);
+    if (st == GEIST_OK)
+        st = p->scale_f32(g_be, &qrow, scale, &qrow);
+    if (st == GEIST_OK && with_norm)
+        st = p->rmsnorm(g_be, &kh2, &tkw, 1e-6f, &kh2);
+    if (st == GEIST_OK)
+        st = p->rope_apply(g_be, &tk2, &tc, &ts);
+    if (st == GEIST_OK && f16) {
+        st = f->kv_append_f16(g_be, &tk2, &tv, qp, &tkc2, &tvc2);
+    } else if (st == GEIST_OK) {
+        const size_t row_bytes = kvh * hd * sizeof(float);
+        st                     = v->buffer_copy(bkc[1], qp * row_bytes, bk[1], 0, rows * row_bytes);
+        if (st == GEIST_OK)
+            st = v->buffer_copy(bvc[1], qp * row_bytes, bv, 0, rows * row_bytes);
+    }
+    check(st == GEIST_OK, "rope_append reference ops");
+    float   *g[4] = {malloc(nq * 4), malloc(nq * 4), malloc(nk * 4), malloc(nk * 4)};
+    uint8_t *c[4] = {malloc(cfl * 4), malloc(cfl * 4), malloc(cfl * 4), malloc(cfl * 4)};
+    check(download(bq[0], g[0], nq) && download(bq[1], g[1], nq) && download(bk[0], g[2], nk) &&
+                  download(bk[1], g[3], nk) && download(bkc[0], (float *) c[0], cfl) &&
+                  download(bkc[1], (float *) c[1], cfl) && download(bvc[0], (float *) c[2], cfl) &&
+                  download(bvc[1], (float *) c[3], cfl),
+          "rope_append download");
+    const double eq = geist_test_max_abs(nq, g[0], g[1]), ek = geist_test_max_abs(nk, g[2], g[3]);
+    const double ekc = cache_diff(c[0], c[1], ncach, f16), evc = cache_diff(c[2], c[3], ncach, f16);
+    printf("  rope_append %zux%zu/%zux%zu rot %zu qp %zu%s%s  q %.1e k %.1e kc %.1e vc %.1e\n",
+           rows,
+           qh,
+           kvh,
+           hd,
+           n_rot,
+           qp,
+           with_norm ? " norm" : "",
+           f16 ? " f16" : " f32",
+           eq,
+           ek,
+           ekc,
+           evc);
+    /* q, k: values below 8, so at most one f16 ulp (2^-8 * 2) in the cache */
+    check(eq < 1e-5 && ek < 1e-5 && ekc < (f16 ? 8e-3 : 1e-5) && evc == 0.0, "rope_append");
+    for (size_t i = 0; i < 4; i++) {
+        free(g[i]);
+        free(c[i]);
+    }
+    struct geist_buffer *all[] = {
+            bq[0], bq[1], bk[0], bk[1], bv, bqw, bkw, bc, bs, bkc[0], bkc[1], bvc[0], bvc[1]};
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) {
+        if (all[i] != nullptr)
+            v->buffer_destroy(g_be, all[i]);
+    }
+    free(q);
+    free(k);
+    free(vv);
+    free(qw);
+    free(kw);
+    free(co);
+    free(si);
+    free(zero);
 }
 
 /* rmsnorm and rmsnorm_add on VRAM-only buffers, against a double-precision
@@ -589,6 +752,14 @@ int main(void) {
     test_argmax(4096, 4000);
     test_argmax(50304, 11);
     test_argmax(151936, 151935);
+    /* OLMoE decode (16x128 MHA, whole-row norms upstream), Llama GQA prefill,
+     * Qwen3 with per-head norms, a partial rotation, hd 512, F32 caches */
+    test_rope_append(1, 16, 16, 128, 128, 37, false, true);
+    test_rope_append(7, 24, 8, 128, 128, 0, false, true);
+    test_rope_append(3, 16, 8, 128, 128, 5, true, true);
+    test_rope_append(2, 8, 2, 256, 64, 9, true, false);
+    test_rope_append(2, 4, 1, 512, 512, 3, true, true);
+    test_rope_append(1, 6, 2, 96, 96, 300, false, false);
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
     test_qgate(1, 24, 256);
