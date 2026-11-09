@@ -317,7 +317,9 @@ static double cosine(const float a[static VOCAB], const float b[static VOCAB]) {
 
 /* One backend. Writes its chunked logits to `out`. Returns failures, or -1
  * when not built. */
-static int check_backend(const char *name, float out[static VOCAB]) {
+/* `out`: the logits after the prompt; `out1`, when not nullptr, after one
+ * more token (a decode step). */
+static int check_backend(const char *name, float out[static VOCAB], float *out1) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK) {
         printf("skip %s: not in this build\n", name);
@@ -350,6 +352,8 @@ static int check_backend(const char *name, float out[static VOCAB]) {
         fails += geist_expect(memcmp(chunked, again, sizeof chunked) == 0,
                               "a reset session reproduces its logits bit for bit");
         memcpy(out, chunked, sizeof chunked);
+        if (out1 != nullptr)
+            memcpy(out1, single, sizeof single);
     }
     geist_session_destroy(s);
     geist_model_destroy(m);
@@ -375,7 +379,7 @@ int main(void) {
     ref_forward(&rm, (struct ref_knobs) {0}, ref);
 
     float     scalar[VOCAB], other[VOCAB];
-    const int sc = check_backend("cpu_scalar", scalar);
+    const int sc = check_backend("cpu_scalar", scalar, nullptr);
     fails += sc != 0 ? geist_expect(false, "cpu_scalar runs the fixture") : 0;
     if (sc == 0) {
         const double d = rel_l2_d(scalar, ref);
@@ -403,7 +407,7 @@ int main(void) {
 
     const char *const more[] = {"cpu_neon", "cpu_x86", "metal", "vulkan"};
     for (size_t b = 0; b < sizeof more / sizeof more[0]; b++) {
-        const int r = check_backend(more[b], other);
+        const int r = check_backend(more[b], other, nullptr);
         if (r < 0)
             continue;
         fails += r;
@@ -422,7 +426,7 @@ int main(void) {
         if (r == 0 && (strcmp(more[b], "metal") == 0 || strcmp(more[b], "vulkan") == 0)) {
             float cpu_exp[VOCAB];
             setenv("GEIST_MOE_HOT", "0", 1);
-            const int rc = check_backend(more[b], cpu_exp);
+            const int rc = check_backend(more[b], cpu_exp, nullptr);
             unsetenv("GEIST_MOE_HOT");
             fails += rc;
             const double dr = rel_l2_d(other, ref);
@@ -436,6 +440,29 @@ int main(void) {
                 printf("%s, experts on the GPU vs on the CPU: relative L2 %.3g\n", more[b], dc);
                 if (strcmp(more[b], "metal") == 0)
                     fails += geist_expect(dc <= 1e-5, "the GPU experts match the CPU experts");
+            }
+        }
+        /* #499: 8 of the 16 experts on Vulkan, the rest on the CPU: a decode
+         * step routes on the device (#162 with GPT-OSS's router bias and
+         * softmax over the selected, the experts' biases in the GLU and the
+         * down bias on the host's part), against the host routing the same
+         * split (GEIST_MOE_GPU_ROUTE=0). */
+        if (r == 0 && strcmp(more[b], "vulkan") == 0) {
+            float routed[VOCAB], routed1[VOCAB], host[VOCAB], host1[VOCAB];
+            setenv("GEIST_MOE_HOT", "8", 1);
+            int rc = check_backend(more[b], routed, routed1);
+            setenv("GEIST_MOE_GPU_ROUTE", "0", 1);
+            rc += check_backend(more[b], host, host1);
+            unsetenv("GEIST_MOE_GPU_ROUTE");
+            unsetenv("GEIST_MOE_HOT");
+            fails += geist_expect(rc == 0, "the experts split between the GPU and the CPU run");
+            if (rc == 0) {
+                const double dh = rel_l2(routed1, host1);
+                printf("%s, 8 of 16 experts on the GPU, a decode step routed on the device vs on "
+                       "the host: relative L2 %.3g\n",
+                       more[b],
+                       dh);
+                fails += geist_expect(dh <= 1e-5, "routing on the device matches the host");
             }
         }
     }
