@@ -3310,6 +3310,120 @@ static_assert(sizeof(struct vk_push_moe_wsum) == (size_t) 12 * sizeof(uint32_t),
             be, VK_PIPE_MOE_WSUM, bi, acc, &p, sizeof p, (p.d + 255u) / 256u, m32, 1);
 }
 
+struct vk_push_gate_up {
+    uint32_t n_in, n_out, blocks_per_row, x_div, x_offset, y_offset, x_stride, y_stride, ids_off,
+            tab_g, tab_u, act, hx, hz, xbo, zbo;
+    float alpha, limit;
+};
+static_assert(sizeof(struct vk_push_gate_up) == (size_t) 18 * sizeof(uint32_t),
+              "moe_gate_up_q4k_sel.comp push block");
+static_assert(sizeof(struct vk_push_gate_up) <= VK_PUSH_RANGE, "gate_up push block");
+
+/* fused->moe_ffn_ids for a decode step's rows (#505): gate, up and the GLU
+ * as one _sel dispatch (moe_gate_up_q4k_sel: x read once for both weights,
+ * no u round trip, no GLU dispatch), then down as linear_t_ids' _sel
+ * matvec. From VK_MOE_MM_MIN_M rows (a chunk: linear_t_ids buckets the
+ * slots and runs the grouped GEMMs), gate and up not both Q4_K of one
+ * geometry, or anything the four calls would refuse: GEIST_E_UNSUPPORTED
+ * before anything is recorded. */
+[[nodiscard]] static enum geist_status vk_moe_ffn_ids(struct geist_backend            *be,
+                                                      const struct geist_moe_ffn_args *a) {
+    struct vk_state *st = be->state;
+    if (a == nullptr || a->ids == nullptr || a->x == nullptr || a->g == nullptr ||
+        a->y == nullptr || a->w0[0] == nullptr || a->w0[1] == nullptr || a->w0[2] == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const struct geist_weight   *wg = a->w0[0], *wu = a->w0[1], *wd = a->w0[2];
+    const struct geist_glu_args *glu = a->glu;
+    const enum geist_glu_act     act = glu != nullptr ? glu->act : GEIST_GLU_SILU;
+    size_t                       mk  = 0;
+    if (a->m == 0 || a->k == 0) {
+        return GEIST_OK;
+    }
+    if (a->m >= VK_MOE_MM_MIN_M || !st->bda || wg->dtype != GEIST_DTYPE_Q4_K ||
+        wu->dtype != wg->dtype || wu->n_in != wg->n_in || wu->n_out != wg->n_out ||
+        wu->raw_nbytes != wg->raw_nbytes ||
+        (act != GEIST_GLU_SILU && act != GEIST_GLU_SWIGLU_OAI) ||
+        st->pipes[VK_PIPE_MOE_GATE_UP_Q4K_SEL] == VK_NULL_HANDLE || !vk_ids_weight_ok(st, wg, 1) ||
+        !vk_ids_weight_ok(st, wd, 1) || a->n == 0 || a->n > VK_SEL_TAB_MAX ||
+        a->ids->buf == VK_NULL_HANDLE || a->ids->base_off % 4 != 0 || ckd_mul(&mk, a->m, a->k) ||
+        mk > 65535u) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* down's geometry as linear_t_ids will check it: g in, y out */
+    VkDescriptorBufferInfo  bi[6], bd[2];
+    struct vk_grouped_geom  g, gd;
+    const enum geist_status gs =
+            vk_grouped_geom(be, "moe_ffn_ids", wg, true, true, a->x, a->g, bi, &g);
+    if (gs != GEIST_OK) {
+        return gs;
+    }
+    const enum geist_status ds =
+            vk_grouped_geom(be, "moe_ffn_ids", wd, true, true, a->g, a->y, bd, &gd);
+    if (ds != GEIST_OK) {
+        return ds;
+    }
+    /* Room for the three tables first: an insert that starts the cache over
+     * would drop the ones looked up before it. */
+    if (st->n_sel_tabs + 3u > VK_SEL_TABS ||
+        st->seltab_used + 3u * a->n * 8u > (size_t) VK_SEL_TAB_BYTES) {
+        st->n_sel_tabs  = 0;
+        st->seltab_used = 0;
+        vk_seq_flush(st);
+    }
+    const uint32_t tg = vk_ids_table(be, a->n, wg), tu = vk_ids_table(be, a->n, wu),
+                   td = vk_ids_table(be, a->n, wd);
+    uint32_t       k32, io;
+    if (tg == UINT32_MAX || tu == UINT32_MAX || td == UINT32_MAX) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (vk_ckd_u32(a->k, &k32) || vk_ckd_u32(a->ids->base_off / 4, &io)) {
+        return vk_too_wide(be, "moe_ffn_ids");
+    }
+    struct vk_push_gate_up p = {.n_in           = g.n_in,
+                                .n_out          = g.n_out,
+                                .blocks_per_row = g.blocks_per_row,
+                                .x_div          = k32,
+                                .x_offset       = g.xo,
+                                .y_offset       = g.yo,
+                                .x_stride       = g.xs, /* x's rows: a token's is s / k */
+                                .y_stride       = g.ys,
+                                .ids_off        = io,
+                                .tab_g          = tg / 8u,
+                                .tab_u          = tu / 8u,
+                                .act            = (uint32_t) act,
+                                .alpha          = glu != nullptr ? glu->alpha : 0.0f,
+                                .limit          = glu != nullptr ? glu->limit : 0.0f};
+    bi[2] = (VkDescriptorBufferInfo) {.buffer = st->seltab->buf, .range = VK_WHOLE_SIZE};
+    bi[3] = (VkDescriptorBufferInfo) {.buffer = a->ids->buf, .range = VK_WHOLE_SIZE};
+    bi[4] = bi[0]; /* absent biases bind x again; the shader does not read them */
+    bi[5] = bi[0];
+    if (glu != nullptr &&
+        ((glu->x_bias != nullptr && !vk_tensor_gpu(glu->x_bias, &bi[4], &p.xbo)) ||
+         (glu->z_bias != nullptr && !vk_tensor_gpu(glu->z_bias, &bi[5], &p.zbo)))) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    p.hx                        = glu != nullptr && glu->x_bias != nullptr ? 1u : 0u;
+    p.hz                        = glu != nullptr && glu->z_bias != nullptr ? 1u : 0u;
+    const uint32_t         mk32 = (uint32_t) mk;
+    const uint32_t         t0 = tg < tu ? tg : tu, t1 = tg < tu ? tu : tg; /* both tables */
+    const struct vk_access acc[6] = {
+            vk_acc((uint64_t) g.xo * 4u,
+                   ((uint64_t) (a->m - 1u) * p.x_stride + g.n_in) * 4u,
+                   false),
+            vk_acc((uint64_t) g.yo * 4u, ((uint64_t) (mk32 - 1u) * g.ys + g.n_out) * 4u, true),
+            vk_acc(t0, (uint64_t) (t1 - t0) + (uint64_t) a->n * 8u, false),
+            vk_acc((uint64_t) io * 4u, (uint64_t) mk32 * 4u, false),
+            p.hx != 0u ? vk_acc_all(false) : vk_acc(0, 0, false),
+            p.hz != 0u ? vk_acc_all(false) : vk_acc(0, 0, false)};
+    const enum geist_status s = vk_seq_dispatch_acc(
+            be, VK_PIPE_MOE_GATE_UP_Q4K_SEL, bi, acc, &p, sizeof p, g.gx, mk32, 1);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    return vk_linear_t_ids(be, a->n, a->m, a->k, true, wd, a->experts[2], a->ids, a->g, a->y);
+}
+
 /* GEIST_FUSED_MOE_DEVICE: the router (vk_moe_route_ok) and the three
  * expert weights' dtypes at q->m rows. Residency is the arch's: it asks
  * only for layers whose every expert it resolved here. */
@@ -4325,6 +4439,7 @@ static const struct geist_backend_fused vk_fused = {
         .rows_gather             = vk_rows_gather,
         .moe_route               = vk_moe_route,
         .linear_t_ids            = vk_linear_t_ids,
+        .moe_ffn_ids             = vk_moe_ffn_ids,
         .moe_weighted_sum        = vk_moe_weighted_sum,
         .glu                     = vk_glu,
         .linear_t_sel            = vk_linear_t_sel,
