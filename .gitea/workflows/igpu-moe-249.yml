@@ -1,0 +1,113 @@
+# One-shot for #249 (scratch branch, not for merge): the Vulkan suite, the MoE
+# tests and MoE prefill/decode against llama.cpp Vulkan on the 9950X's
+# integrated Radeon (RADV, RDNA2, shared memory). VK_DRIVER_FILES keeps the
+# loader to RADV, so both engines see the iGPU as Vulkan device 0.
+name: igpu-moe-249
+on:
+  push:
+    branches: [agent/issue-249-amd-probe]
+permissions:
+  contents: read
+jobs:
+  igpu:
+    runs-on: geist-vulkan
+    timeout-minutes: 280
+    env:
+      VK_DRIVER_FILES: /usr/share/vulkan/icd.d/radeon_icd.json
+      VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/radeon_icd.json
+      M: /home/germar/geist-models
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Environment
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD; vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType|driverInfo'; free -g; } 2>&1 | tee out/env.txt
+          grep -q RADV out/env.txt
+      - name: Build
+        run: make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin
+      - name: llama.cpp (pinned, vulkan)
+        run: echo "LLAMA_VK=$(scripts/ensure-llama-bench.sh vulkan)" >> "$GITHUB_ENV"
+      - name: Vulkan + MoE tests on the iGPU (reported, every test runs)
+        env:
+          GEIST_VK_VERBOSE: "1"
+        run: |
+          set +e
+          . scripts/gpu-lock.sh
+          fail=""
+          for t in test_backend_vulkan_registry_unit test_backend_vulkan_buffer_unit \
+                   test_backend_vulkan_linear_parity test_backend_vulkan_deltanet_unit \
+                   test_backend_vulkan_ops_unit \
+                   test_fused_probe_agreement_unit test_backend_vulkan_dispatch_fail_unit \
+                   test_backend_vulkan_scratch_placement_unit test_backend_vulkan_fallback_unit \
+                   test_backend_vulkan_narrowing_unit test_backend_vulkan_vram_budget_unit \
+                   test_backend_vulkan_pipeline_cache_unit test_backend_vulkan_weight_index_unit \
+                   test_backend_vulkan_linear_grouped_unit test_backend_vulkan_stage_unit \
+                   test_qwen3moe_unit test_qwen35moe_unit test_olmoe_unit test_granitemoe_unit \
+                   test_moe_device_unit test_moe_grouped_unit test_moe_prefill_unit \
+                   test_moe_stage_unit test_moe_profile_unit test_moe_route_unit \
+                   test_gpt_oss_unit test_deepseek2_unit \
+                   test_session_snapshot_unit test_backend_memory_info_unit test_gguf_release_range_unit; do
+            echo "=== $t ===" >> out/tests.txt
+            timeout 900 bin/linux/release/tests/"$t" >> out/tests.txt 2>&1; rc=$?
+            echo "RESULT $t $rc" | tee -a out/tests.txt
+            [ $rc -ne 0 ] && fail="$fail $t:$rc"
+          done
+          echo "FAILED:$fail" | tee -a out/tests.txt
+      - name: Model e2e on the iGPU (reported)
+        env:
+          GEIST_BACKEND: vulkan
+          GEIST_VK_VERBOSE: "1"
+          GEIST_GGUF_PATH: ${{ vars.GEIST_GGUF_PATH }}
+          GEIST_QWEN35_GGUF_PATH: ${{ vars.GEIST_QWEN35_GGUF_PATH }}
+          GEIST_STRICT_FIXTURES: gguf
+        run: |
+          set +e
+          . scripts/gpu-lock.sh
+          for t in test_known_answer_e2e test_prefill_determinism_int test_qwen35_vulkan_e2e_int; do
+            echo "=== $t ===" >> out/tests.txt
+            timeout 900 bin/linux/release/tests/"$t" >> out/tests.txt 2>&1; echo "RESULT $t $?" | tee -a out/tests.txt
+          done
+      - name: Quality, perplexity of docs/OFFLOAD.md (cpu_x86 vs iGPU)
+        run: |
+          set +e
+          . scripts/gpu-lock.sh
+          for f in OLMoE-1B-7B-0125-Instruct-Q4_K_M Qwen3-30B-A3B-Q4_K_M Qwen3.6-35B-A3B-UD-Q4_K_M; do
+            for b in cpu_x86 vulkan; do
+              echo "== nll $f $b" >> out/log.txt
+              timeout 1800 env GEIST_VERBOSE=1 GEIST_VK_VERBOSE=1 GEIST_BENCH_BACKEND=$b bin/linux/release/tests/bench_nll "$M/$f.gguf" docs/OFFLOAD.md 1024 0 2>> out/log.txt \
+                | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"$b\",/" | tee -a out/nll.jsonl
+            done
+          done
+      - name: Measure, interleaved (quiet host)
+        env:
+          GEIST_QUIET: "1"
+        run: |
+          set +e
+          . scripts/gpu-lock.sh
+          for c in 1 2; do
+            for f in OLMoE-1B-7B-0125-Instruct-Q4_K_M Qwen3-30B-A3B-Q4_K_M Qwen3.6-35B-A3B-UD-Q4_K_M; do
+              for cfg in geist llama; do
+                half=$(( $(nproc) / 2 ))
+                for i in $(seq 60); do awk -v h="$half" '{exit !($1 < h)}' /proc/loadavg && break; sleep 10; done
+                echo "== cycle $c $f $cfg (load $(cut -d' ' -f1 /proc/loadavg))" | tee -a out/log.txt
+                s=$(date +%s)
+                if [ $cfg = geist ]; then
+                  timeout 1500 env GEIST_VERBOSE=1 GEIST_VK_VERBOSE=1 GEIST_BENCH_BACKEND=vulkan bin/linux/release/tests/bench_perf_sweep \
+                    --gguf "$M/$f.gguf" --seq-lens 512 --decode-n 32 --warmup 8 --repeats 3 2>> out/log.txt \
+                    | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"$cfg\",\"cycle\":$c,/" | tee -a out/results.jsonl
+                else
+                  timeout 1500 "$LLAMA_VK" -m "$M/$f.gguf" -ngl 99 -p 512 -n 0 -r 3 -o jsonl 2>> out/log.txt \
+                    | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"llama-pp\",\"cycle\":$c,/" | tee -a out/results.jsonl
+                  timeout 1500 "$LLAMA_VK" -m "$M/$f.gguf" -ngl 99 -p 0 -n 32 -d 512 -r 3 -o jsonl 2>> out/log.txt \
+                    | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"llama-tg-d512\",\"cycle\":$c,/" | tee -a out/results.jsonl
+                fi
+                echo "== $f $cfg cycle $c done after $(( $(date +%s) - s )) s" | tee -a out/log.txt
+              done
+            done
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: igpu-moe-249
+          path: out/
