@@ -68,15 +68,62 @@ static bool sysctl_bool(const char *name, bool fallback) {
 }
 #endif
 
+struct geist_hw_core_split
+geist_hw_core_split(size_t n_levels, const struct geist_hw_perflevel levels[static n_levels]) {
+    struct geist_hw_core_split split = {0};
+    bool                       named = true;
+    for (size_t i = 0; i < n_levels; i++) {
+        named = named && levels[i].name[0] != '\0';
+    }
+    for (size_t i = 0; i < n_levels; i++) {
+        const int n = levels[i].physicalcpu > 0 ? levels[i].physicalcpu : 0;
+        /* Unnamed levels: the two-level layout every Apple chip had before
+         * the names were read (perflevel0 = P, perflevel1 = E). */
+        const bool eff = named ? strcmp(levels[i].name, "Efficiency") == 0 : i > 0;
+        if (eff) {
+            split.eff += n;
+        } else if (named || i == 0) {
+            split.perf += n;
+        }
+    }
+    return split;
+}
+
+#if defined(__APPLE__)
+/* hw.perflevelN.{name,physicalcpu} for every level; zero split when the
+ * kernel has no perflevel sysctls (Intel Macs, macOS < 12). */
+static struct geist_hw_core_split apple_core_split(void) {
+    constexpr size_t max_levels = 8;
+    int              n          = 0;
+    size_t           len        = sizeof n;
+    if (sysctlbyname("hw.nperflevels", &n, &len, nullptr, 0) != 0 || n <= 0) {
+        return (struct geist_hw_core_split) {0};
+    }
+    const size_t              n_levels = (size_t) n < max_levels ? (size_t) n : max_levels;
+    struct geist_hw_perflevel levels[max_levels] = {0};
+    for (size_t i = 0; i < n_levels; i++) {
+        char key[48];
+        snprintf(key, sizeof key, "hw.perflevel%zu.physicalcpu", i);
+        len = sizeof levels[i].physicalcpu;
+        if (sysctlbyname(key, &levels[i].physicalcpu, &len, nullptr, 0) != 0) {
+            levels[i].physicalcpu = 0;
+        }
+        snprintf(key, sizeof key, "hw.perflevel%zu.name", i);
+        len = sizeof levels[i].name - 1u;
+        if (sysctlbyname(key, levels[i].name, &len, nullptr, 0) != 0) {
+            levels[i].name[0] = '\0';
+        }
+    }
+    return geist_hw_core_split(n_levels, levels);
+}
+#endif
+
 int geist_hw_perf_cores(void) {
 #if defined(__APPLE__)
-    int    v   = 0;
-    size_t len = sizeof v;
-    if (sysctlbyname("hw.perflevel0.physicalcpu", &v, &len, nullptr, 0) == 0 && v > 0) {
-        return v;
-    }
-#endif
+    return apple_core_split().perf;
+#else
     return 0;
+#endif
 }
 
 void geist_hw_probe_isa(struct geist_hw_probe *out) {
@@ -364,12 +411,14 @@ void geist_hw_probe_fill(struct geist_hw_probe *out) {
                 *p = '-';
             }
         }
-        const int p_cores = geist_hw_perf_cores();
-        int       e_cores = 0;
-        size_t    ilen    = sizeof(e_cores);
-        (void) sysctlbyname("hw.perflevel1.physicalcpu", &e_cores, &ilen, nullptr, 0);
+        const struct geist_hw_core_split cores = apple_core_split();
         if (brand[0] != '\0') {
-            snprintf(out->uarch, sizeof(out->uarch), "apple:%s:%dP+%dE", brand, p_cores, e_cores);
+            snprintf(out->uarch,
+                     sizeof(out->uarch),
+                     "apple:%s:%dP+%dE",
+                     brand,
+                     cores.perf,
+                     cores.eff);
         }
     }
     /* A macOS guest ("Apple M1 (Virtual)", the hosted CI runners): 1 under
