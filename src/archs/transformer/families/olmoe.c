@@ -71,18 +71,25 @@ static bool populate_layers_olmoe(struct transformer_arch_state *st) {
 }
 
 /* blk_attention with the QK norms over whole rows. Each step runs only
- * while s is GEIST_OK. */
+ * while s is GEIST_OK. After the norms, the plan's fused prep (#514) does
+ * both RoPEs, the q scale and the KV append in one call where the backend
+ * has it, as blk_attention does for Llama (its per-head norms stay off:
+ * these ran over the whole row). */
 [[nodiscard]] static enum geist_status
 olmoe_attention_block(struct transformer_layer_forward_ctx *ctx) {
-    struct transformer_layer_weights *L = ctx->L;
+    struct transformer_layer_weights *L       = ctx->L;
+    const float                       q_scale = 1.0f / sqrtf((float) ctx->hd);
+    const bool                        fused =
+            ctx->P->fuse_attn_rope_append && !ctx->kv_kivi_enabled && !ctx->kv_int8_enabled;
 
     enum geist_status s = blk_attn_in(ctx, nullptr, nullptr);
     if (s == GEIST_OK)
         s = blk_qk_norm_whole_row(ctx, &L->q_norm, &L->k_norm);
     if (s == GEIST_OK)
-        s = blk_rope_qk(ctx, 1.0f / sqrtf((float) ctx->hd));
+        s = fused ? blk_rope_append_fused(ctx, nullptr, nullptr, q_scale)
+                  : blk_rope_qk(ctx, q_scale);
     if (s == GEIST_OK)
-        s = blk_attend(ctx, true);
+        s = blk_attend(ctx, !fused);
     return s == GEIST_OK ? blk_attn_out(ctx, nullptr) : s;
 }
 
