@@ -9,9 +9,8 @@
  * expert on the whole team, the kernels' own split) and unset (the wide
  * ones by their share of the chunk's rows) are bit-identical: each output
  * element is the same dot product, whichever thread computes it. The
- * same prompt fed one token at a time (decode steps, whose experts go
- * wide when they are fewer than the threads) gives the same bits with the
- * split on and off.
+ * same prompt fed one token at a time (decode steps) gives the same bits
+ * with the split off and forced (=1: every step's experts on the team).
  */
 #include "model_fixtures.h"
 #include "test_helpers.h"
@@ -91,8 +90,7 @@ int main(void) {
         ran++;
         fails += geist_expect(run(*b, "1", OPTS.m_max, all), "every expert wide runs");
         fails += geist_expect(run(*b, nullptr, OPTS.m_max, autov), "the default runs");
-        fails += geist_expect(run(*b, "0", 1, one0) && run(*b, nullptr, 1, one),
-                              "token by token runs");
+        fails += geist_expect(run(*b, "0", 1, one0) && run(*b, "1", 1, one), "token by token runs");
         fails += geist_expect(memcmp(one0, one, sizeof one) == 0,
                               "decode steps: the same bits with the split on and off");
         fails += geist_expect(memcmp(off, all, sizeof off) == 0,

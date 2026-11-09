@@ -631,9 +631,9 @@ static void moe_worker(void *ctx, size_t begin, size_t end) {
  * geist_par_for; the others then one per worker, largest first. Returns
  * how many lead j->active (the wide ones). Each output element is the same
  * dot product either way, so the result does not depend on the split.
- * A decode step's experts all go wide when they are fewer than the
- * threads (below). GEIST_MOE_WIDE=0: off (A/B runs); =N: a prefill
- * chunk's experts wide from N rows on (tests). */
+ * A decode step's experts all go wide when they would keep fewer than
+ * half the threads busy (below). GEIST_MOE_WIDE=0: off (A/B runs); =N: a
+ * prefill chunk's experts wide from N rows on, every decode step's (tests). */
 static size_t moe_order_wide(struct moe_job *j, size_t seq, size_t threads) {
     /* Read per call (once per layer and chunk), so a test can flip it. */
     const char *s = getenv("GEIST_MOE_WIDE");
@@ -641,11 +641,13 @@ static size_t moe_order_wide(struct moe_job *j, size_t seq, size_t threads) {
     if (v == 0 || threads < 2)
         return 0;
     /* A decode step that moe_split did not take (the weights repacked,
-     * cpu_x86's Q4_K, cpu_neon's MXFP4) with fewer experts than threads:
-     * one per worker leaves threads - n_active idle (DeepSeek-V2-Lite: 6
-     * of 16 on the 9950X), so each runs on the whole team instead. */
+     * cpu_x86's Q4_K, cpu_neon's MXFP4) with experts for fewer than half
+     * the threads: one per worker leaves most of them idle (DeepSeek-V2-
+     * Lite: 6 of 16 on the 9950X, decode -12 %), so each runs on the whole
+     * team instead. From half on, one per worker is faster: Qwen3-30B-A3B's
+     * 8 of 16 took +10 % on the team, one after another (#374 run 3445). */
     if (seq == 1)
-        return j->n_active < threads ? j->n_active : 0;
+        return v > 0 || j->n_active * 2 < threads ? j->n_active : 0;
     if (j->n_active < 2)
         return 0;
     const size_t *rs   = j->sess->moe_row_start;
