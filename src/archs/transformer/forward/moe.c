@@ -631,12 +631,22 @@ static void moe_worker(void *ctx, size_t begin, size_t end) {
  * geist_par_for; the others then one per worker, largest first. Returns
  * how many lead j->active (the wide ones). Each output element is the same
  * dot product either way, so the result does not depend on the split.
- * GEIST_MOE_WIDE=0: off (A/B runs); =N: wide from N rows on (tests). */
-static size_t moe_order_wide(struct moe_job *j, size_t threads) {
+ * A decode step's experts all go wide when they are fewer than the
+ * threads (below). GEIST_MOE_WIDE=0: off (A/B runs); =N: a prefill
+ * chunk's experts wide from N rows on (tests). */
+static size_t moe_order_wide(struct moe_job *j, size_t seq, size_t threads) {
     /* Read per call (once per layer and chunk), so a test can flip it. */
     const char *s = getenv("GEIST_MOE_WIDE");
     const long  v = s != nullptr && s[0] != '\0' ? strtol(s, nullptr, 10) : -1;
-    if (v == 0 || threads < 2 || j->n_active < 2)
+    if (v == 0 || threads < 2)
+        return 0;
+    /* A decode step that moe_split did not take (the weights repacked,
+     * cpu_x86's Q4_K, cpu_neon's MXFP4) with fewer experts than threads:
+     * one per worker leaves threads - n_active idle (DeepSeek-V2-Lite: 6
+     * of 16 on the 9950X), so each runs on the whole team instead. */
+    if (seq == 1)
+        return j->n_active < threads ? j->n_active : 0;
+    if (j->n_active < 2)
         return 0;
     const size_t *rs   = j->sess->moe_row_start;
     size_t        rows = 0;
@@ -939,8 +949,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     } else {
         /* #374: a prefill chunk without a GPU batch for the caller: the
          * wide experts on the whole team first, then the rest. */
-        const size_t wide = seq > 1 && !j->decode_rows && (j->n_hot == 0 || launched)
-                                    ? moe_order_wide(j, threads)
+        const size_t wide = !j->decode_rows && (j->n_hot == 0 || launched)
+                                    ? moe_order_wide(j, seq, threads)
                                     : 0;
         for (size_t a = 0; a < wide; a++)
             if (!moe_expert(j, j->active[a]))
