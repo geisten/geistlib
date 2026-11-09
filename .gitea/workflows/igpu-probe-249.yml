@@ -1,0 +1,29 @@
+# One-shot probe for #249 (not for merge): is the Ryzen iGPU visible to Vulkan?
+name: igpu-probe-249
+on:
+  push:
+    branches: [agent/issue-249-amd-probe]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: geist-vulkan
+    timeout-minutes: 10
+    steps:
+      - name: probe
+        run: |
+          set +e
+          echo "=== host"; uname -a; lscpu | sed -n '1,20p'; free -g; uptime
+          echo "=== lspci display"; lspci -nn | grep -i -E 'vga|display|3d'
+          echo "=== drm"; for d in /sys/class/drm/card*/device; do echo "$d $(cat $d/vendor) $(cat $d/device) $(readlink $d/driver)"; done; ls -l /dev/dri
+          echo "=== groups"; id
+          echo "=== amdgpu"; lsmod | grep -E 'amdgpu|nvidia' ; cat /sys/module/amdgpu/parameters/gttsize 2>/dev/null
+          for d in /sys/class/drm/card*/device; do [ -f $d/mem_info_vram_total ] && echo "$d vram=$(cat $d/mem_info_vram_total) gtt=$(cat $d/mem_info_gtt_total) vis_vram=$(cat $d/mem_info_vis_vram_total)"; done
+          echo "=== ICDs"; ls /usr/share/vulkan/icd.d /etc/vulkan/icd.d 2>/dev/null; dpkg -l | grep -E 'mesa-vulkan|amdvlk|libvulkan1|vulkan-tools' 
+          echo "=== vulkaninfo --summary"; vulkaninfo --summary 2>&1
+          echo "=== vulkaninfo per device (subgroup, heaps)"
+          vulkaninfo 2>/dev/null | grep -E 'deviceName|driverName|driverInfo|subgroupSize|minSubgroupSize|maxSubgroupSize|requiredSubgroupSizeStages|memoryHeaps\[|size *=|flags *=|MEMORY_HEAP|bufferDeviceAddress |shaderFloat16|shaderInt8|cooperativeMatrix |integerDotProduct8BitUnsignedAccelerated|maxComputeWorkGroupInvocations|maxStorageBufferRange' | head -200
+          echo "=== models"; ls -la ~/geist-models 2>&1 | head -50; echo "GEIST_MODEL_CACHE=${{ vars.GEIST_MODEL_CACHE }}"; find / -xdev -iname '*a3b*.gguf' -o -xdev -iname '*olmoe*.gguf' 2>/dev/null | head
+          echo "=== llama.cpp"; git -C ~/llama.cpp-cross-engine rev-parse HEAD; ls ~/llama.cpp-cross-engine/ 2>&1 | grep build; cat ~/llama.cpp-cross-engine/build-vulkan/.geist-built-from
+          echo "=== locks"; ls -l /tmp/geist-*.lock; command -v with-desktop-lock; ls ~/bin
+          df -h ~ | tail -1
