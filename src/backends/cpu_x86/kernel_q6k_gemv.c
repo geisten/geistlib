@@ -22,7 +22,7 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q6k_gemv.h"
-#include "linear_util.h"
+#include "linear_util.h" /* hsum_epi32 */
 
 #include "quant.h" /* fp16_to_fp32 */
 #include "quant_blocks.h"
@@ -67,14 +67,6 @@ static void quantize_q8k_act(size_t n_super, const float *x, struct q8k_act *out
             out[s].bsums[g] = (int16_t) sum;
         }
     }
-}
-
-/* The exact sum of the 8 int32 lanes of v. */
-static inline int32_t hsum_epi32(__m256i v) {
-    __m128i h = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
-    h         = _mm_add_epi32(h, _mm_shuffle_epi32(h, 0x4E));
-    h         = _mm_add_epi32(h, _mm_shuffle_epi32(h, 0xB1));
-    return _mm_cvtsi128_si32(h);
 }
 
 static inline __m128i scale_shuffle(int i) {
