@@ -474,7 +474,7 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
 /* Rows [r0, r1) of w as a weight of their own, for a decode step that
  * splits an expert's rows over threads. Only a weight in the file's own
  * row-major blocks qualifies: a repacked or backend-owned layout is not
- * addressable by rows. */
+ * addressable by rows (its backend may offer linear_m1_rows instead). */
 static bool
 weight_rows(const struct geist_weight *w, size_t r0, size_t r1, struct geist_weight *out) {
     constexpr uint16_t repacked = GEIST_W_BACKEND_OWNS | GEIST_W_AUX_BACKEND_REPACK |
@@ -489,6 +489,40 @@ weight_rows(const struct geist_weight *w, size_t r0, size_t r1, struct geist_wei
     out->raw_nbytes  = (r1 - r0) * row;
     out->n_out       = (int32_t) (r1 - r0);
     return true;
+}
+
+/* Whether rows [lo, hi) of w can be computed on their own: a row view
+ * (weight_rows) or the backend's row-range entry at its granularity, for a
+ * repacked layout (cpu_x86's Q4_Kx8, #374). */
+static bool rows_ok(const struct geist_weight *w, size_t lo, size_t hi) {
+    struct geist_weight probe;
+    if (w->linear_m1 == nullptr)
+        return false;
+    if (weight_rows(w, lo, hi, &probe))
+        return true;
+    const size_t n = w->n_out > 0 ? (size_t) w->n_out : 0, a = w->linear_m1_rows_align;
+    return w->linear_m1_rows != nullptr && a > 0 && lo < hi && hi <= n && lo % a == 0 &&
+           (hi % a == 0 || hi == n);
+}
+
+/* y[0, hi - lo) = rows [lo, hi) of w x, one activation row: through a row
+ * view where the layout allows, else the backend's row-range entry. Each
+ * element is the dot product linear_m1 computes for that row. */
+static bool moe_rows_m1(const struct geist_weight *w,
+                        size_t                     lo,
+                        size_t                     hi,
+                        const float               *x,
+                        struct geist_backend      *be,
+                        float                     *y) {
+    struct geist_weight v;
+    bool                ok = true;
+    if (weight_rows(w, lo, hi, &v))
+        moe_linear(1, x, &v, be, y, &ok);
+    else if (rows_ok(w, lo, hi))
+        w->linear_m1_rows(lo, hi, x, w, be, y);
+    else
+        ok = false;
+    return ok;
 }
 
 /* A decode step whose active experts are fewer than half the threads
@@ -524,17 +558,16 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
         struct geist_weight a, b;
         bool                ok = true;
         if (sp->pass == 0) {
-            const float *x = j->sess->moe_xg + row0 * j->d;
-            float       *g = j->sess->moe_g + row0 * j->inter;
-            float       *u = j->sess->moe_u + row0 * j->inter;
-            ok             = weight_rows(&j->L->moe_gate_w[e], lo, hi, &a) &&
-                             weight_rows(&j->L->moe_up_w[e], lo, hi, &b);
-            if (ok && a.linear_pair_m1 != nullptr && a.linear_pair_m1 == b.linear_pair_m1)
+            const float               *x  = j->sess->moe_xg + row0 * j->d;
+            float                     *g  = j->sess->moe_g + row0 * j->inter;
+            float                     *u  = j->sess->moe_u + row0 * j->inter;
+            const struct geist_weight *wg = &j->L->moe_gate_w[e], *wu = &j->L->moe_up_w[e];
+            if (weight_rows(wg, lo, hi, &a) && weight_rows(wu, lo, hi, &b) &&
+                a.linear_pair_m1 != nullptr && a.linear_pair_m1 == b.linear_pair_m1)
                 a.linear_pair_m1(x, &a, &b, j->be, g + lo, u + lo);
-            else if (ok) {
-                moe_linear(1, x, &a, j->be, g + lo, &ok);
-                moe_linear(1, x, &b, j->be, u + lo, &ok);
-            }
+            else
+                ok = moe_rows_m1(wg, lo, hi, x, j->be, g + lo) &&
+                     moe_rows_m1(wu, lo, hi, x, j->be, u + lo);
             if (ok)
                 ok = moe_act(j,
                              row0,
@@ -547,9 +580,7 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
             const float *g  = j->sess->moe_g + row0 * j->inter;
             float       *y  = j->sess->moe_y + row0 * j->d;
             const float *db = moe_bias(j, j->L->moe_down_b, e, j->d);
-            ok              = weight_rows(&j->L->moe_down_w[e], lo, hi, &a);
-            if (ok)
-                moe_linear(1, g, &a, j->be, y + lo, &ok);
+            ok              = moe_rows_m1(&j->L->moe_down_w[e], lo, hi, g, j->be, y + lo);
             for (size_t c = lo; ok && db != nullptr && c < hi; c++)
                 y[c] += db[c];
         }
@@ -562,23 +593,23 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
  * of one sequence), rows addressable as slices, at least two slices per
  * expert on the threads there are. */
 static size_t moe_split_parts(const struct moe_job *j, size_t seq, size_t threads) {
-    /* GEIST_MOE_SPLIT=0: one thread per expert as before (A/B runs). */
-    static _Atomic int off = -1;
-    if (atomic_load_explicit(&off, memory_order_relaxed) < 0) {
-        const char *v = getenv("GEIST_MOE_SPLIT");
-        atomic_store_explicit(&off, v != nullptr && v[0] == '0', memory_order_relaxed);
-    }
+    /* GEIST_MOE_SPLIT=0: one thread per expert as before (A/B runs). Read
+     * per call (once per layer and step), so a test can flip it. */
+    const char *v = getenv("GEIST_MOE_SPLIT");
     if (seq != 1 || j->decode_rows || j->n_active == 0 || threads / j->n_active < 2 ||
-        atomic_load_explicit(&off, memory_order_relaxed) == 1)
+        (v != nullptr && v[0] == '0'))
         return 0;
     for (size_t a = 0; a < j->n_active; a++) {
         const size_t               e    = j->active[a];
         const struct geist_weight *w[3] = {
                 &j->L->moe_gate_w[e], &j->L->moe_up_w[e], &j->L->moe_down_w[e]};
-        struct geist_weight probe;
-        for (size_t i = 0; i < 3; i++)
-            if (w[i]->linear_m1 == nullptr || !weight_rows(w[i], 0, 1, &probe))
+        /* moe_split_range's slices start at multiples of 32 and end at one
+         * or at n_out, so the first slice's answer holds for all. */
+        for (size_t i = 0; i < 3; i++) {
+            const size_t n = w[i]->n_out > 0 ? (size_t) w[i]->n_out : 0;
+            if (!rows_ok(w[i], 0, n < 32 ? n : 32))
                 return 0;
+        }
     }
     return threads / j->n_active;
 }
@@ -640,8 +671,8 @@ static size_t moe_order_wide(struct moe_job *j, size_t seq, size_t threads) {
     const long  v = s != nullptr && s[0] != '\0' ? strtol(s, nullptr, 10) : -1;
     if (v == 0 || threads < 2)
         return 0;
-    /* A decode step that moe_split did not take (the weights repacked,
-     * cpu_x86's Q4_K, cpu_neon's MXFP4) with experts for fewer than half
+    /* A decode step that moe_split did not take (a repacked weight without
+     * a row-range entry, or GEIST_MOE_SPLIT=0) with experts for fewer than half
      * the threads: one per worker leaves most of them idle (DeepSeek-V2-
      * Lite: 6 of 16 on the 9950X, decode -12 %), so each runs on the whole
      * team instead. From half on, one per worker is faster: Qwen3-30B-A3B's

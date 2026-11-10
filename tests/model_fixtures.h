@@ -125,6 +125,7 @@ struct mf_tensor {
     bool         f16;      /* stored as F16; F32 otherwise */
     bool         iq2s;     /* stored as zero IQ2_S blocks (ne0 a multiple of 256) */
     bool         q8_0;     /* stored as Q8_0 of its values (ne0 a multiple of 32) */
+    bool         q4k;      /* stored as Q4_K blocks of random codes (ne0 a multiple of 256) */
     uint64_t     kvb_pair; /* MF_KB: the value dims; MF_VB: nope */
 };
 
@@ -156,6 +157,7 @@ mf_add(struct mf_tensors *ts, uint64_t ne0, uint64_t ne1, enum mf_fill fill, con
     t->f16      = false;
     t->iq2s     = false;
     t->q8_0     = false;
+    t->q4k      = false;
     t->kvb_pair = 0;
 }
 
@@ -163,10 +165,11 @@ static inline uint64_t mf_elems(const struct mf_tensor *t) {
     return t->ne0 * (t->ne1 != 0 ? t->ne1 : 1) * (t->ne2 != 0 ? t->ne2 : 1);
 }
 
-/* Bytes of a tensor's data: F32, F16, 82 per 256 elements for IQ2_S, or 34
- * per 32 for Q8_0. */
+/* Bytes of a tensor's data: F32, F16, 82 per 256 elements for IQ2_S, 144
+ * per 256 for Q4_K, or 34 per 32 for Q8_0. */
 static inline uint64_t mf_bytes(const struct mf_tensor *t) {
     return t->iq2s   ? mf_elems(t) / 256 * 82
+           : t->q4k  ? mf_elems(t) / 256 * 144
            : t->q8_0 ? mf_elems(t) / 32 * 34
                      : mf_elems(t) * (t->f16 ? 2 : 4);
 }
@@ -189,7 +192,8 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         if (t->ne2 != 0) {
             tf_u64(o, t->ne2);
         }
-        tf_u32(o, t->iq2s ? 22 : t->q8_0 ? 8 : t->f16 ? 1 : 0); /* IQ2_S : Q8_0 : F16 : F32 */
+        /* IQ2_S : Q4_K : Q8_0 : F16 : F32 */
+        tf_u32(o, t->iq2s ? 22 : t->q4k ? 12 : t->q8_0 ? 8 : t->f16 ? 1 : 0);
         tf_u64(o, off);
         off += (mf_bytes(t) + 31) / 32 * 32;
     }
@@ -203,6 +207,22 @@ static inline void mf_write_tensors(struct tf_buf *o, struct mf_tensors *ts, uin
         if (t->iq2s) {
             for (uint64_t b = 0; b < mf_bytes(t); b++) {
                 tf_put(o, "", 1);
+            }
+            continue;
+        }
+        if (t->q4k) {
+            /* Per 256 values: d and dmin as F16 in [1/2048, 1/1024), then
+             * the 12 scale bytes and 128 code bytes drawn from the seed. */
+            for (uint64_t b = 0; b < mf_elems(t) / 256; b++) {
+                for (int h = 0; h < 2; h++) {
+                    const _Float16 dv = (_Float16) ((1.0f + fabsf(mf_weight(&s))) / 2048.0f);
+                    tf_put(o, &dv, 2);
+                }
+                for (int k = 0; k < 140; k++) {
+                    mf_weight(&s);
+                    const uint8_t byte = (uint8_t) (s >> 24);
+                    tf_put(o, &byte, 1);
+                }
             }
             continue;
         }
@@ -479,6 +499,9 @@ struct mf_qwen3moe {
     /* #482: the routed experts stored as Q8_0 (d_model and expert_ff
      * multiples of 32), a dtype the device's grouped GEMMs take. */
     bool q8_experts;
+    /* #374: stored as Q4_K of random codes instead (d_model and expert_ff
+     * multiples of 256): cpu_x86 repacks them. */
+    bool q4k_experts;
 };
 
 static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
@@ -512,12 +535,15 @@ static inline struct tf_buf mf_qwen3moe_gguf(const struct mf_qwen3moe *c) {
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
         ts.t[ts.n - 1].ne2  = c->experts;
         ts.t[ts.n - 1].q8_0 = c->q8_experts;
+        ts.t[ts.n - 1].q4k  = c->q4k_experts;
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
         ts.t[ts.n - 1].ne2  = c->experts;
         ts.t[ts.n - 1].q8_0 = c->q8_experts;
+        ts.t[ts.n - 1].q4k  = c->q4k_experts;
         mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_exps.weight", l);
         ts.t[ts.n - 1].ne2  = c->experts;
         ts.t[ts.n - 1].q8_0 = c->q8_experts;
+        ts.t[ts.n - 1].q4k  = c->q4k_experts;
         if (c->shared_expert) {
             mf_add(&ts, d, 0, MF_RAND, "blk.%u.ffn_gate_inp_shexp.weight", l);
         }
