@@ -1,28 +1,33 @@
 name: moe-cpu-374
 
-# One-shot for #374 (profile branch only, not for main): MoE CPU prefill /
-# decode profile of gpt-oss-20b MXFP4 and DeepSeek-V2-Lite Q4_K_M on the
-# 9950X (cpu_x86, 16 threads), or an A/B of two revisions with
-# tools/bench_revision_ab.py, every measurement inside the desktop's bench
-# lock (with-desktop-lock pauses its CI runners).
+# One-shot for #374 (scratch branch agent/issue-374-bench, not for main):
+# MoE CPU A/Bs, parity and unit tests of #374's kernel branches on the 9950X
+# (cpu_x86, 16 threads). Every heavy step runs inside ONE with-desktop-lock
+# hold (which pauses the desktop's CI runners); each measurement starts only
+# once no Gitea job container runs and the CPU is >= 97 % idle over 10 s
+# (tools/probes/quiet_wait.sh, logged with ps).
+#   mode ab:     tools/bench_revision_ab.py base vs new per model
+#   mode parity: real-model logits, base vs new cpu_x86 vs cpu_scalar
+#   mode test:   build `new`, run the unit tests named in `tests`
+#   mode bench:  bench_perf_sweep of `new` + llama-bench (headline numbers)
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "profile | ab"
+        description: "ab | parity | test | bench"
         type: string
-        default: profile
+        default: ab
       models:
         description: "gptoss;deepseek;qwen3moe (separated by ;)"
         type: string
         default: "gptoss;deepseek"
       base:
-        description: "ab: baseline revision"
+        description: "baseline revision"
         type: string
         default: origin/main
       new:
-        description: "ab: revision to compare"
+        description: "revision to compare"
         type: string
         default: ""
       seq_lens:
@@ -41,108 +46,121 @@ on:
         description: "extra VAR=VALUE for the bench, separated by ;"
         type: string
         default: ""
+      tests:
+        description: "test: unit test names (bin/linux/release/tests/<name>), separated by ;"
+        type: string
+        default: ""
 
 jobs:
   run:
     name: moe-cpu-374 ${{ inputs.mode }} on geist-avx512
     runs-on: geist-avx512
-    timeout-minutes: 300
+    timeout-minutes: 360
     env:
       OMP_NUM_THREADS: "16"
       MODELS: ${{ inputs.models }}
+      BASE: ${{ inputs.base }}
+      NEW: ${{ inputs.new }}
+      SEQ: ${{ inputs.seq_lens }}
+      DN: ${{ inputs.decode_n }}
+      CYC: ${{ inputs.cycles }}
+      XENV: ${{ inputs.env }}
+      TESTS: ${{ inputs.tests }}
+      MODE: ${{ inputs.mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Models (host cache, sha256-checked)
+        if: inputs.mode != 'test'
         run: |
           set -eo pipefail
           echo "GPTOSS=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf --sha256 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901)" >> "$GITHUB_ENV"
           echo "DEEPSEEK=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/mradermacher/DeepSeek-V2-Lite-GGUF/resolve/0f37fdf276e8094747457f0ae4d40f2e8d2521f9/DeepSeek-V2-Lite.Q4_K_M.gguf --sha256 70985c39ba3e51a53e6ad6ae25ce29a3efc92b4802f61645760e1bc1eb89ad1a)" >> "$GITHUB_ENV"
           echo "QWEN3MOE=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf --sha256 0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5)" >> "$GITHUB_ENV"
-      - name: Build (profile)
-        if: inputs.mode == 'profile'
-        run: |
-          make TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > build.log 2>&1 || { tail -50 build.log; exit 1; }
-          echo "LLAMA=$(scripts/ensure-llama-bench.sh cpu)" >> "$GITHUB_ENV"
-      - name: Profile
-        if: inputs.mode == 'profile'
-        env:
-          LOCK_NOTE: "#374 MoE CPU profile (run ${{ github.run_id }})"
-        run: |
-          set -o pipefail
-          mkdir -p out
-          { lscpu | head -20; uname -a; git rev-parse HEAD; } > out/env.txt
-          B=bin/linux/release/tests/bench_perf_sweep
-          for m in $(echo "$MODELS" | tr ';' ' '); do
-            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
-            LOCK_PRIO=batch LOCK_MAX=40 ~/bin/with-desktop-lock sh scripts/profile_374.sh $B "$F" cpu_x86 16 "$LLAMA" 2>&1 | tee -a out/profile.txt
-            if command -v perf > /dev/null; then
-              LOCK_PRIO=batch LOCK_MAX=10 ~/bin/with-desktop-lock perf record -F 499 -g -o out/perf-$m.data -- \
-                env GEIST_BENCH_BACKEND=cpu_x86 $B --gguf "$F" --seq-lens 512 --decode-n 0 --warmup 0 --repeats 1 --prompt-file docs/OFFLOAD.md > /dev/null 2>&1 &&
-                { echo "== perf prefill $m"; perf report -i out/perf-$m.data --no-children --sort symbol --stdio 2>/dev/null | grep -v '^#' | grep '%' | head -40; } | tee -a out/profile.txt
-              LOCK_PRIO=batch LOCK_MAX=10 ~/bin/with-desktop-lock perf record -F 499 -g -o out/perfd-$m.data -- \
-                env GEIST_BENCH_BACKEND=cpu_x86 $B --gguf "$F" --seq-lens 16 --decode-n 256 --warmup 0 --repeats 1 --prompt-file docs/OFFLOAD.md > /dev/null 2>&1 &&
-                { echo "== perf decode $m"; perf report -i out/perfd-$m.data --no-children --sort symbol --stdio 2>/dev/null | grep -v '^#' | grep '%' | head -40; } | tee -a out/profile.txt
-              rm -f out/perf*.data
-            else
-              echo "no perf on this host" | tee -a out/profile.txt
-            fi
-          done
-      - name: A/B
+      - name: A/B (one lock hold)
         if: inputs.mode == 'ab'
         env:
-          BASE: ${{ inputs.base }}
-          NEW: ${{ inputs.new }}
-          SEQ: ${{ inputs.seq_lens }}
-          DN: ${{ inputs.decode_n }}
-          CYC: ${{ inputs.cycles }}
-          XENV: ${{ inputs.env }}
           LOCK_NOTE: "#374 MoE CPU A/B (run ${{ github.run_id }})"
         run: |
           set -o pipefail
           mkdir -p out
           git fetch origin
-          envs="--env GEIST_BENCH_BACKEND=cpu_x86"
-          for e in $(echo "$XENV" | tr ';' ' '); do envs="$envs --env $e"; done
-          for m in $(echo "$MODELS" | tr ';' ' '); do
-            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
-            echo "== $m" | tee -a out/report.txt
-            LOCK_PRIO=batch LOCK_MAX=90 ~/bin/with-desktop-lock python3 tools/bench_revision_ab.py \
-              --rev "base=$BASE" --rev "new=$NEW" --gguf "$F" --seq-lens "$SEQ" \
-              --decode-n "$DN" --repeats 1 --warmup 1 --cycles "$CYC" $envs \
-              --prompt-file docs/OFFLOAD.md \
-              --make-arg TARGET=linux --make-arg "BACKENDS=cpu_x86 cpu_scalar" \
-              --make-arg GEMM_PROVIDER=native --out-dir out/ab-$m 2>&1 | tee -a out/report.txt
-          done
-      - name: Logits, 64- vs 128-row chunks (#507)
-        if: inputs.mode == 'logits' || inputs.mode == 'ref'
-        env:
-          LOCK_NOTE: "#507 chunk 64 vs 128 logits (run ${{ github.run_id }})"
-          PROBE_MODE: ${{ inputs.mode }}
+          { lscpu | head -20; uname -a; } > out/env.txt
+          LOCK_PRIO=batch LOCK_MAX=240 ~/bin/with-desktop-lock sh tools/probes/ab374b.sh out
+      - name: Build base and new
+        if: inputs.mode == 'parity' || inputs.mode == 'test' || inputs.mode == 'bench'
         run: |
           set -o pipefail
           mkdir -p out
           git fetch origin
-          git worktree add --detach "$RUNNER_TEMP/c507" origin/agent/issue-374-moe-cpu-chunk
-          make -C "$RUNNER_TEMP/c507" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build.log 2>&1 || { tail -40 out/build.log; exit 1; }
-          git -C "$RUNNER_TEMP/c507" rev-parse HEAD | tee out/head.txt
-          if [ "$PROBE_MODE" = logits ]; then
-            LOCK_PRIO=batch LOCK_MAX=40 ~/bin/with-desktop-lock sh tools/probes/chunk507_logits.sh \
-              "$RUNNER_TEMP/c507/bin/linux/release" cpu_x86 "$PWD/out/logits" "$GPTOSS" "$DEEPSEEK" "$QWEN3MOE" 2>&1 | tee out/report.txt
-            grep -h "backend=" out/logits/log_* | sort | uniq -c | tee -a out/report.txt
-          fi
-          if [ "$PROBE_MODE" = ref ]; then
-            make -C "$RUNNER_TEMP/c507" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin >> out/build.log 2>&1
-            LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock sh tools/probes/chunk507_ref.sh \
-              "$RUNNER_TEMP/c507/bin/linux/release" "$PWD/out/ref" "$GPTOSS" "$DEEPSEEK" "$QWEN3MOE" 2>&1 | tee -a out/report.txt
-            grep -h "backend=" out/ref/log_* | sort | uniq -c | tee -a out/report.txt
-          fi
-          git worktree remove --force "$RUNNER_TEMP/c507"
+          for v in base new; do
+            if [ "$v" = base ]; then R=$BASE; [ "$MODE" = parity ] || continue; else R=$NEW; fi
+            git worktree add --detach "$RUNNER_TEMP/w-$v" "$R"
+            git -C "$RUNNER_TEMP/w-$v" log --oneline -1 | tee -a out/heads.txt
+            make -C "$RUNNER_TEMP/w-$v" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build-$v.log 2>&1 || { tail -60 out/build-$v.log; exit 1; }
+          done
+      - name: Unit tests
+        if: inputs.mode == 'test'
+        run: |
+          set -o pipefail
+          B=$RUNNER_TEMP/w-new/bin/linux/release/tests
+          grep -o 'avx512_vnni\|avx_vnni' /proc/cpuinfo | sort -u | tee -a out/report.txt
+          rc=0
+          for t in $(echo "$TESTS" | tr ';' ' '); do
+            for isa in native avx2 scalar; do
+              echo "== $t GEIST_FORCE_ISA=$isa" | tee -a out/report.txt
+              if [ $isa = native ]; then
+                (cd "$RUNNER_TEMP/w-new" && "$B/$t") > out/t.log 2>&1 || rc=1
+              else
+                (cd "$RUNNER_TEMP/w-new" && GEIST_FORCE_ISA=$isa "$B/$t") > out/t.log 2>&1 || rc=1
+              fi
+              tail -30 out/t.log | tee -a out/report.txt
+            done
+          done
+          exit $rc
+      - name: Parity (one lock hold)
+        if: inputs.mode == 'parity'
+        env:
+          LOCK_NOTE: "#374 kernel parity logits (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          FILES=""
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in gptoss) FILES="$FILES $GPTOSS" ;; deepseek) FILES="$FILES $DEEPSEEK" ;; qwen3moe) FILES="$FILES $QWEN3MOE" ;; esac
+          done
+          LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock sh tools/probes/parity374b.sh \
+            "$RUNNER_TEMP/w-base/bin/linux/release" "$RUNNER_TEMP/w-new/bin/linux/release" "$PWD/out/parity" $FILES 2>&1 | tee -a out/report.txt
+          grep -h "backend=\|rror\|not finite" out/parity/log_* | sort | uniq -c | tee -a out/report.txt
+      - name: Headline numbers (one lock hold)
+        if: inputs.mode == 'bench'
+        env:
+          LOCK_NOTE: "#374 headline numbers (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          LLAMA=$(scripts/ensure-llama-bench.sh cpu)
+          export LLAMA B=$RUNNER_TEMP/w-new/bin/linux/release/tests/bench_perf_sweep
+          cat > out/bench.sh <<'EOF'
+          set -u
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; *) continue ;; esac
+            echo "== $m"
+            sh tools/probes/quiet_wait.sh
+            echo "-- geist pp512/tg128 (cpu_x86, 16 threads, OFFLOAD.md, 3 repeats)"
+            GEIST_BENCH_BACKEND=cpu_x86 $B --gguf "$F" --seq-lens 512 --decode-n 128 --warmup 1 --repeats 3 --prompt-file docs/OFFLOAD.md 2>/dev/null
+            echo "-- llama-bench"
+            "$LLAMA" -m "$F" -p 512 -n 128 -r 3 -t 16 -o jsonl 2>/dev/null | grep -o '"n_prompt": [0-9]*, "n_gen": [0-9]*.*"avg_ts": [0-9.]*'
+          done
+          EOF
+          LOCK_PRIO=batch LOCK_MAX=90 ~/bin/with-desktop-lock sh out/bench.sh 2>&1 | tee -a out/report.txt
+      - name: Clean up worktrees
+        if: always()
+        run: |
+          for v in base new; do [ -d "$RUNNER_TEMP/w-$v" ] && git worktree remove --force "$RUNNER_TEMP/w-$v"; done; true
       - name: Job summary
         if: always()
         run: |
-          { echo '```'; cat out/profile.txt out/report.txt 2>/dev/null | grep -v '^\s*$' | tail -400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; cat out/heads.txt out/report.txt out/parity/result.md 2>/dev/null | grep -v '^\s*$' | tail -400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
