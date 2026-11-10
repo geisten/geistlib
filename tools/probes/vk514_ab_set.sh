@@ -3,7 +3,7 @@
 # ONE job under ONE hold of the bench + GPU locks (GEIST_QUIET=1
 # scripts/gpu-lock.sh), so desktop CI cannot start between them; before
 # each A/B it waits (bounded, logged) until no Gitea job container runs and
-# the 1-minute load is below 2. SET names a list of model:cycles:seq:dn:revs
+# the CPUs are under 5 % busy. SET names a list of model:cycles:seq:dn:revs
 # (revs comma separated label=rev, the first the baseline).
 set -eu
 SET=$2
@@ -29,14 +29,17 @@ quiet() { # up to 20 min: no CI job container, 1-min load < 2
     i=0
     while :; do
         n=$(docker ps --filter name=GITEA-ACTIONS-TASK -q 2>/dev/null | wc -l)
-        l=$(cut -d' ' -f1 /proc/loadavg)
-        if [ "$n" -eq 0 ] && awk -v l="$l" 'BEGIN{exit !(l < 2)}'; then
-            echo "quiet: $(date -u +%T) containers $n load $l (waited ${i}0 s)" | tee -a "$OUT/load.txt"
+        # CPU busy % over 3 s (/proc/stat): the hung iGPU processes sit in D
+        # state, which the load average counts though they use no CPU
+        a=$(head -1 /proc/stat); sleep 3; b=$(head -1 /proc/stat)
+        l=$(echo "$a $b" | awk '{t1=0; for(i=2;i<=11;i++) t1+=$i; t2=0; for(i=13;i<=22;i++) t2+=$i; idle=($16+$17)-($5+$6); printf "%.1f", 100*(1-idle/(t2-t1))}')
+        if [ "$n" -eq 0 ] && awk -v l="$l" 'BEGIN{exit !(l < 5)}'; then
+            echo "quiet: $(date -u +%T) containers $n cpu busy $l % (waited ${i}x13 s)" | tee -a "$OUT/load.txt"
             return 0
         fi
         i=$((i + 1))
         if [ $i -ge 120 ]; then
-            echo "NOT quiet after 20 min: containers $n load $l" | tee -a "$OUT/load.txt"
+            echo "NOT quiet after ~26 min: containers $n cpu busy $l %" | tee -a "$OUT/load.txt"
             ps -eo pcpu,etime,user,comm --sort=-pcpu | head -12 | tee -a "$OUT/load.txt"
             return 0
         fi
