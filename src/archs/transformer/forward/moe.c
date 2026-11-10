@@ -525,8 +525,8 @@ static bool moe_rows_m1(const struct geist_weight *w,
     return ok;
 }
 
-/* A decode step whose active experts are fewer than half the threads
- * (#243: GPT-OSS runs 4 of 32 on 8 threads): instead of one thread per
+/* A decode step whose active experts are fewer than the threads (#243:
+ * GPT-OSS runs 4 of 32 on 8 threads): instead of one thread per
  * expert, each expert's rows split into `parts` slices, one task each, in
  * two passes -- gate / up / activation over a slice of the intermediate,
  * then down over a slice of the output, which needs the whole activation.
@@ -589,14 +589,25 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
     }
 }
 
-/* Whether j's active experts take moe_split: one row each (a decode step
- * of one sequence), rows addressable as slices, at least two slices per
- * expert on the threads there are. */
+/* Whether j's active experts take moe_split, and into how many slices
+ * each: a decode step of one sequence, rows addressable as slices. The
+ * slices of all experts fill the threads evenly: threads / gcd(n_active,
+ * threads) per expert, so their count is a multiple of the threads
+ * (DeepSeek-V2-Lite's 6 of 16: 8 each, 48 tasks, where 16 / 6 = 2 left 4
+ * threads idle, #374). None when that is one (as many experts as threads,
+ * or a multiple): one per worker already fills them. */
 static size_t moe_split_parts(const struct moe_job *j, size_t seq, size_t threads) {
     /* GEIST_MOE_SPLIT=0: one thread per expert as before (A/B runs). Read
      * per call (once per layer and step), so a test can flip it. */
     const char *v = getenv("GEIST_MOE_SPLIT");
-    if (seq != 1 || j->decode_rows || j->n_active == 0 || threads / j->n_active < 2 ||
+    size_t      g = j->n_active, t = threads;
+    while (t != 0) {
+        const size_t r = g % t;
+        g              = t;
+        t              = r;
+    }
+    const size_t parts = g != 0 ? threads / g : 0; /* g = gcd(n_active, threads) */
+    if (seq != 1 || j->decode_rows || j->n_active == 0 || parts < 2 ||
         (v != nullptr && v[0] == '0'))
         return 0;
     for (size_t a = 0; a < j->n_active; a++) {
@@ -611,7 +622,7 @@ static size_t moe_split_parts(const struct moe_job *j, size_t seq, size_t thread
                 return 0;
         }
     }
-    return threads / j->n_active;
+    return parts;
 }
 
 /* Expert e over its rows: as one m-row block, or, for a batched decode's
