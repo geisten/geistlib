@@ -198,7 +198,8 @@ struct geist_backend_vtbl {
 
 /* Required: rmsnorm, add, mul, gelu_tanh, silu, rope_apply, attention
  * (GEIST_BACKEND_PRIMS in src/backends/common/backend_tables.h refuses a
- * table without one); relu_squared, scale_f32 and add_bias are nullable.
+ * table without one); relu_squared, scale_f32, add_bias and layernorm are
+ * nullable.
  *
  * Each op takes geist_tensor inputs/outputs whose .buffer was created via
  * this same backend. Return GEIST_OK on success; on error, set the backend
@@ -297,6 +298,20 @@ struct geist_backend_primitives {
                                   const struct geist_tensor *x,
                                   const struct geist_tensor *b,
                                   struct geist_tensor       *y);
+
+    /* LayerNorm with bias (torch.nn.LayerNorm; Phi-MoE's norms, #523), per
+     * row over the last dimension:
+     *   y = (x - mean(x)) * rsqrt(var(x) + eps) * w + b
+     * var the population variance (the sum over n, not n - 1). x and y
+     * [rows, n], w and b [n]; F32 DENSE, y may alias x. nullptr = the
+     * backend runs no model whose norms are LayerNorms: the arch refuses
+     * such a model at load, it has no host fallback. */
+    enum geist_status (*layernorm)(struct geist_backend      *be,
+                                   const struct geist_tensor *x,
+                                   const struct geist_tensor *w,
+                                   const struct geist_tensor *b,
+                                   float                      eps,
+                                   struct geist_tensor       *y);
 };
 
 /* ====================================================================== */
@@ -1296,8 +1311,8 @@ struct geist_backend_descriptor {
     /* Core table. Required. */
     const struct geist_backend_vtbl *vtbl;
 
-    /* Primitive ops. Required (relu_squared, scale_f32 and add_bias may be nullptr,
-     * see the table). name, vtbl and prims are the descriptor's required
+    /* Primitive ops. Required (relu_squared, scale_f32, add_bias and layernorm
+     * may be nullptr, see the table). name, vtbl and prims are the descriptor's required
      * members (GEIST_BACKEND_DESCRIPTOR, backend_tables.h). */
     const struct geist_backend_primitives *prims;
 

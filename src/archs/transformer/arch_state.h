@@ -109,6 +109,10 @@ struct transformer_layer_weights {
     struct geist_tensor v_norm_in;    /* [d_model] — before v_proj */
     struct geist_tensor gate_norm_in; /* [d_model] — before gate_proj */
     struct geist_tensor up_norm_in;   /* [d_model] — before up_proj */
+    /* config.norm_layernorm (#523): the biases of attn_norm and ffn_norm,
+     * which are then LayerNorms; buffer == nullptr otherwise. */
+    struct geist_tensor attn_norm_b; /* [HIDDEN] */
+    struct geist_tensor ffn_norm_b;  /* [HIDDEN] */
 
     /* ---- Projection weights (Q-format or F32, BLOCK_QUANTIZED/DENSE). - */
     struct geist_tensor q_proj;         /* [q_out, HIDDEN] */
@@ -842,6 +846,8 @@ struct transformer_arch_state {
     struct geist_tensor model_proj;      /* [PLE_OUT, HIDDEN] — Q-format */
     struct geist_tensor model_proj_norm; /* [HIDDEN_PER_LAYER] — F32 */
     struct geist_tensor output_norm;     /* [HIDDEN] — F32 */
+    struct geist_tensor output_norm_b;   /* [HIDDEN] — F32; config.norm_layernorm, else no buffer */
+    struct geist_tensor output_b;        /* [VOCAB] — F32; config.lm_head_bias, else no buffer */
     struct geist_weight embed_table_w;   /* lm_head kernels */
     struct geist_weight model_proj_w;    /* PLE model_proj kernels */
 

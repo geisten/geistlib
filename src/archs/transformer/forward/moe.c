@@ -101,6 +101,36 @@ bool moe_route_topk(
     return true;
 }
 
+/* SparseMixer at inference (GEIST_MOE_GATING_SPARSEMIXER, arch_config.h):
+ * ids by (logit descending, id ascending); pick j's weight is its softmax
+ * over the candidates not picked before whose logit is within the jitter
+ * band of it. The band test is the reference's (top - s) / max(|s|, top) >
+ * 2 * jitter without the division, so a zero denominator masks nothing. */
+static void route_sparsemixer(size_t      n,
+                              const float logits[static n],
+                              uint32_t    ids[static 2],
+                              float       w[static 2]) {
+    size_t first = n;
+    for (size_t j = 0; j < 2; j++) {
+        size_t best = n;
+        for (size_t i = 0; i < n; i++) {
+            if (i != first && (best == n || logits[i] > logits[best]))
+                best = i;
+        }
+        const double top = logits[best];
+        double       z   = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            const double s      = logits[i];
+            const double factor = fabs(s) > top ? fabs(s) : top;
+            if (i != first && top - s <= 2.0 * GEIST_SPARSEMIXER_JITTER * factor)
+                z += exp(s - top);
+        }
+        ids[j] = (uint32_t) best;
+        w[j]   = (float) (1.0 / z); /* z >= 1: best is its own candidate */
+        first  = j == 0 ? best : first;
+    }
+}
+
 bool moe_route(size_t                   n,
                size_t                   k,
                const struct moe_router *r,
@@ -115,6 +145,16 @@ bool moe_route(size_t                   n,
         for (size_t i = 0; i < n; i++)
             biased[i] = logits[i] + r->bias[i];
         logits = biased;
+    }
+    if (r->gating == GEIST_MOE_GATING_SPARSEMIXER) {
+        for (size_t i = 0; i < n; i++) {
+            if (!finite_bits(logits[i]))
+                return false;
+        }
+        if (k != 2)
+            return false;
+        route_sparsemixer(n, logits, ids, w);
+        return true;
     }
     const bool grouped = r->n_group > 1;
     const bool plain =
@@ -795,7 +835,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     struct geist_buffer              *x     = sess->scratch_pre_ff;
 
     uint64_t          t0 = transformer_profile_enabled(&g_moe_profile) ? geist_now_ns() : 0;
-    enum geist_status s  = blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
+    enum geist_status s =
+            blk_norm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, &L->ffn_norm_b, x);
     moe_profile_mark(MOE_PROFILE_NORM, &t0);
     if (s == GEIST_OK) {
         struct geist_tensor t_x = view_2d(x, ctx->SEQ, (int64_t) d);

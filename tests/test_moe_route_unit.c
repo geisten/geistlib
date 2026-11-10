@@ -7,7 +7,8 @@
  * non-finite logits). moe_route: a router bias and GPT-OSS's
  * softmax over the selected (#243); DeepSeek's sigmoid scores, selection
  * bias, groups, renormalisation and scale against a double reference over
- * 4000 draws, ties and refusals (#242). No model, no fixture.
+ * 4000 draws, ties and refusals (#242). Phi-MoE's SparseMixer against the
+ * reference implementation's steps (#523). No model, no fixture.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 
@@ -231,9 +232,105 @@ static void check_deepseek(void) {
     expect(!moe_route(8, 2, &uneven, flat, ids, w), "groups that do not divide n are refused");
 }
 
+/* Phi-MoE's SparseMixer (#523) against sparsemixer() of the reference
+ * implementation in eval mode, step for step: the threshold mask with its
+ * division, the softmax of the masked gates, then the same on the scores
+ * with the first pick taken out. */
+static void ref_sparsemixer(size_t n, const float *s, uint32_t ids[static 2], double w[static 2]) {
+    bool gone[32] = {false};
+    for (size_t j = 0; j < 2; j++) {
+        size_t best = n;
+        for (size_t i = 0; i < n; i++)
+            if (!gone[i] && (best == n || s[i] > s[best]))
+                best = i;
+        const double top = s[best];
+        double       z   = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            const double factor = fmax(fabs((double) s[i]), top);
+            /* 0 / 0 is NaN there, and NaN > x is false: not masked */
+            const bool masked = factor != 0.0 && (top - (double) s[i]) / factor > 2.0 * 0.01;
+            if (!gone[i] && !masked)
+                z += exp((double) s[i] - top);
+        }
+        ids[j]     = (uint32_t) best;
+        w[j]       = 1.0 / z;
+        gone[best] = true;
+    }
+}
+
+static void check_sparsemixer(void) {
+    const struct moe_router mixer = {.gating = GEIST_MOE_GATING_SPARSEMIXER};
+    uint32_t                ids[4], want[2];
+    float                   w[4];
+    double                  ww[2];
+    /* Clear margins: both weights 1, whatever the other logits are. */
+    const float clear[5] = {0.3f, 2.0f, -1.0f, 1.0f, 0.0f};
+    expect(moe_route(5, 2, &mixer, clear, ids, w) && ids[0] == 1 && ids[1] == 3 && w[0] == 1.0f &&
+                   w[1] == 1.0f,
+           "sparsemixer: clear margins weigh both picks 1");
+    /* The second within 2 % of the first: the first shares its softmax with
+     * it, the second stands alone. */
+    const float near1[4] = {1.0f, 0.99f, 0.2f, -3.0f};
+    expect(moe_route(4, 2, &mixer, near1, ids, w) && ids[0] == 0 && ids[1] == 1 &&
+                   fabs(w[0] - 1.0 / (1.0 + exp(-0.01))) < 1e-6 && w[1] == 1.0f,
+           "sparsemixer: a near tie at the top splits the first weight only");
+    /* The third within 2 % of the second: the second shares, the first not. */
+    const float near2[4] = {2.0f, 1.0f, 0.985f, -3.0f};
+    expect(moe_route(4, 2, &mixer, near2, ids, w) && ids[0] == 0 && ids[1] == 1 && w[0] == 1.0f &&
+                   fabs(w[1] - 1.0 / (1.0 + exp(-0.015))) < 1e-6,
+           "sparsemixer: a near tie below the top splits the second weight only");
+    /* The band is relative to max(|s|, top): negative logits widen it. */
+    const float neg[3] = {-1.0f, -1.015f, -5.0f};
+    expect(moe_route(3, 2, &mixer, neg, ids, w) && ids[0] == 0 && ids[1] == 1 &&
+                   fabs(w[0] - 1.0 / (1.0 + exp(-0.015))) < 1e-6 && w[1] == 1.0f,
+           "sparsemixer: the band of negative logits");
+    /* All zero: nothing is masked; 1 / n, then 1 / (n - 1). */
+    const float zero[8] = {0};
+    expect(moe_route(8, 2, &mixer, zero, ids, w) && ids[0] == 0 && ids[1] == 1 &&
+                   fabs(w[0] - 0.125) < 1e-7 && fabs(w[1] - 1.0 / 7.0) < 1e-7,
+           "sparsemixer: all-zero logits");
+    /* Random logits at several scales and offsets, so the band is hit often. */
+    size_t banded = 0;
+    for (int it = 0; it < 4000; it++) {
+        float        lg[16];
+        const size_t n     = 2 + (size_t) (it % 15);
+        const double scale = it % 3 == 0 ? 0.05 : it % 3 == 1 ? 1.0 : 30.0;
+        const double shift = it % 5 == 0 ? 4.0 : it % 5 == 1 ? -4.0 : 0.0;
+        for (size_t i = 0; i < n; i++)
+            lg[i] = (float) (shift + scale * rnd());
+        ref_sparsemixer(n, lg, want, ww);
+        const bool ok = moe_route(n, 2, &mixer, lg, ids, w) && ids[0] == want[0] &&
+                        ids[1] == want[1] && fabs(w[0] - ww[0]) < 1e-6 && fabs(w[1] - ww[1]) < 1e-6;
+        banded += ww[0] < 1.0 - 1e-9 || ww[1] < 1.0 - 1e-9;
+        if (!ok) {
+            fprintf(stderr,
+                    "  draw %d (n %zu): ids %u %u w %.8f %.8f, want %u %u w %.8f %.8f\n",
+                    it,
+                    n,
+                    ids[0],
+                    ids[1],
+                    (double) w[0],
+                    (double) w[1],
+                    want[0],
+                    want[1],
+                    ww[0],
+                    ww[1]);
+            expect(false, "sparsemixer matches the reference on random logits");
+            break;
+        }
+    }
+    expect(banded > 400 && banded < 3600, "sparsemixer: the draws cover the band and its outside");
+    /* Refusals: it is defined for two picks; non-finite logits. */
+    expect(!moe_route(5, 1, &mixer, clear, ids, w), "sparsemixer: k = 1 is refused");
+    expect(!moe_route(5, 3, &mixer, clear, ids, w), "sparsemixer: k = 3 is refused");
+    const float bad[3] = {0.0f, NAN, 1.0f};
+    expect(!moe_route(3, 2, &mixer, bad, ids, w), "sparsemixer: a NaN logit is refused");
+}
+
 int main(void) {
     check_softmax_weight();
     check_deepseek();
+    check_sparsemixer();
     /* Distinct scores: the k largest, largest first. */
     const float a[6] = {0.1f, 2.0f, -1.0f, 3.5f, 0.0f, 1.9f};
     check("distinct, k=3, norm", 6, 3, true, a, (const uint32_t[]) {3, 1, 5});

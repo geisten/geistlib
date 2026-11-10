@@ -66,7 +66,7 @@ MD_OUT = OUT_DIR / "INCLUDE_GRAPH.md"
 GENERATED = ("_spv.h", "metal_shaders.h")  # data only, include nothing
 ALL_BACKENDS = ("cpu_neon", "cpu_scalar", "cpu_x86", "metal", "vulkan")
 FAMILIES = ("bitnet", "deepseek2", "gemma3", "gemma4", "glm4moe", "gpt_oss", "granitemoe",
-            "llama", "llama4", "olmoe", "qwen3", "qwen35", "qwen3moe")
+            "llama", "llama4", "olmoe", "phimoe", "qwen3", "qwen35", "qwen3moe")
 # What a header needs defined to be preprocessed on its own: internal
 # headers #error without their layer's guard.
 HEADER_DEFINES = ("GEIST_INTERNAL_ENGINE_LAYER=", "GEIST_INTERNAL_ARCH_LAYER=",

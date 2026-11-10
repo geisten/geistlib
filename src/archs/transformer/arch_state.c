@@ -1208,6 +1208,15 @@ geometry_from_metadata(struct geist_backend             *be,
                                 fam->name);
         return GEIST_E_UNSUPPORTED;
     }
+    /* #523: LayerNorm has no host fallback in the forward pass. */
+    if (st->config.norm_layernorm && be->desc->prims->layernorm == nullptr) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "transformer: %s needs LayerNorm, which backend %s does not have",
+                                fam->name,
+                                be->desc->name);
+        return GEIST_E_UNSUPPORTED;
+    }
     /* head_dim is metadata: a layer asking for more than the forward pass
      * holds (TRANSFORMER_HEAD_DIM_MAX_WIDE) is refused here, before it can
      * overflow the attention kernels' per-head stack arrays. Past

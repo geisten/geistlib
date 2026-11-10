@@ -52,6 +52,7 @@
 #include "shaders/gelu_tanh_mul_f32_spv.h"
 #include "shaders/hadamard_f32_spv.h"
 #include "shaders/kv_append_f16_spv.h"
+#include "shaders/layernorm_f32_spv.h"
 #include "shaders/matmul_f32_spv.h"
 #include "shaders/matmul_pq2_0_f32acc_cm_spv.h"
 #include "shaders/matmul_pq2_0_t64_cm_spv.h"

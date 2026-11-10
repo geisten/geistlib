@@ -431,6 +431,8 @@ struct metal_state {
     struct metal_pipeline_h *q6k_matmul_sg_fast_pipeline;
     struct metal_function_h *rmsnorm_rows_simd_function;
     struct metal_pipeline_h *rmsnorm_rows_simd_pipeline;
+    struct metal_function_h *layernorm_rows_simd_function;
+    struct metal_pipeline_h *layernorm_rows_simd_pipeline;
     struct metal_function_h *gelu_rows_function;
     struct metal_pipeline_h *gelu_rows_pipeline;
     struct metal_function_h *silu_rows_function;
@@ -931,6 +933,19 @@ struct metal_rows_params {
     uint32_t cols;
     uint32_t x_offset;
     uint32_t w_offset;
+    uint32_t y_offset;
+    uint32_t x_row_stride;
+    uint32_t y_row_stride;
+    float    eps;
+};
+
+/* layernorm_rows_simd's LnRows. */
+struct metal_layernorm_params {
+    uint32_t rows;
+    uint32_t cols;
+    uint32_t x_offset;
+    uint32_t w_offset;
+    uint32_t b_offset;
     uint32_t y_offset;
     uint32_t x_row_stride;
     uint32_t y_row_stride;

@@ -130,6 +130,16 @@ geist_host_attn_kvq_views(struct geist_backend                 *be,
                                                     const struct geist_tensor *b,
                                                     struct geist_tensor       *y);
 
+/* prims->layernorm: y = (x - mean) * rsqrt(var + eps) * w + b per row of x,
+ * mean and the population variance reduced in double; w and b one row of
+ * x's last dimension, y may alias x. */
+[[nodiscard]] enum geist_status geist_host_layernorm(struct geist_backend      *be,
+                                                     const struct geist_tensor *x,
+                                                     const struct geist_tensor *w,
+                                                     const struct geist_tensor *b,
+                                                     float                      eps,
+                                                     struct geist_tensor       *y);
+
 /* fused->hadamard_rotate on host views: geist_hadamard_apply (hadamard.h). */
 [[nodiscard]] enum geist_status geist_host_hadamard_rotate(struct geist_backend             *be,
                                                            const struct geist_hadamard_args *args);

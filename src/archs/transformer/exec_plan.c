@@ -272,11 +272,12 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
 
         q = (struct geist_fusion_query) {
                 .op = GEIST_FUSED_RMSNORM_ADD_NORM, .m = m_cap, .d_model = st->d_model};
-        P->fuse_attn_add_norm =
-                st->family != nullptr && st->family->fused_residual_norms && probe(be, q);
-        P->fuse_tail_norm = P->fuse_attn_add_norm && i + 1 < st->n_layers &&
-                            transformer_layer_owned(st, i + 1) &&
-                            st->layers[i + 1].mixer != GEIST_MIXER_DELTANET;
+        /* The fused norms are RMSNorms: not for a LayerNorm stack (#523). */
+        P->fuse_attn_add_norm = st->family != nullptr && st->family->fused_residual_norms &&
+                                !st->config.norm_layernorm && probe(be, q);
+        P->fuse_tail_norm     = P->fuse_attn_add_norm && i + 1 < st->n_layers &&
+                                transformer_layer_owned(st, i + 1) &&
+                                st->layers[i + 1].mixer != GEIST_MIXER_DELTANET;
 
         /* The PLE gate epilogue runs on hidden_per_layer-wide rows. */
         q = (struct geist_fusion_query) {

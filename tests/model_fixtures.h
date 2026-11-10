@@ -1031,6 +1031,125 @@ static inline struct tf_buf mf_glm4moe_gguf(const struct mf_glm4moe *c) {
     return o;
 }
 
+/* Phi-MoE (#523): LayerNorms with a bias for the attention, FFN and output
+ * norms (weights MF_RAMP, so not all ones), q/k/v/o biases, an lm_head bias
+ * unless no_lm_bias, GQA with head_dim = d_model / heads (the file has no
+ * key_length), and an MoE of `experts` experts, `used` per token, routed by
+ * SparseMixer. attention.sliding_window is stated, as real files state it,
+ * and not applied. F32 weights, tensors and keys under "phimoe". */
+struct mf_phimoe {
+    uint32_t layers, d_model, heads, kv_heads, experts, used, expert_ff, vocab;
+    uint64_t seed;
+    bool     no_lm_bias, longrope;
+};
+
+static inline struct tf_buf mf_phimoe_gguf(const struct mf_phimoe *c) {
+    const uint32_t    d  = c->d_model;
+    const uint32_t    hd = d / c->heads;
+    const uint32_t    kv = c->kv_heads * hd;
+    struct mf_tensors ts = {0};
+    mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
+    mf_add(&ts, d, c->vocab, MF_RAND, "output.weight");
+    if (!c->no_lm_bias) {
+        mf_add(&ts, c->vocab, 0, MF_RAND, "output.bias");
+        ts.t[ts.n - 1].scale = 5.0f;
+    }
+    mf_add(&ts, d, 0, MF_RAMP, "output_norm.weight");
+    mf_add(&ts, d, 0, MF_RAND, "output_norm.bias");
+    ts.t[ts.n - 1].scale = 5.0f;
+    for (uint32_t l = 0; l < c->layers; l++) {
+        const struct {
+            const char *name;
+            uint32_t    ne0, ne1;
+            float       scale; /* 0: MF_RAMP */
+        } t[] = {
+                {"attn_norm.weight", d, 0, 0.0f},
+                {"attn_norm.bias", d, 0, 5.0f},
+                {"attn_q.weight", d, d, 1.0f},
+                {"attn_q.bias", d, 0, 5.0f},
+                {"attn_k.weight", d, kv, 1.0f},
+                {"attn_k.bias", kv, 0, 5.0f},
+                {"attn_v.weight", d, kv, 1.0f},
+                {"attn_v.bias", kv, 0, 5.0f},
+                {"attn_output.weight", d, d, 1.0f},
+                {"attn_output.bias", d, 0, 5.0f},
+                {"ffn_norm.weight", d, 0, 0.0f},
+                {"ffn_norm.bias", d, 0, 5.0f},
+                {"ffn_gate_inp.weight", d, c->experts, 1.0f},
+        };
+        for (size_t i = 0; i < sizeof t / sizeof t[0]; i++) {
+            mf_add(&ts,
+                   t[i].ne0,
+                   t[i].ne1,
+                   t[i].scale == 0.0f ? MF_RAMP : MF_RAND,
+                   "blk.%u.%s",
+                   l,
+                   t[i].name);
+            ts.t[ts.n - 1].scale = t[i].scale;
+        }
+        /* Three times the usual range each, so the experts' sum weighs
+         * against the biases and the router's weights show in the logits. */
+        const struct {
+            const char *name;
+            uint32_t    ne0, ne1;
+        } e[] = {{"ffn_gate_exps", d, c->expert_ff},
+                 {"ffn_up_exps", d, c->expert_ff},
+                 {"ffn_down_exps", c->expert_ff, d}};
+        for (size_t i = 0; i < sizeof e / sizeof e[0]; i++) {
+            mf_add(&ts, e[i].ne0, e[i].ne1, MF_RAND, "blk.%u.%s.weight", l, e[i].name);
+            ts.t[ts.n - 1].ne2   = c->experts;
+            ts.t[ts.n - 1].scale = 3.0f;
+        }
+        if (c->longrope)
+            mf_add(&ts, hd / 2, 0, MF_ONE, "blk.%u.rope_factors_long.weight", l);
+    }
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } u32[] = {
+            {"block_count", c->layers},
+            {"embedding_length", d},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->kv_heads},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
+            {"context_length", 4096},
+            {"vocab_size", c->vocab},
+            {"feed_forward_length", c->expert_ff},
+            {"rope.dimension_count", hd},
+            {"attention.sliding_window", 7},
+    };
+    const struct {
+        const char *key;
+        float       v;
+    } f32[] = {
+            {"rope.freq_base", 10000.0f},
+            {"attention.layer_norm_rms_epsilon", 1e-5f},
+    };
+    const size_t  n_u32 = sizeof u32 / sizeof u32[0], n_f32 = sizeof f32 / sizeof f32[0];
+    const char    arch[] = "phimoe";
+    char          key[80];
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o, 1 + n_u32 + n_f32);
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, arch, strlen(arch));
+    for (size_t i = 0; i < n_u32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    for (size_t i = 0; i < n_f32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, f32[i].key);
+        mf_key(&o, key, TF_GGUF_FLOAT32);
+        tf_f32(&o, f32[i].v);
+    }
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
 /* Llama 4 (#244): every moe_step-th layer (1-based) a mixture of experts
  * plus a shared expert, the rest dense; rope_freqs.weight factors (1, 1.5,
  * 2, ...); attention.chunk_size / temperature_length shrink llama.cpp's

@@ -480,8 +480,13 @@ enum geist_status moe_wire_layer(struct transformer_arch_state    *st,
     /* A router other than the one the family declared is refused, never
      * approximated: llama.cpp's gating enum, 1 = softmax (the default),
      * 2 = sigmoid, 3 = softmax over the selected (arch_config.h). */
-    uint32_t       gating = 1;
-    const uint32_t want   = st->config.moe_gating != 0 ? (uint32_t) st->config.moe_gating : 1;
+    uint32_t gating = 1;
+    /* SparseMixer (Phi-MoE) is not one of them: a file that states a
+     * gating there states llama.cpp's stand-in, softmax. */
+    const uint32_t want =
+            st->config.moe_gating != 0 && st->config.moe_gating != GEIST_MOE_GATING_SPARSEMIXER
+                    ? (uint32_t) st->config.moe_gating
+                    : 1;
     snprintf(name, sizeof name, "%s.expert_gating_func", arch);
     if (gguf_get_meta_u32(gguf, name, &gating) && gating != want) {
         geist_backend_set_error(be,
@@ -1112,5 +1117,30 @@ load_globals(struct geist_backend *be, struct gguf_ctx *gguf, struct transformer
         return s;
     }
     st->output_norm = make_view_1d(buf, GEIST_DTYPE_F32, GEIST_LAYOUT_DENSE, (int64_t) st->d_model);
-    return global_keep(be, st, buf);
+    s               = global_keep(be, st, buf);
+    /* #523: the output LayerNorm's bias and the lm_head's, where the family
+     * declared them. */
+    const struct {
+        bool                 have;
+        const char          *name;
+        size_t               n;
+        struct geist_tensor *out;
+    } biases[] = {
+            {st->config.norm_layernorm,
+             "output_norm.bias",
+             (size_t) st->d_model,
+             &st->output_norm_b},
+            {st->config.lm_head_bias, "output.bias", (size_t) st->vocab_size, &st->output_b},
+    };
+    for (size_t i = 0; i < sizeof biases / sizeof biases[0] && s == GEIST_OK; i++) {
+        if (!biases[i].have)
+            continue;
+        s = load_norm_to_f32_buffer(st, gguf, biases[i].name, biases[i].n, &buf);
+        if (s != GEIST_OK)
+            break;
+        *biases[i].out =
+                make_view_1d(buf, GEIST_DTYPE_F32, GEIST_LAYOUT_DENSE, (int64_t) biases[i].n);
+        s = global_keep(be, st, buf);
+    }
+    return s;
 }

@@ -103,6 +103,16 @@ compute_per_layer_inputs_batch(struct transformer_arch_session *sess,
                                struct geist_buffer             *h_buf,
                                struct geist_buffer             *out_buf);
 
+/* The model's output norm on the rows of t_h ([k, HIDDEN]) in place: an
+ * RMSNorm, or with config.norm_layernorm the LayerNorm with output_norm_b
+ * (#523). */
+[[nodiscard]] enum geist_status transformer_output_norm(struct transformer_arch_state *st,
+                                                        struct geist_tensor           *t_h);
+/* logits[r, :] += output_b for the k rows of `logits`, after every lm_head
+ * projection; nothing for a model without config.lm_head_bias (#523). */
+[[nodiscard]] enum geist_status
+transformer_head_bias(struct transformer_arch_state *st, size_t k, struct geist_buffer *logits);
+
 struct transformer_decision_readout;
 [[nodiscard]] enum geist_status transformer_head_prepare(struct transformer_arch_session *sess,
                                                          size_t                           row_idx);
