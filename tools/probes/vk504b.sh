@@ -93,9 +93,11 @@ for mode in "$@"; do
             done
         done
         ;;
-    ab | ab=*)
-        [ "$arg" = ab ] && arg=6
-        for m in giga v2s v2 llama gigac; do
+    ab | ab=* | abf32 | abf32=*)
+        case $mode in ab*f32*) AB_ENV="--env GEIST_KV_F16=0"; AB_MODELS="v2s giga"; arg=${mode#abf32}; arg=${arg#=} ;;
+        *) AB_ENV=""; AB_MODELS="giga v2s v2 llama gigac" ;; esac
+        [ "$arg" = ab ] || [ -z "$arg" ] && arg=6
+        for m in $AB_MODELS; do
             case $m in
             giga) f=$GIGA ;; v2s) f=$V2_S ;; v2) f=$V2 ;; llama) f=$LLAMA3 ;; gigac) f=$GIGA_C ;;
             esac
@@ -104,10 +106,10 @@ for mode in "$@"; do
             # shellcheck disable=SC2086
             python3 "$ROOT/tools/bench_revision_ab.py" --rev "base=$BASE" --rev "new=$NEW" \
                 --gguf "$f" --seq-lens 512,2048 --decode-n 64 --repeats 1 --warmup 1 --cycles "$arg" \
-                --env GEIST_BENCH_BACKEND=vulkan --make-arg TARGET=linux \
+                --env GEIST_BENCH_BACKEND=vulkan $AB_ENV --make-arg TARGET=linux \
                 --make-arg "BACKENDS=vulkan cpu_x86 cpu_scalar" --make-arg GEMM_PROVIDER=native \
                 --jobs 16 --out-dir "$OUT/ab-$m" >"$OUT/ab-$m.txt" 2>&1
-            { echo "### A/B $m ($(basename "$f"))"; echo '```'; tail -40 "$OUT/ab-$m.txt"; echo '```'; } | tee -a "$OUT/summary.md"
+            { echo "### A/B $m ($(basename "$f")) $AB_ENV"; echo '```'; tail -40 "$OUT/ab-$m.txt"; echo '```'; } | tee -a "$OUT/summary.md"
         done
         ;;
     vsllama | vsllama=*)
