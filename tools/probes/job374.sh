@@ -6,6 +6,7 @@
 set -u
 O=$1
 rc=0
+for e in $(echo "${XENV:-}" | tr ';' ' '); do export "${e?}"; done
 for v in base new; do
     if [ "$v" = base ]; then R=$BASE; [ "$PROBE_MODE" = parity ] || continue; else R=$NEW; fi
     git worktree add --detach "$RUNNER_TEMP/w-$v" "$R" > /dev/null 2>&1

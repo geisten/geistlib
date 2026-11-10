@@ -14,13 +14,13 @@ mkdir -p "$O"
 head -c "$BYTES" docs/OFFLOAD.md > "$O/prompt.txt"
 for m in "$@"; do
     n=$(basename "$m" .gguf)
-    for v in ref:$NB:cpu_scalar:0 base:$BB:cpu_x86:0 new:$NB:cpu_x86:0 new64:$NB:cpu_x86:64; do
+    for v in base:$BB:cpu_x86:0 new:$NB:cpu_x86:0 new64:$NB:cpu_x86:64 ref:$NB:cpu_scalar:0; do
         lab=${v%%:*}; rest=${v#*:}; bin=${rest%%:*}; rest=${rest#*:}; be=${rest%%:*}; mm=${rest#*:}
         export GEIST_DUMP_BACKEND=$be GEIST_BACKEND=$be
         if [ "$mm" = 0 ]; then unset GEIST_M_MAX; else export GEIST_M_MAX=$mm; fi
         echo "-- $n $lab ($be, $bin)" >> "$O/log_$n.txt"
         "$bin/tools/dump_geist_logits" "$m" "$O/prompt.txt" "$O/ids_$n.bin" "$O/final_${n}_$lab.bin" 2>>"$O/log_$n.txt"
-        python3 -c "import sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').write(d[:($PRE+$TF)*4])" "$O/ids_$n.bin" "$O/idstf_$n.bin"
+        [ -s "$O/idstf_$n.bin" ] || python3 -c "import sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').write(d[:($PRE+$TF)*4])" "$O/ids_$n.bin" "$O/idstf_$n.bin"
         "$bin/tools/dump_geist_tf_logits" "$m" "$O/idstf_$n.bin" "$PRE" "$O/tf_${n}_$lab.bin" 2>>"$O/log_$n.txt"
     done
     unset GEIST_M_MAX
@@ -55,5 +55,5 @@ for a, b in (('base', 'ref'), ('new', 'ref'), ('new', 'base'), ('new64', 'new'))
     same = F[a] == F[b] and T[a] == T[b]
     print(f"| {a} vs {b} | {mx(F[a], F[b]):.4g} / {100*rel(F[a], F[b]):.2f} % | {am(F[a]) == am(F[b])} | {100*sum(rels)/k:.2f} % / {100*max(rels):.2f} % | {sum(jss)/k:.5f} | {top}/{k} | {same} |")
 PY
-    rm -f "$O"/*_"$n"_*.bin
+    rm -f "$O"/*_"$n"_*.bin "$O/ids_$n.bin" "$O/idstf_$n.bin"
 done
