@@ -88,71 +88,16 @@ jobs:
           git fetch origin
           { lscpu | head -20; uname -a; } > out/env.txt
           LOCK_PRIO=batch LOCK_MAX=240 ~/bin/with-desktop-lock sh tools/probes/ab374b.sh out
-      - name: Build base and new
+      - name: Build and run (one lock hold)
         if: inputs.mode == 'parity' || inputs.mode == 'test' || inputs.mode == 'bench'
+        env:
+          LOCK_NOTE: "#374 ${{ inputs.mode }} (run ${{ github.run_id }})"
         run: |
           set -o pipefail
           mkdir -p out
           git fetch origin
-          for v in base new; do
-            if [ "$v" = base ]; then R=$BASE; [ "$PROBE_MODE" = parity ] || continue; else R=$NEW; fi
-            git worktree add --detach "$RUNNER_TEMP/w-$v" "$R"
-            git -C "$RUNNER_TEMP/w-$v" log --oneline -1 | tee -a out/heads.txt
-            make -C "$RUNNER_TEMP/w-$v" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build-$v.log 2>&1 || { tail -60 out/build-$v.log; exit 1; }
-          done
-      - name: Unit tests
-        if: inputs.mode == 'test'
-        run: |
-          set -o pipefail
-          B=$RUNNER_TEMP/w-new/bin/linux/release/tests
-          grep -o 'avx512_vnni\|avx_vnni' /proc/cpuinfo | sort -u | tee -a out/report.txt
-          rc=0
-          for t in $(echo "$TESTS" | tr ';' ' '); do
-            for isa in native avx2 scalar; do
-              echo "== $t GEIST_FORCE_ISA=$isa" | tee -a out/report.txt
-              if [ $isa = native ]; then
-                (cd "$RUNNER_TEMP/w-new" && "$B/$t") > out/t.log 2>&1 || rc=1
-              else
-                (cd "$RUNNER_TEMP/w-new" && GEIST_FORCE_ISA=$isa "$B/$t") > out/t.log 2>&1 || rc=1
-              fi
-              tail -30 out/t.log | tee -a out/report.txt
-            done
-          done
-          exit $rc
-      - name: Parity (one lock hold)
-        if: inputs.mode == 'parity'
-        env:
-          LOCK_NOTE: "#374 kernel parity logits (run ${{ github.run_id }})"
-        run: |
-          set -o pipefail
-          FILES=""
-          for m in $(echo "$MODELS" | tr ';' ' '); do
-            case $m in gptoss) FILES="$FILES $GPTOSS" ;; deepseek) FILES="$FILES $DEEPSEEK" ;; qwen3moe) FILES="$FILES $QWEN3MOE" ;; esac
-          done
-          LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock sh tools/probes/parity374b.sh \
-            "$RUNNER_TEMP/w-base/bin/linux/release" "$RUNNER_TEMP/w-new/bin/linux/release" "$PWD/out/parity" $FILES 2>&1 | tee -a out/report.txt
-          grep -h "backend=\|rror\|not finite" out/parity/log_* | sort | uniq -c | tee -a out/report.txt
-      - name: Headline numbers (one lock hold)
-        if: inputs.mode == 'bench'
-        env:
-          LOCK_NOTE: "#374 headline numbers (run ${{ github.run_id }})"
-        run: |
-          set -o pipefail
-          LLAMA=$(scripts/ensure-llama-bench.sh cpu)
-          export LLAMA B=$RUNNER_TEMP/w-new/bin/linux/release/tests/bench_perf_sweep
-          cat > out/bench.sh <<'EOF'
-          set -u
-          for m in $(echo "$MODELS" | tr ';' ' '); do
-            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; *) continue ;; esac
-            echo "== $m"
-            sh tools/probes/quiet_wait.sh
-            echo "-- geist pp512/tg128 (cpu_x86, 16 threads, OFFLOAD.md, 3 repeats)"
-            GEIST_BENCH_BACKEND=cpu_x86 $B --gguf "$F" --seq-lens 512 --decode-n 128 --warmup 1 --repeats 3 --prompt-file docs/OFFLOAD.md 2>/dev/null
-            echo "-- llama-bench"
-            "$LLAMA" -m "$F" -p 512 -n 128 -r 3 -t 16 -o jsonl 2>/dev/null | grep -o '"n_prompt": [0-9]*, "n_gen": [0-9]*.*"avg_ts": [0-9.]*'
-          done
-          EOF
-          LOCK_PRIO=batch LOCK_MAX=90 ~/bin/with-desktop-lock sh out/bench.sh 2>&1 | tee -a out/report.txt
+          if [ "$PROBE_MODE" = bench ]; then LLAMA=$(scripts/ensure-llama-bench.sh cpu); export LLAMA; fi
+          LOCK_PRIO=batch LOCK_MAX=150 ~/bin/with-desktop-lock sh tools/probes/job374.sh out
       - name: Clean up worktrees
         if: always()
         run: |
