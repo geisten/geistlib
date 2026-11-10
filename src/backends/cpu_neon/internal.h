@@ -67,6 +67,10 @@ struct cpu_neon_workspace {
      * n_in_max). 64-byte aligned for AMX SGEMM. */
     float *dequant_w_fp32;
     size_t dequant_w_fp32_cap;
+    /* One row as two (the trampoline's M=1): [x | 0 | y y'], in floats
+     * 2 * (n_in + n_out). */
+    float *dequant_two_rows;
+    size_t dequant_two_rows_cap;
     /* F32 elementwise scratch (vForce tanh input). */
     float *elt_f32;
     size_t elt_f32_cap;
