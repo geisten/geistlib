@@ -1,0 +1,150 @@
+# One-shot for #249 (scratch branch, not for merge): the grouped MoE prefill
+# GEMM without cooperative matrices, on the RTX 2080 Ti with
+# GEIST_VK_NO_COOPMAT=1. The iGPU (RADV) is hung until the desktop reboots:
+# the job refuses to run unless the loader is pinned to the NVIDIA ICD.
+#   new = this branch's parent (the PR head), old = OLD (main + the env switch)
+# One desktop lock hold (bench + GPU) for tests, quality and the A/B; before
+# each measurement it waits for no docker CI job and >= 97 % idle CPU over
+# 10 s, and logs ps.
+name: moe-nocm-249
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: "interleaved A/B cycles"
+        type: string
+        default: "3"
+permissions:
+  contents: read
+jobs:
+  ab:
+    runs-on: geist-vulkan
+    timeout-minutes: 300
+    env:
+      M: /home/germar/geist-models
+      OLD: f602c792
+      CYCLES: ${{ inputs.cycles }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Guard (NVIDIA ICD only, never the iGPU)
+        run: |
+          echo "VK_DRIVER_FILES=${VK_DRIVER_FILES:-} VK_ICD_FILENAMES=${VK_ICD_FILENAMES:-}"
+          case "${VK_DRIVER_FILES:-}" in
+            *nvidia*) ;;
+            *) echo "VK_DRIVER_FILES is not pinned to the NVIDIA ICD -- refusing (the iGPU is hung)"; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Environment
+        run: |
+          mkdir -p out
+          { git rev-parse HEAD HEAD^ "$OLD"; vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType|driverID|driverInfo'; nvidia-smi; free -g; } 2>&1 | tee out/env.txt
+          ! grep -q RADV out/env.txt || { echo "RADV enumerated -- refusing"; exit 1; }
+          grep -q PHYSICAL_DEVICE_TYPE_DISCRETE_GPU out/env.txt
+      - name: Build new and old (outside the lock)
+        run: |
+          set -e
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin > out/build-new.txt 2>&1
+          git worktree add -f "$RUNNER_TEMP/old-249" "$OLD"
+          make -C "$RUNNER_TEMP/old-249" TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin > out/build-old.txt 2>&1
+          echo "NEWB=$PWD/bin/linux/release/tests" >> "$GITHUB_ENV"
+          echo "OLDB=$RUNNER_TEMP/old-249/bin/linux/release/tests" >> "$GITHUB_ENV"
+          echo "LLAMA_VK=$(scripts/ensure-llama-bench.sh vulkan)" >> "$GITHUB_ENV"
+      - name: Tests, quality and A/B under one desktop lock
+        env:
+          GEIST_QUIET: "1"
+        run: |
+          set +e
+          . scripts/gpu-lock.sh
+          echo "lock held from $(date -u +%FT%TZ)" | tee -a out/log.txt
+          idle10() {
+            read -r _ u1 n1 s1 i1 w1 q1 sq1 st1 _ < /proc/stat; sleep 10
+            read -r _ u2 n2 s2 i2 w2 q2 sq2 st2 _ < /proc/stat
+            t=$(( (u2+n2+s2+i2+w2+q2+sq2+st2) - (u1+n1+s1+i1+w1+q1+sq1+st1) ))
+            echo $(( 100 * ((i2+w2) - (i1+w1)) / (t > 0 ? t : 1) ))
+          }
+          quiet() { # $1: label
+            local i n idle
+            for i in $(seq 180); do
+              n=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c GITEA-ACTIONS-TASK)
+              idle=$(idle10)
+              [ "$n" = 0 ] && [ "$idle" -ge 97 ] && break
+            done
+            { echo "== $1: $(date -u +%T) docker CI jobs $n, idle $idle % over 10 s (try $i)"
+              [ "$n" = 0 ] && [ "$idle" -ge 97 ] || echo "   NOT QUIET"
+              ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -8; } | tee -a out/ps.txt | head -2
+          }
+          # --- parity on the 2080 Ti, tensor cores and GEIST_VK_NO_COOPMAT=1 ---
+          for cm in 0 1; do
+            for t in test_moe_grouped_unit test_moe_device_unit test_moe_prefill_unit \
+                     test_qwen3moe_unit test_qwen35moe_unit test_olmoe_unit test_gpt_oss_unit \
+                     test_deepseek2_unit test_glm4moe_unit test_backend_vulkan_linear_parity \
+                     test_backend_vulkan_linear_grouped_unit test_backend_vulkan_ops_unit \
+                     test_fused_probe_agreement_unit test_backend_vulkan_fallback_unit; do
+              echo "=== nocm=$cm $t ===" >> out/tests.txt
+              if [ $cm = 1 ]; then e=GEIST_VK_NO_COOPMAT=1; else e=GEIST_VK_NO_COOPMAT=0; fi
+              env $e timeout 900 "$NEWB/$t" >> out/tests.txt 2>&1; rc=$?
+              echo "RESULT nocm=$cm $t $rc" | tee -a out/tests.txt
+            done
+          done
+          grep -E "grouped linear_t_ids|device-routed prefill" out/tests.txt
+          # --- quality: perplexity of docs/OFFLOAD.md, 1023 tokens ---
+          for f in OLMoE-1B-7B-0125-Instruct-Q4_K_M Qwen3-30B-A3B-Q4_K_M; do
+            for cfg in cpu new-cm new-nocm old-nocm; do
+              case $cfg in
+                cpu) b=$NEWB; e="GEIST_BENCH_BACKEND=cpu_x86" ;;
+                new-cm) b=$NEWB; e="GEIST_BENCH_BACKEND=vulkan GEIST_VK_NO_COOPMAT=0" ;;
+                new-nocm) b=$NEWB; e="GEIST_BENCH_BACKEND=vulkan GEIST_VK_NO_COOPMAT=1" ;;
+                old-nocm) b=$OLDB; e="GEIST_BENCH_BACKEND=vulkan GEIST_VK_NO_COOPMAT=1" ;;
+              esac
+              echo "== nll $f $cfg" >> out/log.txt
+              env $e GEIST_VERBOSE=1 timeout 1800 "$b/bench_nll" "$M/$f.gguf" docs/OFFLOAD.md 1024 0 2>> out/log.txt \
+                | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"$cfg\",/" | tee -a out/nll.jsonl
+            done
+          done
+          # --- A/B, interleaved, order rotated per cycle ---
+          cfgs=(old-nocm new-nocm old-cm new-cm llama-nocm llama-cm)
+          for c in $(seq "$CYCLES"); do
+            for f in OLMoE-1B-7B-0125-Instruct-Q4_K_M Qwen3-30B-A3B-Q4_K_M; do
+              for j in "${!cfgs[@]}"; do
+                cfg=${cfgs[$(( (j + c) % ${#cfgs[@]} ))]}
+                # the 30B does not fit the 11 GiB card whole: geist splits
+                # its experts hot/cold (not this PR's path), llama.cpp is
+                # left out there
+                case "$f $cfg" in Qwen3-30B*llama-*) continue ;; esac
+                quiet "cycle $c $f $cfg"
+                s=$(date +%s)
+                case $cfg in
+                  old-nocm) b=$OLDB; e=GEIST_VK_NO_COOPMAT=1 ;;
+                  new-nocm) b=$NEWB; e=GEIST_VK_NO_COOPMAT=1 ;;
+                  old-cm) b=$OLDB; e=GEIST_VK_NO_COOPMAT=0 ;;
+                  new-cm) b=$NEWB; e=GEIST_VK_NO_COOPMAT=0 ;;
+                  # llama.cpp disables on presence, whatever the value
+                  llama-nocm) e="GGML_VK_DISABLE_COOPMAT=1 GGML_VK_DISABLE_COOPMAT2=1" ;;
+                  llama-cm) e="" ;;
+                esac
+                echo "== cycle $c $f $cfg (load $(cut -d' ' -f1 /proc/loadavg))" >> out/log.txt
+                case $cfg in
+                  llama-*)
+                    env $e timeout 1500 "$LLAMA_VK" -m "$M/$f.gguf" -ngl 99 -p 512 -n 32 -r 3 -o jsonl 2>> out/log.txt \
+                      | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"$cfg\",\"cycle\":$c,/" | tee -a out/results.jsonl ;;
+                  *)
+                    env $e GEIST_BENCH_BACKEND=vulkan GEIST_VERBOSE=1 GEIST_VK_VERBOSE=1 timeout 1500 "$b/bench_perf_sweep" \
+                      --gguf "$M/$f.gguf" --seq-lens 512 --decode-n 32 --warmup 2 --repeats 3 2>> out/log.txt \
+                      | sed "s/^{/{\"model\":\"$f\",\"cfg\":\"$cfg\",\"cycle\":$c,/" | tee -a out/results.jsonl ;;
+                esac
+                echo "== $f $cfg cycle $c done after $(( $(date +%s) - s )) s" >> out/log.txt
+              done
+            done
+          done
+          echo "lock released at $(date -u +%FT%TZ)" | tee -a out/log.txt
+          grep -c '^RESULT.* 0$' out/tests.txt; grep '^RESULT' out/tests.txt | grep -v ' 0$' || echo "all tests exit 0"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: moe-nocm-249
+          path: out/
