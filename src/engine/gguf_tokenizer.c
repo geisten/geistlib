@@ -465,6 +465,11 @@ static bool name_in(size_t n, const char *s, const char *const *list) {
     }
     if (flag >= 0) /* tokenizer.ggml.add_bos_token overrides the default */
         add_bos = flag != 0;
+    /* llama.cpp clears the BOS id of the GLM vocabularies, so nothing is
+     * prepended whatever the flag says. */
+    static const char *const NO_BOS[] = {"chatglm-bpe", "glm4", "glm5", nullptr};
+    if (is_bpe && name_in(pre_len, pre, NO_BOS))
+        add_bos = false;
     /* ... except for Gemma 4, which llama.cpp forces on (its PR 21500). */
     const bool gemma4 =
             is_bpe && (name_in(model_len, model, GEMMA4_MODEL) || name_in(pre_len, pre, GEMMA4));
@@ -585,6 +590,8 @@ static bool name_in(size_t n, const char *s, const char *const *list) {
                                              "midm-2.0",
                                              "lfm2",
                                              "jina-v5-nano",
+                                             "glm4", /* LLAMA_VOCAB_PRE_TYPE_CHATGLM4 */
+                                             "glm5", /* with ignore_merges: the same */
                                              nullptr};
         static const char *const QWEN2[]  = {"qwen2", "qwen35", nullptr};
         static const char *const QWEN35[] = {"qwen35", nullptr};

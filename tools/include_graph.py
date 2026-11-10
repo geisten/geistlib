@@ -65,7 +65,7 @@ JSON_OUT = OUT_DIR / "include_graph.json"
 MD_OUT = OUT_DIR / "INCLUDE_GRAPH.md"
 GENERATED = ("_spv.h", "metal_shaders.h")  # data only, include nothing
 ALL_BACKENDS = ("cpu_neon", "cpu_scalar", "cpu_x86", "metal", "vulkan")
-FAMILIES = ("bitnet", "deepseek2", "gemma3", "gemma4", "gpt_oss", "granitemoe",
+FAMILIES = ("bitnet", "deepseek2", "gemma3", "gemma4", "glm4moe", "gpt_oss", "granitemoe",
             "llama", "llama4", "olmoe", "qwen3", "qwen35", "qwen3moe")
 # What a header needs defined to be preprocessed on its own: internal
 # headers #error without their layer's guard.
