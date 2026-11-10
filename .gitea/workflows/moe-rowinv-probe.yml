@@ -82,7 +82,7 @@ jobs:
           git worktree add --detach "$RUNNER_TEMP/ri" "$REF"
           git -C "$RUNNER_TEMP/ri" log --oneline -1 | tee out/head.txt
           make -C "$RUNNER_TEMP/ri" $MAKEARGS BACKENDS="cpu_x86 cpu_scalar" -j16 bin > out/build.log 2>&1 || { tail -60 out/build.log; exit 1; }
-          lscpu | grep -E 'Model name|Flags' | cut -c1-400 > out/env.txt
+          LC_ALL=C lscpu | grep -E 'Model name|Flags' | cut -c1-400 > out/env.txt || true
       - name: Survey
         if: inputs.mode == 'survey'
         env:
