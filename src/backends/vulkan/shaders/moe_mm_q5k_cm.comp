@@ -1,0 +1,8 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q5_K grouped expert GEMM on the tensor cores (#499). Body and notes:
+ * moe_mm_body.glsl. */
+#define DT_Q5K 1
+#define MOE_MM_CM 1
+#include "moe_mm_body.glsl"

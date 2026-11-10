@@ -106,6 +106,20 @@ typedef void (*geist_kernel_linear_triple_m1_fn)(const float               *x,
                                                  float                     *y1,
                                                  float                     *y2);
 
+/* Optional: rows [r0, r1) of linear_m1's output, y[0, r1 - r0), for a
+ * weight whose layout cannot be sliced by row from the outside (a backend
+ * repack): each element is the same dot product linear_m1 computes for that
+ * row, so a caller may split a matrix-vector product over threads. r0 is a
+ * multiple of the weight's linear_m1_rows_align, r1 one as well or n_out,
+ * r0 < r1 <= n_out. Allocation-free. Plain pointers: the extents depend on
+ * `w` and the range. */
+typedef void (*geist_kernel_linear_m1_rows_fn)(size_t                     r0,
+                                               size_t                     r1,
+                                               const float               *x,
+                                               const struct geist_weight *w,
+                                               struct geist_backend      *be,
+                                               float                     *y);
+
 enum geist_weight_flags : uint32_t {
     /* aux_fp32 holds AWQ inverse-scales of length n_out. */
     GEIST_W_HAS_AWQ_INV = 1U << 0,
@@ -171,6 +185,10 @@ struct geist_weight {
     geist_kernel_linear_pair_m1_fn linear_pair_m1;
     geist_kernel_linear_pair_mN_fn linear_pair_mN;
     geist_kernel_linear_triple_m1_fn linear_triple_m1;
+    /* Optional row-range M=1 entry (see the typedef); nullptr = none.
+     * linear_m1_rows_align is its row granularity (>= 1 when set). */
+    geist_kernel_linear_m1_rows_fn linear_m1_rows;
+    uint32_t                       linear_m1_rows_align;
 
     /* Optional pre-folded auxiliary FP32 data; semantics depend on
      * flags. nullptr if none. Length encoded in aux_n. */

@@ -55,6 +55,7 @@ make test-int test-e2e   # real-model product path (needs the GGUF)
 make test-py         # hermetic Python suites
 make test FILTER=q3k # substring filter
 make MODE=asan test  # sanitizer pass
+GEIST_TEST_JOBS=4 make test-int  # four test binaries at a time
 ```
 
 | Exit | Meaning |

@@ -19,16 +19,31 @@
  *
  * GROUP (2 or 4: the most q-heads per workgroup) is fixed per variant by the
  * including .comp; the per-head registers and the shared q / merge buffer
- * scale with it. Wider costs more than the K/V re-reads it saves (RTX 2080
+ * scale with it. PART_WG / PART_MAX_HD (default VK_ATTN_PART_WG /
+ * VK_ATTN_PART_MAX_HEAD_DIM) and KV_F32 (an F32 cache) let the _mla
+ * variants (#504) serve absorbed MLA's 576-dim head, whose 144 dim slices
+ * need more lanes than 128, from either cache. Wider costs more than the K/V re-reads it saves (RTX 2080
  * Ti, 3072 keys): a 4-wide variant serving Qwen3's 2-head groups ran 10 %
  * slower than the 2-wide one, an 8-wide one 1.8x slower, and Gemma 4's
  * 8-head group runs 1.4x faster as two batches of 4 than as one of 8. */
 
-layout(local_size_x = VK_ATTN_PART_WG) in;
+#ifndef PART_WG
+#define PART_WG VK_ATTN_PART_WG
+#endif
+#ifndef PART_MAX_HD
+#define PART_MAX_HD VK_ATTN_PART_MAX_HEAD_DIM
+#endif
+
+layout(local_size_x = PART_WG) in;
 
 layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
+#ifdef KV_F32
+layout(set = 0, binding = 1) readonly buffer K { vec4 k4[]; };
+layout(set = 0, binding = 2) readonly buffer V { vec4 v4[]; };
+#else
 layout(set = 0, binding = 1) readonly buffer K { f16vec4 k4[]; };
 layout(set = 0, binding = 2) readonly buffer V { f16vec4 v4[]; };
+#endif
 layout(set = 0, binding = 3) writeonly buffer P { float part[]; };
 layout(set = 0, binding = 3) writeonly buffer P4 { vec4 part4[]; };
 
@@ -48,14 +63,14 @@ layout(push_constant) uniform Push {
     uint n_spans;
 } pc;
 
-const uint WG = VK_ATTN_PART_WG;
+const uint WG = PART_WG;
 const uint TMAX = VK_ATTN_PART_TILE_MAX;
 const uint GMAX = GROUP; /* q-heads one workgroup serves, fixed per variant */
 const uint UNR = 8u; /* loads in flight per lane */
 const float NEG_INF = -1.0 / 0.0;
 
 /* q of the batch's heads; at the end, the V position-group merge. */
-shared vec4 big[GROUP * (VK_ATTN_MAX_HEAD_DIM / 4u)];
+shared vec4 big[GROUP * (PART_MAX_HD / 4u)];
 shared float qk[GMAX * WG];   /* QK lane partials */
 shared float wsh[GMAX * TMAX]; /* scores, then weights */
 shared float red[GMAX * TMAX]; /* reduction scratch */
@@ -70,10 +85,16 @@ void main() {
     uint grp = pc.n_q_heads / pc.n_kv_heads;
     uint h0 = kvh * grp + gl_WorkGroupID.z * pc.gb;
     if (span >= pc.n_spans || kvh >= pc.n_kv_heads || h0 >= (kvh + 1u) * grp ||
-        pc.hd < 4u || pc.hd > VK_ATTN_MAX_HEAD_DIM || pc.gb > GMAX || pc.tile == 0u ||
+        pc.hd < 4u || pc.hd > PART_MAX_HD || pc.gb > GMAX || pc.tile == 0u ||
         pc.tile > TMAX) {
         return;
     }
+#ifdef PART_MLA
+    /* more lanes than slices: the merge buffer holds one position group */
+    if ((WG / (pc.hd >> 2u)) * (pc.hd >> 2u) > PART_MAX_HD / 4u) {
+        return;
+    }
+#endif
     uint ng = min(pc.gb, (kvh + 1u) * grp - h0);
     uint hd = pc.hd;
     uint hd4 = hd >> 2u;

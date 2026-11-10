@@ -1,0 +1,190 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+#extension GL_EXT_control_flow_attributes : enable
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#include "vk_limits.h"
+#include "silu.glsl"
+
+/* A decode step's expert gate + up + GLU in one dispatch (#505,
+ * fused->moe_ffn_ids below VK_MOE_MM_MIN_M rows): slot s multiplies the
+ * one x row s / x_div by the gate and the up weight of expert
+ * e = ids[ids_off + s] (Q4_K, device addresses tab[tab_g + e] and
+ * tab[tab_u + e]) and writes
+ *   g[s][r] = act(gate_e x + xb[e][r] (hx), up_e x + zb[e][r] (hz))
+ * with moe_glu.comp's activations (act 0: silu(a) * b; act 1: swiglu_oai).
+ * matvec_q4k_sel's warp structure (2 warps x 4 rows, each row's partial sums
+ * in the same order), reading x once for both weights. A warp's lanes are
+ * summed with subgroupAdd where a subgroup is one 32-lane warp, otherwise
+ * through shared memory as matvec_q4k_core.glsl does.
+ * Requires n_in % 256 == 0, x offsets % 4 == 0. Dispatch: gx = ceil(n_out
+ * / 8), gy = slots. */
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer X { vec4 x4[]; };
+layout(set = 0, binding = 1) writeonly buffer G { float g[]; };
+layout(set = 0, binding = 2) readonly buffer T { uvec2 tab[]; };
+layout(set = 0, binding = 3) readonly buffer I { uint ids[]; };
+layout(set = 0, binding = 4) readonly buffer XB { float xb[]; };
+layout(set = 0, binding = 5) readonly buffer ZB { float zb[]; };
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer WU { uint v[]; };
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer WU4 { uvec4 v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_in;
+    uint n_out;
+    uint blocks_per_row;
+    uint x_div;    /* slot s reads x row s / x_div */
+    uint x_offset; /* elements */
+    uint y_offset;
+    uint x_stride;
+    uint y_stride;
+    uint ids_off; /* words into ids */
+    uint tab_g;   /* entries into tab: the gate's table, the up projection's */
+    uint tab_u;
+    uint act;
+    uint hx, hz;   /* gate / up biases present */
+    uint xbo, zbo; /* bias row 0, elements */
+    float alpha;
+    float limit;
+} pc;
+
+const uint NUM_ROWS = 4; /* per warp */
+shared float tmpsh[2][2][NUM_ROWS][32];
+
+/* matvec_q4k_core.glsl's step for one row and one block, accumulated into
+ * acc in its order. */
+float q4k_step(float acc, uvec4 hdr, uint qs0, uint qs64, uint v_im, vec4 by10, vec4 by132,
+               vec4 by20, vec4 by232) {
+    vec2 dm = unpackHalf2x16(hdr.x);
+    uint scale0_u32 = v_im == 0u ? (hdr.y & 0xffffu) : (hdr.y >> 16u);
+    uint scale4_u32 = v_im == 0u ? (hdr.z & 0xffffu) : (hdr.z >> 16u);
+    uint scale8_u32 = v_im == 0u ? (hdr.w & 0xffffu) : (hdr.w >> 16u);
+    uint scale_0_4_l = (scale4_u32 << 16) | scale0_u32;
+    uint scale_0_4_h = (scale_0_4_l & 0xC0C0C0C0u) >> 2u;
+    vec4 scl = vec4(unpack8(scale_0_4_l & 0x3F3F3F3Fu));
+    vec4 sch = vec4(unpack8((((scale8_u32 << 12) | scale8_u32) & 0x0F0F0F0Fu) | scale_0_4_h));
+    vec4 q0l = vec4(unpack8(qs0 & 0x0F0F0F0Fu));
+    vec4 q0h = vec4(unpack8((qs0 >> 4u) & 0x0F0F0F0Fu));
+    vec4 q6l = vec4(unpack8(qs64 & 0x0F0F0F0Fu));
+    vec4 q6h = vec4(unpack8((qs64 >> 4u) & 0x0F0F0F0Fu));
+    float sx = dot(by10, q0l);
+    float sy = dot(by132, q0h);
+    float sz = dot(by20, q6l);
+    float sw = dot(by232, q6h);
+    float smin = (by10.x + by10.y + by10.z + by10.w) * scl.z +
+                 (by132.x + by132.y + by132.z + by132.w) * scl.w +
+                 (by20.x + by20.y + by20.z + by20.w) * sch.z +
+                 (by232.x + by232.y + by232.z + by232.w) * sch.w;
+    return fma(dm.x, fma(sx, scl.x, fma(sy, scl.y, fma(sz, sch.x, sw * sch.y))),
+               fma(-dm.y, smin, acc));
+}
+
+void main() {
+    uint slot = gl_WorkGroupID.y;
+    uint e = ids[pc.ids_off + slot];
+    uvec2 ag = tab[pc.tab_g + e];
+    uvec2 au = tab[pc.tab_u + e];
+    if (ag == uvec2(0u) || au == uvec2(0u)) {
+        return; /* an expert without a copy here */
+    }
+    WU wg = WU(ag);
+    WU4 wg4 = WU4(ag);
+    WU wu = WU(au);
+    WU4 wu4 = WU4(au);
+
+    uint tid = gl_LocalInvocationID.x;
+    uint wrp = tid >> 5u;
+    uint lane = tid & 31u;
+    uint first_row = gl_WorkGroupID.x * VK_MV_ROWS_PER_WG + wrp * NUM_ROWS;
+    uint itid = lane & 15u;
+    uint ix = lane >> 4u;
+    uint il = itid >> 2u;
+    uint ir = itid & 3u;
+    uint v_im = il >> 1u;
+    uint v_in = il & 1u;
+    uint l0 = 4u * (2u * ir + v_in);
+    uint q_offset = 32u * v_im + l0;
+    uint y_offset = 64u * v_im + l0;
+
+    uint num_rows = first_row < pc.n_out ? min(NUM_ROWS, pc.n_out - first_row) : 0u;
+    float tg[NUM_ROWS];
+    float tu[NUM_ROWS];
+    [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+        tg[n] = 0.0;
+        tu[n] = 0.0;
+    }
+
+    uint xbase = (pc.x_offset + (slot / pc.x_div) * pc.x_stride) >> 2u;
+    for (uint i = ix; i < pc.blocks_per_row; i += 2u) {
+        uint y1 = i * 256u + y_offset;
+        uint y2 = y1 + 128u;
+        vec4 by10 = x4[xbase + (y1 >> 2u)];
+        vec4 by132 = x4[xbase + (y1 >> 2u) + 8u];
+        vec4 by20 = x4[xbase + (y2 >> 2u)];
+        vec4 by232 = x4[xbase + (y2 >> 2u) + 8u];
+        [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+            /* clamp keeps tail-row weight reads in bounds */
+            uint blk = (min(first_row + n, pc.n_out - 1u) * pc.blocks_per_row + i) * 36u;
+            uint qsw = blk + 4u + (q_offset >> 2u);
+            tg[n] = q4k_step(tg[n], wg4.v[blk >> 2u], wg.v[qsw], wg.v[qsw + 16u], v_im, by10,
+                             by132, by20, by232);
+            tu[n] = q4k_step(tu[n], wu4.v[blk >> 2u], wu.v[qsw], wu.v[qsw + 16u], v_im, by10,
+                             by132, by20, by232);
+        }
+    }
+
+    float a = 0.0;
+    float b = 0.0;
+    if (gl_SubgroupSize == 32u) {
+        [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+            float sg = subgroupAdd(tg[n]);
+            float su = subgroupAdd(tu[n]);
+            if (lane == n) {
+                a = sg;
+                b = su;
+            }
+        }
+    } else {
+        [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+            tmpsh[0][wrp][n][lane] = tg[n];
+            tmpsh[1][wrp][n][lane] = tu[n];
+        }
+        barrier();
+        [[unroll]] for (uint s = 16u; s > 0u; s >>= 1u) {
+            if (lane < s) {
+                [[unroll]] for (uint n = 0; n < NUM_ROWS; ++n) {
+                    tmpsh[0][wrp][n][lane] += tmpsh[0][wrp][n][lane + s];
+                    tmpsh[1][wrp][n][lane] += tmpsh[1][wrp][n][lane + s];
+                }
+            }
+            barrier();
+        }
+        if (lane < NUM_ROWS) {
+            a = tmpsh[0][wrp][lane][0];
+            b = tmpsh[1][wrp][lane][0];
+        }
+    }
+    if (lane < num_rows) {
+        uint r = first_row + lane;
+        if (pc.hx != 0u) {
+            a += xb[pc.xbo + e * pc.n_out + r];
+        }
+        if (pc.hz != 0u) {
+            b += zb[pc.zbo + e * pc.n_out + r];
+        }
+        float o;
+        if (pc.act == 1u) {
+            a = min(a, pc.limit);
+            b = clamp(b, -pc.limit, pc.limit);
+            o = a / (1.0 + exp(-pc.alpha * a)) * (b + 1.0);
+        } else {
+            o = silu(a) * b;
+        }
+        g[pc.y_offset + slot * pc.y_stride + r] = o;
+    }
+}

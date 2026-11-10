@@ -123,6 +123,13 @@ geist_host_attn_kvq_views(struct geist_backend                 *be,
                                                          struct geist_tensor       *k_cache,
                                                          struct geist_tensor       *v_cache);
 
+/* prims->add_bias: y = x + b per row of x, b one row of x's last dimension;
+ * add_fp32 per row, so bit-identical to one prims->add per row. */
+[[nodiscard]] enum geist_status geist_host_add_bias(struct geist_backend      *be,
+                                                    const struct geist_tensor *x,
+                                                    const struct geist_tensor *b,
+                                                    struct geist_tensor       *y);
+
 /* fused->hadamard_rotate on host views: geist_hadamard_apply (hadamard.h). */
 [[nodiscard]] enum geist_status geist_host_hadamard_rotate(struct geist_backend             *be,
                                                            const struct geist_hadamard_args *args);

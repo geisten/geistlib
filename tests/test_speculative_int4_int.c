@@ -11,8 +11,12 @@
  * one. Equivalence is spec-decode's fundamental guarantee, so any divergence
  * here is a real bug in the INT4 truncate/rewind path.
  *
- * Covers INT4 with rotation (the shipped default) and INT4 rotation-off. SKIPs
- * cleanly if no GGUF model is reachable.
+ * Covers INT4 with rotation (the shipped default); its twin
+ * test_speculative_int4_norot_int builds this file with SPEC_INT4_ROT_OFF and
+ * covers INT4 rotation-off. Two processes, not one, so a parallel run
+ * (GEIST_TEST_JOBS) takes the halves side by side: in the coverage build on
+ * cpu_scalar each half takes ~17 minutes (#483). SKIPs cleanly if no GGUF
+ * model is reachable.
  */
 #define GEIST_INTERNAL_ENGINE_LAYER
 
@@ -131,11 +135,13 @@ int main(void) {
     }
 
     /* Force GEIST_KV_ROT explicitly (rather than relying on the mode's
-     * default) so both the rotated and unrotated paths are exercised
-     * regardless of what the packed-INT4 default happens to be. */
-    int fails = 0;
-    fails += equiv_under(GEIST_KV_INT4, "1", "INT4+ROT");
-    fails += equiv_under(GEIST_KV_INT4, "0", "INT4(rot-off)");
+     * default) so the two binaries exercise both the rotated and the
+     * unrotated path, whatever the packed-INT4 default happens to be. */
+#ifdef SPEC_INT4_ROT_OFF
+    const int fails = equiv_under(GEIST_KV_INT4, "0", "INT4(rot-off)");
+#else
+    const int fails = equiv_under(GEIST_KV_INT4, "1", "INT4+ROT");
+#endif
 
     geist_model_destroy(model);
     geist_backend_destroy(be);

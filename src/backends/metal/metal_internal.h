@@ -106,9 +106,12 @@ enum metal_profile_stage : uint32_t {
     METAL_PROFILE_DISPATCH_PQ2_M8,
     METAL_PROFILE_DISPATCH_MM_TC,        /* tensor-API GEMMs (#314) */
     METAL_PROFILE_DISPATCH_ATTENTION_TC, /* tensor-API prefill flash (#314) */
+    METAL_PROFILE_DISPATCH_MOE_MM,       /* moe_map + moe_mm_<T> (#482) */
+    METAL_PROFILE_DISPATCH_MOE_MM_GLU,   /* moe_mm_glu_<T>: gate, up and the GLU (#486) */
     METAL_PROFILE_STAGE_COUNT,
 };
 static_assert(sizeof(enum metal_profile_stage) == sizeof(uint32_t));
+static_assert(METAL_PROFILE_STAGE_COUNT <= 64, "a profile mask has a bit per stage");
 
 struct metal_profile_stat {
     uint64_t ns;
@@ -136,8 +139,12 @@ struct metal_buf_reg_entry {
     struct geist_buffer *buf;
 };
 
-/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 512. */
-constexpr int METAL_FLASH_SLOTS = 16;
+/* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 576
+ * (absorbed MLA's [k_pe | latent] head, #376). */
+constexpr int METAL_FLASH_SLOTS = 18;
+
+/* The widest head the attention kernels take (#376). */
+constexpr size_t METAL_ATTN_HEAD_DIM_MAX = 576;
 
 /* Typed handles to the Objective-C objects the backend holds (#347). The
  * structs are declared and never defined: each pointer is the object's `id`
@@ -275,6 +282,9 @@ struct metal_state {
     struct metal_function_h *cvt_kmaj_function;
     struct metal_pipeline_h *cvt_kmaj_pipeline;
     struct geist_buffer     *pq2_xh_buffer;
+    /* #482: the bucketing moe_map writes and moe_mm_<T> reads, grow-only:
+     * n + 1 expert offsets and m * k sorted slots of the widest call. */
+    struct geist_buffer *moe_map_buffer;
     /* Device-dependent crossovers; see tuning.c. Seeded from M1 Max
      * measurements, then a calibration blob, then the env. */
     struct metal_tuning {
@@ -289,6 +299,10 @@ struct metal_state {
     struct metal_pipeline_h *iq4nl_n4_pipeline;
     struct metal_function_h *iq4nl_mm_function;
     struct metal_pipeline_h *iq4nl_mm_pipeline;
+    struct metal_function_h *q50_n4_function; /* #376 */
+    struct metal_pipeline_h *q50_n4_pipeline;
+    struct metal_function_h *q50_mm_function;
+    struct metal_pipeline_h *q50_mm_pipeline;
     struct metal_function_h *mx4_n4_function;
     struct metal_pipeline_h *mx4_n4_pipeline;
     struct metal_function_h *mx4_mm_function;
@@ -362,8 +376,8 @@ struct metal_state {
     /* Tensor-API prefill flash (#314), head_dim HD in slot HD/64 - 1
      * (64, 128, 256, 512 built); built only when tensor_mm. */
     struct metal_library_h  *attn_tc_library;
-    struct metal_function_h *attention_flash_tc_function[8];
-    struct metal_pipeline_h *attention_flash_tc_pipeline[8];
+    struct metal_function_h *attention_flash_tc_function[9];
+    struct metal_pipeline_h *attention_flash_tc_pipeline[9];
     struct metal_library_h  *q4k_gate_up_n4_library;
     struct metal_library_h  *q4k_pair_n4_library;
     struct metal_function_h *q4k_pair_n4_function;
@@ -390,7 +404,8 @@ struct metal_state {
     struct metal_pipeline_h *mv3_q4k_h_q4k_q6k_pipeline;
     struct metal_library_h  *embed_library;
     struct metal_library_h  *argmax_library;
-    struct metal_library_h  *moe_library; /* #201: routing and id-indexed expert matvecs */
+    struct metal_library_h  *moe_library;    /* #201: routing and id-indexed expert matvecs */
+    struct metal_library_h  *moe_mm_library; /* #482: a prefill chunk's grouped expert GEMMs */
     struct metal_library_h  *hadamard_library;
     struct metal_function_h *hadamard_function;
     struct metal_pipeline_h *hadamard_pipeline;
@@ -509,16 +524,68 @@ struct metal_state {
     struct metal_pipeline_h *argmax_merge_pipeline;
     struct metal_function_h *moe_topk_function;
     struct metal_pipeline_h *moe_topk_pipeline;
+    struct metal_function_h *moe_topk_g_function; /* #376: DeepSeek's router */
+    struct metal_pipeline_h *moe_topk_g_pipeline;
     struct metal_function_h *moe_mv_q4k_function;
     struct metal_pipeline_h *moe_mv_q4k_pipeline;
     struct metal_function_h *moe_mv_q6k_function;
     struct metal_pipeline_h *moe_mv_q6k_pipeline;
     struct metal_function_h *moe_mv_q80_function;
     struct metal_pipeline_h *moe_mv_q80_pipeline;
+    struct metal_function_h *moe_mv_mx4_function;
+    struct metal_pipeline_h *moe_mv_mx4_pipeline;
+    struct metal_function_h *moe_mv_q50_function; /* #376 */
+    struct metal_pipeline_h *moe_mv_q50_pipeline;
     struct metal_function_h *moe_mv_f32_function;
     struct metal_pipeline_h *moe_mv_f32_pipeline;
+    struct metal_function_h *moe_glu_function;
+    struct metal_pipeline_h *moe_glu_pipeline;
     struct metal_function_h *moe_wsum_function;
     struct metal_pipeline_h *moe_wsum_pipeline;
+    struct metal_function_h *moe_map_function;
+    struct metal_pipeline_h *moe_map_pipeline;
+    struct metal_function_h *moe_mm_q4k_function;
+    struct metal_pipeline_h *moe_mm_q4k_pipeline;
+    struct metal_function_h *moe_mm_q6k_function;
+    struct metal_pipeline_h *moe_mm_q6k_pipeline;
+    struct metal_function_h *moe_mm_q80_function;
+    struct metal_pipeline_h *moe_mm_q80_pipeline;
+    struct metal_function_h *moe_mm_mx4_function;
+    struct metal_pipeline_h *moe_mm_mx4_pipeline;
+    struct metal_function_h *moe_mm_q50_function;
+    struct metal_pipeline_h *moe_mm_q50_pipeline;
+    /* #486: gate and up of a chunk's experts with the activation */
+    struct metal_function_h *moe_mm_glu_q4k_function;
+    struct metal_pipeline_h *moe_mm_glu_q4k_pipeline;
+    struct metal_function_h *moe_mm_glu_q6k_function;
+    struct metal_pipeline_h *moe_mm_glu_q6k_pipeline;
+    struct metal_function_h *moe_mm_glu_q80_function;
+    struct metal_pipeline_h *moe_mm_glu_q80_pipeline;
+    struct metal_function_h *moe_mm_glu_mx4_function;
+    struct metal_pipeline_h *moe_mm_glu_mx4_pipeline;
+    struct metal_function_h *moe_mm_glu_q50_function;
+    struct metal_pipeline_h *moe_mm_glu_q50_pipeline;
+    /* their tensor-API form (#482), null unless tensor_mm */
+    struct metal_function_h *moe_mm_tc_q4k_function;
+    struct metal_pipeline_h *moe_mm_tc_q4k_pipeline;
+    struct metal_function_h *moe_mm_tc_q6k_function;
+    struct metal_pipeline_h *moe_mm_tc_q6k_pipeline;
+    struct metal_function_h *moe_mm_tc_q80_function;
+    struct metal_pipeline_h *moe_mm_tc_q80_pipeline;
+    struct metal_function_h *moe_mm_tc_mx4_function;
+    struct metal_pipeline_h *moe_mm_tc_mx4_pipeline;
+    struct metal_function_h *moe_mm_tc_q50_function;
+    struct metal_pipeline_h *moe_mm_tc_q50_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q4k_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q4k_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q6k_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q6k_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q80_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q80_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_mx4_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_mx4_pipeline;
+    struct metal_function_h *moe_mm_tc_glu_q50_function;
+    struct metal_pipeline_h *moe_mm_tc_glu_q50_pipeline;
     struct metal_buffer_h   *argmax_result_buffer;
     void                    *argmax_result_mapped;
     uint32_t                 argmax_result_capacity;
@@ -754,6 +821,7 @@ static inline bool metal_dtype_is_quant(enum geist_dtype dtype) {
     case GEIST_DTYPE_PQ2_0:
     case GEIST_DTYPE_TQ2_0:
     case GEIST_DTYPE_I2_S:
+    case GEIST_DTYPE_Q5_0:
         return true;
     case GEIST_DTYPE_F32:
     case GEIST_DTYPE_F16:
@@ -765,7 +833,6 @@ static inline bool metal_dtype_is_quant(enum geist_dtype dtype) {
     case GEIST_DTYPE_BINARY:
     case GEIST_DTYPE_TERNARY:
     case GEIST_DTYPE_CUSTOM:
-    case GEIST_DTYPE_Q5_0:
     case GEIST_DTYPE_COUNT:
         break;
     }

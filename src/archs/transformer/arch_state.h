@@ -44,6 +44,15 @@
  * model whose layers ask for more, before anything is sized from it. */
 constexpr size_t TRANSFORMER_HEAD_DIM_MAX = 512;
 
+/* The widest head a layer may have: absorbed multi-head latent attention
+ * (#375) attends with one KV head of kv_lora_rank + rope = 576 dims
+ * (DeepSeek-V2/V3, Kimi K2). Past TRANSFORMER_HEAD_DIM_MAX only the F32
+ * and F16 caches hold it, whose CPU attention takes any head_dim (the
+ * shared F16 reference up to 1024), so a session of such a model gets one
+ * of them whatever KV mode it asks for (transformer_kv_layout_resolve):
+ * the quantized caches' per-head stack arrays stop at 512. */
+constexpr size_t TRANSFORMER_HEAD_DIM_MAX_WIDE = 576;
+
 /* ---- Per-layer weight bundle ------------------------------------------- */
 
 /* Per-layer token mixer. The layer loop dispatches on this before any
@@ -123,12 +132,20 @@ struct transformer_layer_weights {
     float              *attn_sinks;
     struct geist_tensor attn_sinks_t; /* the same, F32 DENSE on the backend */
     /* Multi-head latent attention (config.mla_kv_rank > 0, #242). */
-    struct geist_tensor mla_q_a;       /* [mla_q_rank, HIDDEN], when mla_q_rank > 0 */
-    struct geist_tensor mla_q_a_norm;  /* [mla_q_rank] */
-    struct geist_tensor mla_kv_a;      /* [mla_rope + mla_kv_rank, HIDDEN] */
-    float              *mla_kv_a_norm; /* [mla_kv_rank], host: the latent is normalised there */
-    struct geist_tensor mla_kv_b;      /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
+    struct geist_tensor mla_q_a;         /* [mla_q_rank, HIDDEN], when mla_q_rank > 0 */
+    struct geist_tensor mla_q_a_norm;    /* [mla_q_rank] */
+    struct geist_tensor mla_kv_a;        /* [mla_rope + mla_kv_rank, HIDDEN] */
+    float              *mla_kv_a_norm;   /* [mla_kv_rank], host: the latent is normalised there */
+    struct geist_tensor mla_kv_a_norm_t; /* the same on a GPU, which normalises it (#376) */
+    struct geist_tensor mla_kv_b;        /* [N_Q_HEADS * (nope + mla_v_dim), mla_kv_rank] */
     struct geist_weight mla_q_a_w, mla_kv_a_w, mla_kv_b_w;
+    /* Absorbed MLA (config.mla_absorbed, #375): the file's attn_k_b and
+     * attn_v_b, one slice per head (mla_n_heads of them, all set or all
+     * null): k_b[h] [mla_kv_rank, nope] takes a head's q_nope into the
+     * latent, v_b[h] [mla_v_dim, mla_kv_rank] its attention output out. */
+    struct geist_tensor *mla_k_b, *mla_v_b;
+    struct geist_weight *mla_k_b_w, *mla_v_b_w;
+    size_t               mla_n_heads;
 
     /* ---- Pre-resolved kernels, one per projection. ---------------------- *
      * Filled at load time by the backend's resolve_weight; the forward
@@ -355,6 +372,15 @@ struct transformer_arch_session {
      * kv_b's heads (n_q_heads * (nope + mla_v_dim)) and q_a (mla_q_rank,
      * when the model has it); nullptr without MLA. */
     struct geist_buffer *mla_kv_a, *mla_lat, *mla_kv, *mla_q_a;
+    /* Absorbed MLA (#375): mla_kv holds q before the absorption
+     * (n_q_heads * (mla_rope + nope)) instead, and every head's rows go
+     * through k_b / v_b gathered in mla_hx and out of mla_hy,
+     * [n_q_heads, m_max, max(nope, mla_kv_rank)] and
+     * [n_q_heads, m_max, max(mla_kv_rank, mla_v_dim)]. */
+    struct geist_buffer *mla_hx, *mla_hy;
+    /* MLA on a GPU (#376): uint32 h for slot t * n_q_heads + h, the ids
+     * that run k_b / v_b per head as fused->linear_t_ids' experts. */
+    struct geist_buffer *mla_ids;
 
     /* ---- Memory backing for the buffers above.
      * scratch_arena: per-forward frame-arena, reset per layer.
@@ -491,7 +517,11 @@ struct transformer_arch_session {
     float               *moe_xg; /* [m_max * n_used, d_model], rows bucketed by expert */
     float               *moe_g;  /* [m_max * n_used, intermediate] */
     float               *moe_u;  /* [m_max * n_used, intermediate] */
-    float               *moe_y;  /* [m_max * n_used, d_model] */
+    /* moe_g / moe_u as buffers of a CPU backend (nullptr on a GPU): the
+     * experts' SwiGLU runs the dense FFN's silu_mul on them, so an expert
+     * and the same dense FFN round alike (#479). */
+    struct geist_buffer *moe_g_buf, *moe_u_buf;
+    float               *moe_y; /* [m_max * n_used, d_model] */
     uint32_t            *moe_ids;
     float               *moe_wts;
     uint32_t            *moe_rows;
@@ -667,6 +697,9 @@ struct transformer_moe_gpu {
     /* #245: the most rows of a batched decode the device layers take (1:
      * single decode steps only). */
     size_t device_rows;
+    /* #482: a prefill chunk of the device layers routes and runs its
+     * experts there too (grouped GEMMs, fused->linear_t_ids at m rows). */
+    bool device_prefill;
     /* #162: a decode step routes on the device and starts the hot experts
      * there before the host has seen the router; the host runs the cold
      * ones (fused->linear_t_sel & co., layers with grouped[]). */
@@ -686,7 +719,19 @@ struct transformer_moe_gpu {
     _Atomic uint64_t     n_routed;                    /* layer steps that took that route */
     _Atomic uint64_t     n_device;                    /* layer steps that took that route */
     _Atomic uint64_t     rows_gpu, rows_cpu, batches; /* GEIST_VERBOSE at destroy */
+    /* #373: the expert FFN has biases or SWIGLU_OAI (GPT-OSS): its
+     * activation runs as fused->glu, the down bias where the outputs are
+     * summed, and the grouped / #162 decode paths, which have neither, are
+     * off. bias [n_layers * MOE_GPU_BIASES]: each layer's router bias
+     * [n_experts], its experts' gate and up [n_experts * inter] and down
+     * [n_experts * d_model] biases, and its selection bias [n_experts]
+     * (DeepSeek's exp_probs_b, #376) on `be` (nullptr: none). */
+    bool                  ext;
+    struct geist_buffer **bias;
 };
+
+/* transformer_moe_gpu.bias: the per-layer bias buffers. */
+constexpr size_t MOE_GPU_BIASES = 5;
 
 struct transformer_arch_state {
     struct geist_backend *backend; /* not owned */
@@ -885,11 +930,13 @@ struct transformer_arch_state {
 };
 
 /* The widest expert FFN of the stack: the per-row size of the MoE
- * session buffers. */
+ * session buffers. A dense layer's FFN (DeepSeek's lead layers, #376)
+ * does not run there. */
 static inline size_t moe_inter(const struct transformer_arch_state *st) {
     size_t inter = 0;
     for (size_t li = 0; li < st->n_layers; li++)
-        inter = st->layers[li].intermediate > inter ? st->layers[li].intermediate : inter;
+        if (st->layers[li].moe_gate_w != nullptr && st->layers[li].intermediate > inter)
+            inter = st->layers[li].intermediate;
     return inter;
 }
 
@@ -1215,6 +1262,10 @@ struct transformer_kv_layout {
 [[nodiscard]] struct transformer_kv_layout
 transformer_kv_layout_resolve(const struct transformer_arch_state *state,
                               const struct geist_session_opts     *opts);
+
+/* The widest head_dim of the model's layers (MTP blocks included); 0 before
+ * the layers are populated. */
+[[nodiscard]] size_t transformer_head_dim_max(const struct transformer_arch_state *st);
 
 /* geist_session_truncate (#622): keep the first n positions; see the
  * truncate op in geist_arch.h. The caller has settled a deferred advance. */

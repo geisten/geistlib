@@ -18,6 +18,7 @@
 #include "../src/archs/transformer/arch_state.h"
 #include "../src/engine/model.h"
 #include "model_fixtures.h"
+#include "moe_hot_check.h"
 #include "test_helpers.h"
 
 #include <geist.h>
@@ -184,6 +185,16 @@ int main(void) {
             fails += geist_expect(exact ? d <= 1e-3 : c >= 0.999,
                                   "a backend matches cpu_scalar within its tolerance");
         }
+    }
+    /* #241: GPU mode with hot experts, as test_qwen3moe_unit. */
+    if (sc == 0) {
+        geist_token_t ids[N_PROMPT];
+        for (size_t i = 0; i < N_PROMPT; i++)
+            ids[i] = (geist_token_t) ((i * 37 + 5) % VOCAB);
+        struct tf_buf blob = mf_qwen3moe_gguf(&GEOM);
+        fails += moe_hot_checks(
+                &blob, &OPTS, (size_t) GEOM.layers * GEOM.experts, VOCAB, N_PROMPT, ids, scalar);
+        free(blob.b);
     }
     fails += check_not_renormalised();
     fails += check_refuses_per_head_norms();

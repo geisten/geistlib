@@ -9,7 +9,11 @@ layout(push_constant) uniform Push {
     uint n_in;
     uint n_out;
     uint blocks_per_row;
+#ifdef MV_SEL
+    uint x_div; /* slot s reads x row s / x_div (#499: k for one row per token) */
+#else
     uint pad;
+#endif
     uint x_offset; /* elements, slot 0's row */
     uint y_offset;
     uint x_stride; /* elements between the slots' rows */
@@ -40,6 +44,10 @@ layout(set = 0, binding = 3) readonly buffer I { uint ids[]; };
 
 /* x / y element offset of this slot's row; a weight row offset needs no
  * base (each slot's address points at its weight). */
+#ifdef MV_SEL
+#define X_BASE (pc.x_offset + (slot / pc.x_div) * pc.x_stride)
+#else
 #define X_BASE (pc.x_offset + slot * pc.x_stride)
+#endif
 #define Y_BASE (pc.y_offset + slot * pc.y_stride)
 #define W_ROW(e) (e)

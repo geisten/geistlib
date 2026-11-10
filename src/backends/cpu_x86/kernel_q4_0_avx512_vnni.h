@@ -53,4 +53,20 @@ void q4_1_gemm_rows_avx512_vnni(size_t                     m,
                                 const int32_t             *s_x,
                                 float                     *y);
 
+/* The same for MXFP4 (GPT-OSS's experts, #374), 17-byte blocks, with the
+ * activations' Q8_0 codes stored XOR 0x80 (x + 128 as uint8); no block
+ * sums. Each output's int32 block sum is linear_q4_0.c's AVX2 one; only the
+ * fp32 summation order differs. A token's output does not depend on m or
+ * on the other tokens of the call: m = 1 gives the bits of the same token
+ * inside an m-row call. */
+void mxfp4_gemm_rows_avx512_vnni(size_t                      m,
+                                 size_t                      nb,
+                                 size_t                      n_out,
+                                 size_t                      j0,
+                                 size_t                      n_rows,
+                                 const struct block_mxfp4_t *w,
+                                 const uint8_t              *q_x,
+                                 const float                *d_x,
+                                 float                      *y);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_Q4_0_AVX512_VNNI_H */

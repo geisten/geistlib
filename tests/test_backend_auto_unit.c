@@ -6,8 +6,8 @@
  *      when it is built in and finds a device, else the first registry
  *      entry (the preferred CPU backend). GEIST_BACKEND=<name> replaces it
  *      with that explicit name.
- *   2. Weight formats: a llama whose ffn_down is Q5_0, which metal has no
- *      kernel for. Explicit "metal" refuses it at load with
+ *   2. Weight formats: a llama whose ffn_down is IQ2_S, which metal has no
+ *      kernel for (Q5_0 until #376). Explicit "metal" refuses it at load with
  *      GEIST_E_UNSUPPORTED, naming the tensor; "auto" loads it on the CPU
  *      backend, geist_model_backend_name says so, and a session created
  *      with the "auto" handle decodes. Both load paths (file, memory).
@@ -89,7 +89,7 @@ static bool check_choice(void) {
     return want_gpu;
 }
 
-static struct tf_buf llama(bool q5_0_down) {
+static struct tf_buf llama(bool iq2s_down) {
     return mf_llama_gguf(&(struct mf_llama) {.layers    = 2,
                                              .d_model   = 128,
                                              .heads     = 4,
@@ -98,7 +98,7 @@ static struct tf_buf llama(bool q5_0_down) {
                                              .vocab     = 64,
                                              .context   = 256,
                                              .seed      = 7,
-                                             .q5_0_down = q5_0_down});
+                                             .iq2s_down = iq2s_down});
 }
 
 /* A session on `m`, created with the caller's handle `be`, prefills and
@@ -144,12 +144,12 @@ static void check_unsupported(const char *path) {
     check(metal != nullptr &&
                   geist_model_load_from_memory(g.b, g.n, metal, &m) == GEIST_E_UNSUPPORTED &&
                   m == nullptr,
-          "explicit metal refuses a Q5_0 matrix at load");
+          "explicit metal refuses an IQ2_S matrix at load");
     check(strstr(geist_last_create_error(), "blk.0.ffn_down.weight") != nullptr,
           "the refusal names the tensor");
 
     check(a != nullptr && geist_model_load_from_memory(g.b, g.n, a, &m) == GEIST_OK,
-          "auto loads the Q5_0 model (memory)");
+          "auto loads the IQ2_S model (memory)");
     check(is(geist_model_backend_name(m), cpu), "... on the CPU backend");
     check(m != nullptr && decodes(m, a), "... and a session on the auto handle decodes");
     struct geist_backend *other = create(cpu);
@@ -161,7 +161,7 @@ static void check_unsupported(const char *path) {
     m = nullptr;
 
     check(geist_model_load(path, a, &m) == GEIST_OK && is(geist_model_backend_name(m), cpu),
-          "auto loads the Q5_0 model on the CPU (file)");
+          "auto loads the IQ2_S model on the CPU (file)");
     geist_model_destroy(m);
     m = nullptr;
 

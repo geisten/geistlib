@@ -50,6 +50,23 @@ enum geist_status geist_host_ew_views(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+enum geist_status geist_host_add_bias(struct geist_backend      *be,
+                                      const struct geist_tensor *x,
+                                      const struct geist_tensor *b,
+                                      struct geist_tensor       *y) {
+    struct geist_host_ew    v;
+    const enum geist_status s =
+            geist_host_ew_views(be, "add_bias", GEIST_EW_W, x, nullptr, b, y, &v);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    /* feat divides n (geist_host_ew_views) */
+    for (size_t i = 0; i < v.n; i += v.feat) {
+        add_fp32(v.feat, v.x + i, v.w, v.y + i);
+    }
+    return GEIST_OK;
+}
+
 enum geist_status geist_host_attn_views(struct geist_backend      *be,
                                         const struct geist_tensor *q,
                                         const struct geist_tensor *k,

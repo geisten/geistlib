@@ -161,6 +161,26 @@ static constexpr size_t ATTN_F16_HEAD_DIM_MAX = 1024;
                                                     const uint16_t *v,
                                                     float          *out);
 
+/* attention_mqa_causal_kv (f16: _f16's) for the (query, head) rows idx in
+ * [i0, i1) only, idx = t * n_q_heads + h, so a caller can split them over
+ * threads: a row's bytes are the same whichever others run with it. For a
+ * head_dim a backend's own kernel does not take (absorbed MLA's 576 on
+ * cpu_x86, #375). False, out untouched, past ATTN_F16_HEAD_DIM_MAX with
+ * f16. Allocates nothing. */
+[[nodiscard]] bool attention_kv_items(size_t       i0,
+                                      size_t       i1,
+                                      size_t       n_kv,
+                                      size_t       q_offset,
+                                      size_t       n_q_heads,
+                                      size_t       n_kv_heads,
+                                      size_t       head_dim,
+                                      size_t       sliding_window,
+                                      bool         f16,
+                                      const float *q,
+                                      const void  *k,
+                                      const void  *v,
+                                      float       *out);
+
 /* Attention with sinks (GPT-OSS, #243): attention_mqa_causal_kv's mask and
  * layout (k / v F32, or IEEE half with f16), where every head h's softmax
  * also takes the logit sinks[h] with a zero value row:

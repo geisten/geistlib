@@ -29,7 +29,8 @@ model), the Metal gate and the perf floors on dedicated hardware (macOS
 arm64 on `macos-15-heavy`, Linux arm64 on the Pi 5, `ubuntu-24.04-arm-pi`;
 these two skip `main` pushes and run nightly, on dispatch and with `ci:full`,
 because each holds its host's benchmark lock for 40+ minutes; the
-coverage ratchet skips `main` pushes too: ~140 min of a `desktop-ci` slot),
+coverage ratchet skips `main` pushes too: ~30 min of a `desktop-ci` slot,
+six tests at a time),
 the other build legs (scalar + clang in one job, arm64 musl, `TARGET=pi5`,
 macOS GCD). Small x86_64 legs share a job (and one `desktop-ci` slot):
 scalar with clang, the SDE dispatch proof with the audio W8A8 parity leg.
@@ -54,7 +55,7 @@ Skipped and cancelled jobs change nothing.
 is read when the run starts: add it, then push), and the post-merge tier,
 coverage included, runs on the pull request; or dispatch CI on the branch
 (`tea actions workflows dispatch --ref <branch> ci.yml`). Each `ci:full` run
-adds ~25 jobs, among them the ~140 min coverage job, to the shared runners,
+adds ~25 jobs, among them the ~30 min coverage job, to the shared runners,
 and every other pull request's required jobs queue behind them.
 
 **When to set `ci:full` (agents and humans alike).** Only when the pull
@@ -237,9 +238,15 @@ was; hence `if: always()`.
 ## Coverage ratchet
 
 The `coverage` job runs nightly (03:47 UTC), on dispatch and for a PR
-labelled `ci:full` — not on pushes to `main`: it takes ~140 min of one of
+labelled `ci:full` — not on pushes to `main`: it took ~140 min of one of
 `desktop-ci`'s four slots, and one per merge made it the biggest CI
-bottleneck (2026-10-21). A coverage drop shows up the next morning; to
+bottleneck (2026-10-21). Since #483 it runs six test binaries at a time
+(`GEIST_TEST_JOBS=6`, the longest first) and takes ~30 min: the heavy int
+tests run the model on `cpu_scalar`, one core each, and the `--coverage`
+counters are atomic (`-fopenmp` implies `-pthread`), which makes them ~9x
+slower but exact under threads. libgcov merges each process's counters into
+the `.gcda` files under a file lock, so the parallel run measures what a
+serial one does. A coverage drop shows up the next morning; to
 check a change before merging, label its PR `ci:full`. It builds `MODE=cov` (gcc-14, `-O2 --coverage`, Linux x86_64 on
 the desktop runner; the only arm64 runner is the Pi 5, where it took hours)
 and runs the model-free unit suite plus the real-model int suite with

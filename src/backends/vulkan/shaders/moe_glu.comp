@@ -1,0 +1,60 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* The experts' gated linear unit (#499, fused->glu): for row r and column
+ * c < n, a = x[r][c] + xb[e][c] (hx), b = z[r][c] + zb[e][c] (hz) with
+ * e = ids[io + r] (hi) or 0, then
+ *   act 0  silu(a) * b (silu_mul's formula);
+ *   act 1  a' = min(a, limit), b' = clamp(b, -limit, limit),
+ *          a' * sigmoid(alpha * a') * (b' + 1) (ggml_swiglu_oai, GPT-OSS).
+ * y may alias x. Dispatch: gx = ceil(n / 256), gy = rows. */
+
+#include "silu.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X { float x[]; };
+layout(set = 0, binding = 1) readonly buffer Z { float z[]; };
+layout(set = 0, binding = 2) writeonly buffer Y { float y[]; };
+layout(set = 0, binding = 3) readonly buffer XB { float xb[]; };
+layout(set = 0, binding = 4) readonly buffer ZB { float zb[]; };
+layout(set = 0, binding = 5) readonly buffer I { uint ids[]; };
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint act;
+    uint hx, hz, hi;
+    uint xo, xs; /* offset and row stride, elements */
+    uint zo, zs;
+    uint yo, ys;
+    uint xbo, zbo; /* bias row 0, elements */
+    uint io;       /* words into ids */
+    float alpha;
+    float limit;
+} pc;
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    uint r = gl_WorkGroupID.y;
+    if (c >= pc.n) {
+        return;
+    }
+    uint e = pc.hi != 0u ? ids[pc.io + r] : 0u;
+    float a = x[pc.xo + r * pc.xs + c];
+    float b = z[pc.zo + r * pc.zs + c];
+    if (pc.hx != 0u) {
+        a += xb[pc.xbo + e * pc.n + c];
+    }
+    if (pc.hz != 0u) {
+        b += zb[pc.zbo + e * pc.n + c];
+    }
+    float o;
+    if (pc.act == 1u) {
+        a = min(a, pc.limit);
+        b = clamp(b, -pc.limit, pc.limit);
+        o = a / (1.0 + exp(-pc.alpha * a)) * (b + 1.0);
+    } else {
+        o = silu(a) * b;
+    }
+    y[pc.yo + r * pc.ys + c] = o;
+}

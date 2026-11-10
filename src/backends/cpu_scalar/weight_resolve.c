@@ -101,9 +101,11 @@ static void cpu_scalar_w_quant_mN(size_t                     m,
     /* cpu_x86 borrows this resolver before replacing its kernels. A row
      * capability belongs to the resolved kernel and backend, not merely
      * to the source dtype. Wrappers must resolve their own row readout. */
-    w->linear_rows         = nullptr;
-    w->linear_rows_tile    = 0;
-    w->linear_rows_prepare = nullptr;
+    w->linear_rows          = nullptr;
+    w->linear_rows_tile     = 0;
+    w->linear_rows_prepare  = nullptr;
+    w->linear_m1_rows       = nullptr; /* the same: cpu_x86 binds its own */
+    w->linear_m1_rows_align = 0;
     /* Use the registry's unique backend ID. Taking the exported resolver's
      * address here would add a non-PIC text relocation to static archives
      * subsequently linked into the Linux FFI shared library. */

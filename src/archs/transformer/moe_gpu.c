@@ -53,6 +53,32 @@ static const struct geist_weight *expert_proj(const struct transformer_layer_wei
     return p == 0 ? L->moe_gate_w : p == 1 ? L->moe_up_w : L->moe_down_w;
 }
 
+static enum geist_glu_act moe_glu_act(const struct geist_arch_config *c) {
+    return c->moe_act == GEIST_MOE_ACT_SWIGLU_OAI ? GEIST_GLU_SWIGLU_OAI : GEIST_GLU_SILU;
+}
+
+/* The device route's gating (#373): GPT-OSS weights by the softmax over
+ * the selected logits alone, DeepSeek-V3 by their sigmoid (#376). */
+static enum geist_moe_route_gating moe_route_gating(const struct geist_arch_config *c) {
+    return c->moe_gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT ? GEIST_MOE_ROUTE_SOFTMAX_WEIGHT
+           : c->moe_gating == GEIST_MOE_GATING_SIGMOID      ? GEIST_MOE_ROUTE_SIGMOID
+                                                            : GEIST_MOE_ROUTE_SOFTMAX;
+}
+
+/* Layer l has experts: DeepSeek's and Llama 4's lead layers are dense
+ * (#376), and nothing here touches them. */
+static bool moe_layer(const struct transformer_arch_state *st, size_t l) {
+    return st->layers[l].moe_gate_w != nullptr;
+}
+
+/* The first layer with experts; n_layers when there is none. */
+static size_t moe_first_layer(const struct transformer_arch_state *st) {
+    size_t l = 0;
+    while (l < st->n_layers && !moe_layer(st, l))
+        l++;
+    return l;
+}
+
 /* Selection counts per (layer, expert) from the "profile" USAGE lines of
  * `path`: "USAGE <model> <set> <file> <tokens> <layer> <c0,c1,...>". */
 static void profile_read(const char *path, size_t n_layers, size_t n_exp, uint64_t *count) {
@@ -185,7 +211,7 @@ static size_t moe_fit(const struct transformer_arch_state *st,
      * decode on the RTX 2080 Ti (23 fewer hot experts). */
     size_t slot = 0, stage = 0;
     for (size_t l = 0; stage_max > 0 && l < st->n_layers; l++)
-        for (size_t p = 0; p < 3; p++) {
+        for (size_t p = 0; p < 3 && moe_layer(st, l); p++) {
             const size_t b = expert_proj(&st->layers[l], p)[0].raw_nbytes;
             slot           = b > slot ? b : slot;
         }
@@ -269,6 +295,68 @@ static void hot_twins(const struct transformer_arch_state *st,
             w[p][i] = &st->moe_gpu->twins[(layer * slots + hot[i]) * 3 + p];
 }
 
+/* The layer's bias b (0 router, 1 gate, 2 up, 3 down) of `n` floats per
+ * expert as a [rows, n] view from expert e's row (#373); nullptr: none. */
+static bool moe_bias_view(const struct transformer_moe_gpu *mg,
+                          size_t                            layer,
+                          size_t                            b,
+                          size_t                            e,
+                          size_t                            rows,
+                          size_t                            n,
+                          struct geist_tensor              *out) {
+    struct geist_buffer *buf = mg->bias != nullptr ? mg->bias[layer * MOE_GPU_BIASES + b] : nullptr;
+    if (buf != nullptr)
+        *out = view_2d_at(buf, e * n * sizeof(float), (int64_t) rows, (int64_t) n);
+    return buf != nullptr;
+}
+
+/* The device route's router for layer `layer` over m rows (#373, #376),
+ * its router and selection biases' views in b_r and b_s. */
+static struct geist_moe_route_args moe_route_args(const struct transformer_arch_state *st,
+                                                  const struct transformer_moe_gpu    *mg,
+                                                  size_t                               layer,
+                                                  size_t                               m,
+                                                  struct geist_tensor                 *b_r,
+                                                  struct geist_tensor                 *b_s) {
+    const struct geist_arch_config *c  = &st->config;
+    const size_t                    n  = c->moe_n_experts;
+    const bool                      hr = moe_bias_view(mg, layer, 0, 0, 1, n, b_r);
+    const bool                      hs = moe_bias_view(mg, layer, 4, 0, 1, n, b_s);
+    return (struct geist_moe_route_args) {.m          = m,
+                                          .n          = n,
+                                          .k          = c->moe_n_used,
+                                          .gating     = moe_route_gating(c),
+                                          .norm       = c->moe_norm_topk,
+                                          .bias       = hr ? b_r : nullptr,
+                                          .sel_bias   = hs ? b_s : nullptr,
+                                          .w_scale    = c->moe_w_scale,
+                                          .n_group    = c->moe_n_group,
+                                          .topk_group = c->moe_topk_group};
+}
+
+/* g = act(g + gate bias, u + up bias) over expert e's rows (#373), or
+ * silu(g) * u for a plain SwiGLU expert. */
+static enum geist_status moe_gpu_act(const struct transformer_arch_state *st,
+                                     size_t                               layer,
+                                     size_t                               e,
+                                     struct geist_tensor                 *g,
+                                     struct geist_tensor                 *u) {
+    const struct transformer_moe_gpu *mg = st->moe_gpu;
+    const struct geist_backend_fused *gf = mg->be->desc->fused;
+    if (!mg->ext || e >= st->config.moe_n_experts) /* a shared expert has no biases */
+        return gf->silu_mul(mg->be, g, u, g);
+    const size_t                inter = st->layers[layer].intermediate;
+    struct geist_tensor         gb, ub;
+    const bool                  hg = moe_bias_view(mg, layer, 1, e, 1, inter, &gb);
+    const bool                  hu = moe_bias_view(mg, layer, 2, e, 1, inter, &ub);
+    const struct geist_glu_args a  = {.act    = moe_glu_act(&st->config),
+                                      .alpha  = GEIST_SWIGLU_OAI_ALPHA,
+                                      .limit  = GEIST_SWIGLU_OAI_LIMIT,
+                                      .x_bias = hg ? &gb : nullptr,
+                                      .z_bias = hu ? &ub : nullptr};
+    return gf->glu(mg->be, &a, g, u, g);
+}
+
 /* Experts hot[0, n_hot) of layer `layer` over their rows of moe_gpu_x (in
  * hot[]'s order from row at0, each padded to moe_pad when `pad`), the
  * outputs into the same rows of y; a staged expert (#239) reads its slot. Phase by phase over all
@@ -309,7 +397,7 @@ static enum geist_status record_phases(struct transformer_arch_session *sess,
                 if (s == GEIST_OK)
                     s = gf->linear_t(gbe, &x, &tw[1], &wu, m, &u);
             } else if (phase == 1) {
-                s = gf->silu_mul(gbe, &g, &u, &g);
+                s = moe_gpu_act(st, layer, e, &g, &u);
             } else {
                 struct geist_tensor wd = expert_view(st, mg, layer, e, 2);
                 s                      = gf->linear_t(gbe, &g, &tw[2], &wd, m, &yv);
@@ -349,6 +437,12 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
         if (mg->bufs[i] != nullptr)
             gv->buffer_destroy(mg->be, mg->bufs[i]);
     }
+    for (size_t i = 0; mg->bias != nullptr && i < mg->n_bufs / 6 * MOE_GPU_BIASES; i++) {
+        if (mg->bias[i] != nullptr)
+            gv->buffer_destroy(mg->be, mg->bias[i]);
+    }
+    void *bb = mg->bias;
+    safe_free(&bb);
     void *b = mg->bufs, *t = mg->twins, *g = mg->grouped, *dv = mg->device, *m = mg;
     void *stw = mg->stage_w;
     safe_free(&stw);
@@ -371,7 +465,8 @@ void moe_gpu_destroy(struct transformer_moe_gpu *mg) {
 static void moe_stage_attach(const struct transformer_arch_state *st,
                              struct transformer_moe_gpu          *mg,
                              size_t                               stage_max,
-                             const struct moe_rank               *rank) {
+                             size_t                               n_rank,
+                             const struct moe_rank                rank[static n_rank]) {
     struct geist_backend             *gbe = mg->be;
     const struct geist_backend_vtbl  *gv  = gbe->desc->vtbl;
     const struct geist_backend_fused *gf  = gbe->desc->fused;
@@ -379,9 +474,12 @@ static void moe_stage_attach(const struct transformer_arch_state *st,
     const size_t                      slots = moe_slots(&st->config);
     const struct geist_weight       **like =
             heap_calloc_array_aligned(const struct geist_weight *, 3 * L);
+    /* A dense layer (#376) has no slots of its own: its rows repeat the
+     * first expert layer's. */
+    const size_t l0 = moe_first_layer(st);
     for (size_t l = 0; like != nullptr && l < L; l++)
         for (size_t p = 0; p < 3; p++)
-            like[l * 3 + p] = &expert_proj(&st->layers[l], p)[0];
+            like[l * 3 + p] = &expert_proj(&st->layers[moe_layer(st, l) ? l : l0], p)[0];
     enum geist_status s =
             like != nullptr ? gf->stage_reserve(gbe, 3 * stage_max, 3 * L, like) : GEIST_E_OOM;
     void *lk = (void *) like;
@@ -420,7 +518,8 @@ static void moe_stage_attach(const struct transformer_arch_state *st,
                          moe_profile_prefill_rows(
                                  st->moe_prof, th >= 4 ? th / 4 : 1, L * n_exp, prow + L * n_exp);
     size_t     n_cand  = 0;
-    for (size_t k = 0; cand != nullptr && prow != nullptr && k < L * slots; k++) {
+    /* rank[k].idx is e * L + layer: no layers, no candidates */
+    for (size_t k = 0; L > 0 && cand != nullptr && prow != nullptr && k < n_rank; k++) {
         const size_t l = rank[k].idx % L, e = rank[k].idx / L;
         if (e >= n_exp || mg->twins[(l * slots + e) * 3].raw != nullptr)
             continue;
@@ -498,28 +597,68 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     const struct geist_backend_vtbl  *gv      = gbe->desc->vtbl;
     const struct geist_backend_fused *gf      = gbe->desc->fused;
     const bool                        verbose = geist_env_flag("GEIST_VERBOSE", false);
-    /* The GPU's expert kernels run silu(gate) * up without biases, weighted
-     * by softmax routing: a router or expert FFN of another kind (GPT-OSS
-     * #243, DeepSeek #242, Llama 4 #244) keeps every expert on the CPU. */
+    /* The expert FFNs a GPU runs: silu(gate) * up, or with biases and
+     * swiglu_oai where the backend has fused->glu (#373); Llama 4's weight
+     * before the expert (#244) keeps every expert on the CPU. The host
+     * routes for them with any router (moe_route); the device route takes
+     * the routers the backend's probe accepts (#376: DeepSeek's sigmoid,
+     * selection bias, scale and groups). Dense lead layers (DeepSeek,
+     * Llama 4) have no experts and nothing here touches them. */
     const struct geist_arch_config         *cf = &st->config;
-    const struct transformer_layer_weights *Lb = &st->layers[0];
-    const bool                              plain =
-            (cf->moe_gating == 0 || cf->moe_gating == GEIST_MOE_GATING_SOFTMAX) &&
-            cf->moe_act == GEIST_MOE_ACT_SWIGLU && !cf->moe_weight_before && cf->moe_n_group <= 1 &&
-            (cf->moe_w_scale == 0.0f || cf->moe_w_scale == 1.0f) && Lb->moe_router_b == nullptr &&
-            Lb->moe_sel_b == nullptr && Lb->moe_gate_b == nullptr && Lb->moe_up_b == nullptr &&
-            Lb->moe_down_b == nullptr;
-    if (!plain || n_exp == 0 || st->layers[0].moe_gate_w == nullptr ||
-        gv->resolve_weight == nullptr || gv->buffer_copy == nullptr || gf == nullptr ||
-        gf->linear_t == nullptr || gf->silu_mul == nullptr) {
+    const size_t                            l0 = moe_first_layer(st);
+    const struct transformer_layer_weights *Lb = &st->layers[l0 < n_layers ? l0 : 0];
+    const bool ext = cf->moe_act == GEIST_MOE_ACT_SWIGLU_OAI || Lb->moe_gate_b != nullptr ||
+                     Lb->moe_up_b != nullptr || Lb->moe_down_b != nullptr;
+    const bool ffn_ok =
+            (cf->moe_act == GEIST_MOE_ACT_SWIGLU || cf->moe_act == GEIST_MOE_ACT_SWIGLU_OAI) &&
+            !cf->moe_weight_before && (!ext || (gf != nullptr && gf->glu != nullptr));
+    /* The #162 route needs the device to pick the host's ids bit for bit:
+     * a selection by the (biased) logits themselves -- softmax, or GPT-OSS's
+     * softmax over the selected (#499) -- without a selection bias or
+     * groups (a sigmoid or a softmax score could round otherwise). */
+    const bool exact_router = Lb->moe_sel_b == nullptr && cf->moe_n_group <= 1 &&
+                              (cf->moe_gating == 0 || cf->moe_gating == GEIST_MOE_GATING_SOFTMAX ||
+                               cf->moe_gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT);
+    /* #376: a model this placement took on with DeepSeek -- dense lead
+     * layers, or a router beyond softmax and GPT-OSS's -- goes to a GPU
+     * only where the device route runs its first expert layer (Metal);
+     * elsewhere (Vulkan, not verified with them) every expert stays on the
+     * CPU, as before. */
+    const bool deepseek_kind = l0 > 0 || Lb->moe_sel_b != nullptr ||
+                               cf->moe_gating == GEIST_MOE_GATING_SIGMOID || cf->moe_n_group > 1 ||
+                               (cf->moe_w_scale != 0.0f && cf->moe_w_scale != 1.0f);
+    bool       deepseek_ok   = !deepseek_kind;
+    if (deepseek_kind && l0 < n_layers && gf != nullptr && gf->supported != nullptr &&
+        gf->moe_route != nullptr && gf->linear_t_ids != nullptr) {
+        struct geist_tensor               sb = {0};
+        const struct geist_moe_route_args ra = {.m      = 1,
+                                                .n      = n_exp,
+                                                .k      = cf->moe_n_used,
+                                                .gating = moe_route_gating(cf),
+                                                .norm   = cf->moe_norm_topk,
+                                                .sel_bias =
+                                                        Lb->moe_sel_b != nullptr ? &sb : nullptr,
+                                                .w_scale    = cf->moe_w_scale,
+                                                .n_group    = cf->moe_n_group,
+                                                .topk_group = cf->moe_topk_group};
+        const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                .m         = 1,
+                                                .gate_w    = &Lb->moe_gate_w[0],
+                                                .up_w      = &Lb->moe_up_w[0],
+                                                .down_w    = &Lb->moe_down_w[0],
+                                                .moe_route = &ra};
+        deepseek_ok                          = gf->supported(gbe, &q);
+    }
+    if (!ffn_ok || !deepseek_ok || n_exp == 0 || l0 == n_layers || gv->resolve_weight == nullptr ||
+        gv->buffer_copy == nullptr || gf == nullptr || gf->linear_t == nullptr ||
+        gf->silu_mul == nullptr) {
         if (verbose) {
             fprintf(stderr, "geist: moe: %s cannot run experts; all on the CPU\n", gbe->desc->name);
         }
         return GEIST_OK;
     }
-    const struct transformer_layer_weights *L0 = &st->layers[0];
-    const size_t eb        = L0->moe_gate_w[0].raw_nbytes + L0->moe_up_w[0].raw_nbytes +
-                             L0->moe_down_w[0].raw_nbytes;
+    const size_t eb        = Lb->moe_gate_w[0].raw_nbytes + Lb->moe_up_w[0].raw_nbytes +
+                             Lb->moe_down_w[0].raw_nbytes;
     const size_t stage_max = moe_stage_wanted(st, gbe);
     size_t       n         = moe_fit(st, gbe, eb, stage_max);
     /* GEIST_MOE_HOT=<n>: exactly n, past the budget (tests, measurements). */
@@ -540,9 +679,11 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         mg->bufs    = heap_calloc_array_aligned(struct geist_buffer *, n_layers * 6);
         mg->n_bufs  = mg->bufs != nullptr ? n_layers * 6 : 0;
         mg->grouped = heap_calloc_array_aligned(bool, n_layers);
+        mg->ext     = ext;
+        mg->bias    = heap_calloc_array_aligned(struct geist_buffer *, n_layers * MOE_GPU_BIASES);
     }
     if (mg == nullptr || rank == nullptr || count == nullptr || mg->twins == nullptr ||
-        mg->bufs == nullptr || mg->grouped == nullptr) {
+        mg->bufs == nullptr || mg->grouped == nullptr || mg->bias == nullptr) {
         geist_backend_set_error(st->backend, GEIST_E_OOM, "moe: no memory for the expert plan");
         s = GEIST_E_OOM;
     }
@@ -556,20 +697,24 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     } else {
         prof = nullptr;
     }
-    /* The shared expert runs for every token: first on the device. */
+    /* The shared expert runs for every token: first on the device. The
+     * ranking holds the layers with experts alone. */
+    size_t n_rank = 0;
     for (size_t i = 0; s == GEIST_OK && i < n_layers * slots; i++) {
         const size_t l = i / slots, e = i % slots;
-        rank[i] = (struct moe_rank) {e < n_exp ? count[l * n_exp + e] : UINT64_MAX,
-                                     (uint32_t) (e * n_layers + l)};
+        if (moe_layer(st, l))
+            rank[n_rank++] = (struct moe_rank) {e < n_exp ? count[l * n_exp + e] : UINT64_MAX,
+                                                (uint32_t) (e * n_layers + l)};
     }
     if (s == GEIST_OK) {
-        qsort(rank, n_layers * slots, sizeof *rank, rank_cmp);
+        qsort(rank, n_rank, sizeof *rank, rank_cmp);
     }
+    n = n < n_rank ? n : n_rank;
     /* The device sees each layer's expert tensors through one aliased
      * buffer: the copies are keyed by addresses inside it. A shared
      * expert is a tensor of its own: bufs[l * 6 + 3 + p]. */
     for (size_t l = 0; s == GEIST_OK && l < n_layers; l++) {
-        for (size_t p = 0; p < 6 && s == GEIST_OK; p++) {
+        for (size_t p = 0; p < 6 && s == GEIST_OK && moe_layer(st, l); p++) {
             const struct geist_weight *w = expert_proj(&st->layers[l], p % 3);
             if (p >= 3 && slots == n_exp)
                 break;
@@ -578,6 +723,27 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
                                           p < 3 ? n_exp * w[0].raw_nbytes : w[n_exp].raw_nbytes,
                                           GEIST_BUFFER_WEIGHT,
                                           &mg->bufs[l * 6 + p]);
+        }
+    }
+    /* #373: the router's and the experts' biases, and #376 the selection
+     * bias, on the device. */
+    for (size_t l = 0; s == GEIST_OK && l < n_layers; l++) {
+        const struct transformer_layer_weights *L                 = &st->layers[l];
+        const float                            *h[MOE_GPU_BIASES] = {
+                L->moe_router_b, L->moe_gate_b, L->moe_up_b, L->moe_down_b, L->moe_sel_b};
+        const size_t nb[MOE_GPU_BIASES] = {n_exp,
+                                           n_exp * L->intermediate,
+                                           n_exp * L->intermediate,
+                                           n_exp * st->d_model,
+                                           n_exp};
+        for (size_t b = 0; b < MOE_GPU_BIASES && s == GEIST_OK && moe_layer(st, l); b++) {
+            struct geist_buffer **dst = &mg->bias[l * MOE_GPU_BIASES + b];
+            if (h[b] == nullptr)
+                continue;
+            s = gv->buffer_create(
+                    gbe, nb[b] * sizeof(float), GEIST_BUFFER_WEIGHT, GEIST_MEMORY_AUTO, dst);
+            if (s == GEIST_OK)
+                s = gv->buffer_upload(*dst, nb[b] * sizeof(float), (const uint8_t *) h[b]);
         }
     }
     uint64_t covered = 0, total = 0;
@@ -628,7 +794,7 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
     }
     /* Staging runs beside the resident experts, in their session buffers. */
     if (s == GEIST_OK && stage_max > 0 && mg->n_hot > 0)
-        moe_stage_attach(st, mg, stage_max, rank);
+        moe_stage_attach(st, mg, stage_max, n_rank, rank);
     void *r = rank, *c = count;
     safe_free(&r);
     safe_free(&c);
@@ -648,12 +814,12 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         fprintf(stderr,
                 "geist: moe: %zu of %zu experts (%zu MiB) on %s; profile %s, cover %.1f %%\n",
                 mg->n_hot,
-                n_layers * slots,
+                n_rank,
                 (mg->n_hot * eb) >> 20,
                 gbe->desc->name,
                 prof != nullptr ? prof : "none",
                 total > 0 ? 100.0 * (double) covered / (double) total
-                          : 100.0 * (double) mg->n_hot / (double) (n_layers * slots));
+                          : 100.0 * (double) mg->n_hot / (double) (n_rank > 0 ? n_rank : 1));
     }
     /* #201: a layer whose every routed expert is here routes and runs
      * them on the device at decode (GEIST_MOE_DEVICE=0: never). */
@@ -662,17 +828,20 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         gf->supported != nullptr && geist_env_flag("GEIST_MOE_DEVICE", true)) {
         mg->device = heap_calloc_array_aligned(bool, n_layers);
         for (size_t l = 0; mg->device != nullptr && l < n_layers; l++) {
-            bool all = true;
+            bool all = moe_layer(st, l);
             for (size_t e = 0; e < n_exp && all; e++)
                 all = mg->twins[(l * slots + e) * 3].raw != nullptr;
-            const struct geist_weight      *tw = &mg->twins[l * slots * 3];
-            const struct geist_fusion_query q  = {.op     = GEIST_FUSED_MOE_DEVICE,
-                                                  .m      = 1,
-                                                  .gate_w = &tw[0],
-                                                  .up_w   = &tw[1],
-                                                  .down_w = &tw[2]};
-            mg->device[l]                      = all && gf->supported(gbe, &q);
-            mg->any_device                     = mg->any_device || mg->device[l];
+            struct geist_tensor               b_r, b_s;
+            const struct geist_moe_route_args ra = moe_route_args(st, mg, l, 1, &b_r, &b_s);
+            const struct geist_weight        *tw = &mg->twins[l * slots * 3];
+            const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                    .m         = 1,
+                                                    .gate_w    = &tw[0],
+                                                    .up_w      = &tw[1],
+                                                    .down_w    = &tw[2],
+                                                    .moe_route = &ra};
+            mg->device[l]                        = all && gf->supported(gbe, &q);
+            mg->any_device                       = mg->any_device || mg->device[l];
         }
         /* #245: a batched decode's rows too, when every device layer takes
          * them (GEIST_DECODE_BATCH_MOE_DEVICE=0: the host routes them). */
@@ -682,29 +851,70 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
         bool rows_ok =
                 mg->any_device && rows > 1 && geist_env_flag("GEIST_DECODE_BATCH_MOE_DEVICE", true);
         for (size_t l = 0; rows_ok && l < n_layers; l++) {
-            const struct geist_weight      *tw = &mg->twins[l * slots * 3];
-            const struct geist_fusion_query q  = {.op     = GEIST_FUSED_MOE_DEVICE,
-                                                  .m      = rows,
-                                                  .gate_w = &tw[0],
-                                                  .up_w   = &tw[1],
-                                                  .down_w = &tw[2]};
-            rows_ok                            = !mg->device[l] || gf->supported(gbe, &q);
+            struct geist_tensor               b_r, b_s;
+            const struct geist_moe_route_args ra = moe_route_args(st, mg, l, rows, &b_r, &b_s);
+            const struct geist_weight        *tw = &mg->twins[l * slots * 3];
+            const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                    .m         = rows,
+                                                    .gate_w    = &tw[0],
+                                                    .up_w      = &tw[1],
+                                                    .down_w    = &tw[2],
+                                                    .moe_route = &ra};
+            rows_ok                              = !mg->device[l] || gf->supported(gbe, &q);
         }
         if (rows_ok)
             mg->device_rows = rows;
+        /* #482: a prefill chunk too, when every device layer takes its
+         * rows: 2 (a short appended turn) and the session's most
+         * (GEIST_MOE_DEVICE_PREFILL=0: the host routes them). */
+        bool pre_ok =
+                mg->any_device && st->m_max > 1 && geist_env_flag("GEIST_MOE_DEVICE_PREFILL", true);
+        for (size_t l = 0; pre_ok && l < n_layers; l++) {
+            const struct geist_weight *tw = &mg->twins[l * slots * 3];
+            for (size_t i = 0; pre_ok && i < 2; i++) {
+                const size_t                      m = i == 0 ? 2 : st->m_max;
+                struct geist_tensor               b_r, b_s;
+                const struct geist_moe_route_args ra = moe_route_args(st, mg, l, m, &b_r, &b_s);
+                const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                        .m         = m,
+                                                        .gate_w    = &tw[0],
+                                                        .up_w      = &tw[1],
+                                                        .down_w    = &tw[2],
+                                                        .moe_route = &ra};
+                pre_ok                               = !mg->device[l] || gf->supported(gbe, &q);
+            }
+        }
+        mg->device_prefill = pre_ok;
         if (verbose && mg->any_device)
             fprintf(stderr,
-                    "geist: moe: decode routes on %s (#201), batched rows up to %zu\n",
+                    "geist: moe: decode routes on %s (#201), batched rows up to %zu; prefill %s "
+                    "(#482)\n",
                     gbe->desc->name,
-                    mg->device_rows);
+                    mg->device_rows,
+                    mg->device_prefill ? "too" : "on the host");
     }
     /* #162: with the experts split, a decode step routes on the device and
      * starts its hot experts without the host (GEIST_MOE_GPU_ROUTE=0: the
      * host routes). */
     mg->routed = mg->one_wait && !mg->any_device && gf->moe_route != nullptr &&
                  gf->linear_t_sel != nullptr && gf->submit_mark != nullptr &&
-                 gf->map_marked != nullptr && slots - n_exp <= 1 &&
+                 gf->map_marked != nullptr && slots - n_exp <= 1 && exact_router &&
+                 (!ext || (gf->glu != nullptr && slots == n_exp)) &&
                  geist_env_flag("GEIST_MOE_GPU_ROUTE", true);
+    /* #499: a router with a bias or the softmax over the selected, where the
+     * backend's moe_route takes it (its probe, with expert 0's weights). */
+    if (mg->routed &&
+        (Lb->moe_router_b != nullptr || cf->moe_gating == GEIST_MOE_GATING_SOFTMAX_WEIGHT)) {
+        struct geist_tensor               b_r, b_s;
+        const struct geist_moe_route_args ra = moe_route_args(st, mg, l0, 1, &b_r, &b_s);
+        const struct geist_fusion_query   q  = {.op        = GEIST_FUSED_MOE_DEVICE,
+                                                .m         = 1,
+                                                .gate_w    = &Lb->moe_gate_w[0],
+                                                .up_w      = &Lb->moe_up_w[0],
+                                                .down_w    = &Lb->moe_down_w[0],
+                                                .moe_route = &ra};
+        mg->routed                           = gf->supported != nullptr && gf->supported(gbe, &q);
+    }
     if (mg->routed) {
         mg->sel_w = heap_calloc_array_aligned(const struct geist_weight *, n_layers * 3 * n_exp);
         for (size_t l = 0; mg->sel_w != nullptr && l < n_layers; l++)
@@ -910,8 +1120,8 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
 
     /* Decode (one row per expert) on a backend with the grouped linear:
      * one dispatch per projection for all of them, one silu_mul. */
-    bool one_row =
-            mg->grouped[layer] && gf->linear_t_grouped != nullptr && n_hot <= GEIST_MOE_MAX_EXPERTS;
+    bool one_row = mg->grouped[layer] && !mg->ext && gf->linear_t_grouped != nullptr &&
+                   n_hot <= GEIST_MOE_MAX_EXPERTS;
     for (size_t i = 0; i < n_hot && one_row; i++)
         one_row = rs[hot[i] + 1] - rs[hot[i]] == 1;
     size_t            rows = 0;
@@ -973,6 +1183,16 @@ enum geist_status moe_gpu_run(struct transformer_arch_session *sess,
         rows += m;
     }
     gv->buffer_unmap(sess->moe_gpu_y_io);
+    /* #373: the down bias, as the CPU's experts add it. */
+    const float *db = st->layers[layer].moe_down_b;
+    for (size_t i = 0; db != nullptr && i < n_hot; i++) {
+        if (hot[i] >= st->config.moe_n_experts)
+            continue;
+        const float *b = db + hot[i] * d;
+        for (size_t r = rs[hot[i]]; r < rs[hot[i] + 1]; r++)
+            for (size_t c = 0; c < d; c++)
+                sess->moe_y[r * d + c] += b[c];
+    }
     atomic_fetch_add_explicit(&mg->rows_gpu, rows, memory_order_relaxed);
     atomic_fetch_add_explicit(&mg->batches, 1, memory_order_relaxed);
     return GEIST_OK;
@@ -987,7 +1207,7 @@ static bool moe_gpu_per_row(const struct transformer_moe_gpu *mg,
                             size_t                            seq,
                             size_t                            k,
                             bool                              decode_rows) {
-    return decode_rows && mg->grouped[layer] && seq * k <= GEIST_MOE_MAX_EXPERTS;
+    return decode_rows && mg->grouped[layer] && !mg->ext && seq * k <= GEIST_MOE_MAX_EXPERTS;
 }
 
 enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
@@ -1011,7 +1231,7 @@ enum geist_status moe_gpu_launch(struct transformer_arch_session *sess,
      * its entries are row * k + slot. Per row: no padding. */
     uint32_t *src  = (uint32_t *) sess->moe_ids_hot;
     size_t    rows = 0, real = 0;
-    bool      one = mg->grouped[layer];
+    bool      one = mg->grouped[layer] && !mg->ext; /* the grouped path runs silu_mul */
     for (size_t i = 0; i < n_hot; i++) {
         const size_t m = rs[hot[i] + 1] - rs[hot[i]];
         one            = one && m == 1;
@@ -1153,15 +1373,11 @@ uint64_t moe_gpu_route_launch(struct transformer_arch_session *sess,
     const uint64_t      mark = gf->submit_mark(gbe);
     struct geist_tensor t_lg = view_2d(sess->moe_logits, 1, (int64_t) n_exp);
     struct geist_tensor t_w  = view_1d(sess->moe_dev_w, (int64_t) n_rt);
-    enum geist_status   s    = gf->moe_route(gbe,
-                                             1,
-                                             n_exp,
-                                             n_rt,
-                                             st->config.moe_norm_topk,
-                                             &t_lg,
-                                             sess->moe_dev_ids,
-                                             sess->m_max * k * sizeof(uint32_t),
-                                             &t_w);
+    /* #499: GPT-OSS's router bias and softmax over the selected too */
+    struct geist_tensor               b_r, b_s;
+    const struct geist_moe_route_args ra = moe_route_args(st, mg, layer, 1, &b_r, &b_s);
+    enum geist_status                 s  = gf->moe_route(
+            gbe, &ra, &t_lg, sess->moe_dev_ids, sess->m_max * k * sizeof(uint32_t), &t_w);
     /* Slot j of the routed ones multiplies expert ids[j] where it has a copy
      * here; the shared expert, when it has one, is slot n_rt. */
     const struct geist_weight *const *w[3] = {mg->sel_w + (layer * 3 + 0) * n_exp,
@@ -1192,8 +1408,23 @@ uint64_t moe_gpu_route_launch(struct transformer_arch_session *sess,
         if (s == GEIST_OK)
             s = gf->linear_t(gbe, &t_x, &sh[1], &t[1], 1, &us);
     }
-    if (s == GEIST_OK)
+    /* #499: GPT-OSS's experts' biases, the rows by the routed ids (a cold
+     * slot's row is garbage, never summed); its down bias joins the host's
+     * part (forward/moe.c). No shared expert then (the attach). */
+    struct geist_tensor b_g, b_u;
+    if (s == GEIST_OK && mg->ext) {
+        const bool                  hg = moe_bias_view(mg, layer, 1, 0, n_exp, inter, &b_g);
+        const bool                  hu = moe_bias_view(mg, layer, 2, 0, n_exp, inter, &b_u);
+        const struct geist_glu_args ga = {.act    = moe_glu_act(&st->config),
+                                          .alpha  = GEIST_SWIGLU_OAI_ALPHA,
+                                          .limit  = GEIST_SWIGLU_OAI_LIMIT,
+                                          .x_bias = hg ? &b_g : nullptr,
+                                          .z_bias = hu ? &b_u : nullptr,
+                                          .ids    = sess->moe_dev_ids};
+        s                              = gf->glu(gbe, &ga, &gr, &ur, &gr);
+    } else if (s == GEIST_OK) {
         s = gf->silu_mul(gbe, &g, &u, &g);
+    }
     if (s == GEIST_OK)
         s = gf->linear_t_sel(gbe, n_exp, w[2], n_rt, true, sess->moe_dev_ids, &gr, &yr);
     if (s == GEIST_OK && shared)
@@ -1238,7 +1469,8 @@ bool moe_gpu_device(const struct transformer_arch_session *sess,
                     size_t                                 seq,
                     bool                                   decode_rows) {
     const struct transformer_moe_gpu *mg = sess->model->moe_gpu;
-    return mg != nullptr && (seq == 1 || (decode_rows && seq <= mg->device_rows)) &&
+    return mg != nullptr &&
+           (seq == 1 || (decode_rows ? seq <= mg->device_rows : mg->device_prefill)) &&
            mg->device != nullptr && sess->moe_dev_ids != nullptr && layer < sess->model->n_layers &&
            mg->device[layer];
 }
@@ -1275,26 +1507,61 @@ enum geist_status moe_gpu_device_ffn(struct transformer_arch_session *sess,
         ex[p].shape[0] *= (int64_t) n;
         ex[p].buffer = mg->bufs[layer * 6 + p];
     }
+    /* #373: the router's bias and the experts' biases, by the routed ids;
+     * #376 DeepSeek's router. */
+    struct geist_tensor               b_r, b_s, b_g, b_u, b_d;
+    const struct geist_moe_route_args ra = moe_route_args(st, mg, layer, seq, &b_r, &b_s);
+    const bool                        hg = moe_bias_view(mg, layer, 1, 0, n, inter, &b_g);
+    const bool                        hu = moe_bias_view(mg, layer, 2, 0, n, inter, &b_u);
+    const bool                        hd = moe_bias_view(mg, layer, 3, 0, n, d, &b_d);
+    const struct geist_glu_args       ga = {.act    = moe_glu_act(&st->config),
+                                            .alpha  = GEIST_SWIGLU_OAI_ALPHA,
+                                            .limit  = GEIST_SWIGLU_OAI_LIMIT,
+                                            .x_bias = hg ? &b_g : nullptr,
+                                            .z_bias = hu ? &b_u : nullptr,
+                                            .ids    = sess->moe_dev_ids};
     /* The flag word follows the session's m_max * k ids. */
-    enum geist_status s = gf->moe_route(gbe,
-                                        seq,
-                                        n,
-                                        k,
-                                        st->config.moe_norm_topk,
-                                        &t_lg,
-                                        sess->moe_dev_ids,
-                                        sess->m_max * k * sizeof(uint32_t),
-                                        &t_w);
-    if (s == GEIST_OK)
+    enum geist_status s = gf->moe_route(
+            gbe, &ra, &t_lg, sess->moe_dev_ids, sess->m_max * k * sizeof(uint32_t), &t_w);
+    /* #486: the experts' FFN in one call where the backend fuses it (a
+     * prefill chunk on Metal: one bucketing, gate and up with the GLU as
+     * one GEMM); GEIST_E_UNSUPPORTED (a decode step) -> the four calls. */
+    bool fused = false;
+    if (s == GEIST_OK && gf->moe_ffn_ids != nullptr) {
+        const struct geist_moe_ffn_args fa = {.n       = n,
+                                              .m       = seq,
+                                              .k       = k,
+                                              .glu     = mg->ext ? &ga : nullptr,
+                                              .w0      = {&tw[0], &tw[1], &tw[2]},
+                                              .experts = {&ex[0], &ex[1], &ex[2]},
+                                              .ids     = sess->moe_dev_ids,
+                                              .x       = &t_x,
+                                              .g       = &t_g,
+                                              .y       = &t_y};
+        s                                  = gf->moe_ffn_ids(gbe, &fa);
+        fused                              = s == GEIST_OK;
+        if (s == GEIST_E_UNSUPPORTED)
+            s = GEIST_OK;
+    }
+    if (s == GEIST_OK && !fused)
         s = gf->linear_t_ids(gbe, n, seq, k, false, &tw[0], &ex[0], sess->moe_dev_ids, &t_x, &t_g);
-    if (s == GEIST_OK)
+    if (s == GEIST_OK && !fused)
         s = gf->linear_t_ids(gbe, n, seq, k, false, &tw[1], &ex[1], sess->moe_dev_ids, &t_x, &t_u);
-    if (s == GEIST_OK)
-        s = gf->silu_mul(gbe, &t_g, &t_u, &t_g);
-    if (s == GEIST_OK)
+    if (s == GEIST_OK && !fused)
+        s = mg->ext ? gf->glu(gbe, &ga, &t_g, &t_u, &t_g) : gf->silu_mul(gbe, &t_g, &t_u, &t_g);
+    if (s == GEIST_OK && !fused)
         s = gf->linear_t_ids(gbe, n, seq, k, true, &tw[2], &ex[2], sess->moe_dev_ids, &t_g, &t_y);
     if (s == GEIST_OK)
-        s = gf->moe_weighted_sum(gbe, seq, k, d, &t_w, &t_y, &t_a, &t_o);
+        s = gf->moe_weighted_sum(gbe,
+                                 seq,
+                                 k,
+                                 d,
+                                 &t_w,
+                                 &t_y,
+                                 &t_a,
+                                 hd ? &b_d : nullptr,
+                                 hd ? sess->moe_dev_ids : nullptr,
+                                 &t_o);
     if (s == GEIST_OK)
         atomic_fetch_add_explicit(&st->moe_gpu->n_device, 1, memory_order_relaxed);
     if (s != GEIST_OK)
@@ -1572,7 +1839,7 @@ void moe_gpu_stage_calibrate(struct transformer_arch_state *st) {
     uint64_t cpu = UINT64_MAX;
     for (size_t i = 0; pair != nullptr && i < st->n_layers * slots && c.n_pair < 6 * 64; i++) {
         const size_t l = i % st->n_layers, e = i / st->n_layers;
-        if (e < n_exp && mg->twins[(l * slots + e) * 3].raw == nullptr &&
+        if (e < n_exp && moe_layer(st, l) && mg->twins[(l * slots + e) * 3].raw == nullptr &&
             st->layers[l].intermediate == inter)
             pair[c.n_pair++] = (uint32_t) (l * slots + e);
     }

@@ -266,7 +266,12 @@ view3(struct geist_buffer *b, size_t d0, size_t d1, size_t d2, enum geist_dtype 
                                   .stride = {(int64_t) (d1 * d2), (int64_t) d2, 1}};
 }
 
-static void check_backend_sinks(const char *name, struct shape sh, bool f16) {
+/* tol: of the reference's scale. The one-simdgroup kernel (caches under
+ * 64 keys in a prefill, under 32 at decode) reads Q and the weights in
+ * f32; the flash kernels (#487) read Q, K, V and P as half, as the plain
+ * attention's do, and the split decode an F32 cache rounded to half. */
+static void
+check_backend_sinks(const char *name, struct shape sh, bool f16, float sink_scale, double tol) {
     struct geist_backend *be = nullptr;
     if (geist_backend_create(name, nullptr, nullptr, &be) != GEIST_OK)
         return;
@@ -293,7 +298,7 @@ static void check_backend_sinks(const char *name, struct shape sh, bool f16) {
         }
     }
     for (size_t h = 0; h < sh.n_q_heads; h++)
-        sinks[h] = rnd() * 3.0f;
+        sinks[h] = rnd() * sink_scale;
     ref_sinks(&sh, q, k, v, sinks, ref);
     const enum geist_dtype kt = f16 ? GEIST_DTYPE_F16 : GEIST_DTYPE_F32;
     struct geist_buffer   *bq = upload(be, q, nq * 4), *bo = upload(be, q, nq * 4);
@@ -330,14 +335,17 @@ static void check_backend_sinks(const char *name, struct shape sh, bool f16) {
     char what[160];
     snprintf(what,
              sizeof what,
-             "%s attention_sinks %s n_q %zu n_kv %zu window %zu",
+             "%s attention_sinks %s n_q %zu at %zu n_kv %zu hd %zu window %zu sink*%g",
              name,
              f16 ? "F16" : "F32",
              sh.n_q,
+             sh.q_offset,
              sh.n_kv,
-             sh.window);
+             sh.head_dim,
+             sh.window,
+             (double) sink_scale);
     printf("%-44s max|d| %.3g of scale %.3g\n", what, err, scale);
-    expect(err <= 1e-5 * fmax(scale, 1.0), what);
+    expect(err <= tol * fmax(scale, 1.0), what);
     struct geist_buffer *bufs[] = {bq, bo, bk, bv, bs};
     for (size_t i = 0; i < 5; i++)
         be->desc->vtbl->buffer_destroy(be, bufs[i]);
@@ -408,11 +416,48 @@ int main(void) {
                                   .n_kv_heads = 3,
                                   .head_dim   = 48,
                                   .window     = 0};
-        check_backend_sinks(gpus[b], pf, false);
-        check_backend_sinks(gpus[b], sw, true);
-        check_backend_sinks(gpus[b], dc, false);
-        check_backend_sinks(gpus[b], dc, true);
-        check_backend_sinks(gpus[b], h48, false);
+        /* Under 64 keys and head_dim 48: the one-simdgroup kernel. */
+        check_backend_sinks(gpus[b], pf, false, 3.0f, 1e-5);
+        check_backend_sinks(gpus[b], sw, true, 3.0f, 1e-5);
+        check_backend_sinks(gpus[b], h48, false, 3.0f, 1e-5);
+        /* Decode on the split-KV kernel, the sink in its combine (#487). */
+        check_backend_sinks(gpus[b], dc, false, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], dc, true, 3.0f, 1e-5);
+        struct shape dl = dc;
+        dl.window       = 0;
+        check_backend_sinks(gpus[b], dl, true, 3.0f, 1e-5);
+        /* A sink far above every score: the output near zero, and its
+         * error with it; far below: plain attention. */
+        check_backend_sinks(gpus[b], dc, true, 40.0f, 1e-5);
+        check_backend_sinks(gpus[b], dl, true, -1e30f, 1e-5);
+        /* Prefill on the flash kernels (#487), gpt-oss-20b's head shape
+         * (64 dims, 8 q heads per KV head here): a whole prompt with and
+         * without its 128-key window, ragged last tiles, a chunk after
+         * 400 rows whose window starts inside a key block, and sinks
+         * above every score. */
+        const struct shape fp = {.n_q        = 203,
+                                 .n_kv       = 203,
+                                 .q_offset   = 0,
+                                 .n_q_heads  = 16,
+                                 .n_kv_heads = 2,
+                                 .head_dim   = 64,
+                                 .window     = 0};
+        struct shape       fw = fp;
+        fw.window             = 128;
+        struct shape fc       = fw;
+        fc.n_q                = 77;
+        fc.q_offset           = 413;
+        fc.n_kv               = 490;
+        struct shape fs       = fc;
+        fs.window             = 37;
+        check_backend_sinks(gpus[b], fp, true, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], fp, false, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], fw, true, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], fc, true, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], fc, false, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], fs, true, 3.0f, 2e-3);
+        check_backend_sinks(gpus[b], fw, true, 40.0f, 2e-3);
+        check_backend_sinks(gpus[b], fc, true, -1e30f, 2e-3);
     }
     check_no_sink();
     check_yarn();

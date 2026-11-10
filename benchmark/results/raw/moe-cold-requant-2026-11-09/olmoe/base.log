@@ -1,0 +1,15 @@
+cold: 0 of 64 experts per layer (Q8_0, least); their share of the selections: profile 0.00 %, held-out 0.00 %
+$W/olmoe-base.gguf: 48 expert tensors rewritten, 7.16 GB of tensor data
+=== en
+0.00.654.055 I perplexity: calculating perplexity over 26 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.05.958.831 I Final estimate: PPL = 11.2148 +/- 0.39490
+=== de
+0.00.499.640 I perplexity: calculating perplexity over 27 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.07.093.764 I Final estimate: PPL = 24.6888 +/- 0.96384
+=== c
+0.00.514.288 I perplexity: calculating perplexity over 34 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.08.876.820 I Final estimate: PPL = 4.0519 +/- 0.12287
+=== py
+0.00.479.607 I perplexity: calculating perplexity over 15 chunks, n_ctx=512, batch_size=512, n_seq=1
+0.03.987.394 I Final estimate: PPL = 2.5791 +/- 0.09833
+done

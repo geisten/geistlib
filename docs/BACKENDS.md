@@ -17,7 +17,7 @@ When `"auto"` picked Metal, `geist_model_load*` retries on the CPU backend
 `"auto"` would otherwise have picked (`cpu_neon`) if Metal
 
 - refuses the model's weight formats: a matrix whose dtype Metal has no kernel
-  for (e.g. Q5_0, IQ2_S, TQ1_0) fails the load with `GEIST_E_UNSUPPORTED`,
+  for (e.g. IQ2_S, TQ1_0; Q5_0 runs there since #376) fails the load with `GEIST_E_UNSUPPORTED`,
   naming the tensor, instead of the first prefill; or
 - refuses for memory: the load exceeds the GPU working-set budget
   (`GEIST_E_OOM`, #531), or the model loads but a session of the load's
@@ -172,6 +172,39 @@ RTX 2080 Ti pp512 ≈ 395 t/s (≈ 517 with `GEIST_M_MAX=128`) and tg ≈ 36 t/s
 ([`TERNARY.md`](../benchmark/results/TERNARY.md)). Devices whose subgroup size
 is not 32 (RADV) still prefill PQ2_0 with per-row matvecs (#471).
 
+**Mixtures of experts (#499).** The experts run on the GPU as on Metal: the
+router (softmax, GPT-OSS's bias and softmax over the selected, DeepSeek's
+sigmoid with selection bias, groups and scale), the experts' GLU with their
+biases (SwiGLU, `swiglu_oai`) and Q4_K / Q5_K / Q6_K / Q8_0 / Q5_0 / MXFP4
+expert weights. A model whose experts all fit routes and runs them on the
+device (`fused->moe_route`, `linear_t_ids`, `glu`, `moe_weighted_sum`): a
+decode step through the id-indexed matvecs, a prefill chunk through one
+grouped GEMM per projection (`moe_map` buckets the routed slots by expert
+once per layer, then 128 x 64 tiles of an expert's rows, llama.cpp's
+`mul_mm_id`: on the tensor cores, and since #249 on GPUs without cooperative
+matrices, or with another subgroup size, the same tiles multiplied in
+registers). One
+that does not fit keeps the hot/cold split ([OFFLOAD.md](OFFLOAD.md)), the
+hot experts on the GPU with any of these routers and GPT-OSS's routed on the
+device (#162). On the RTX 2080 Ti: OLMoE-1B-7B prefills 512 tokens in half
+the time (6.1k tok/s, llama.cpp Vulkan 6.0k), and gpt-oss-20b, 620 of 768
+experts on the 11 GiB card, prefills 9.6x and decodes 2.1x faster than with
+every expert on the CPU (708 / 75 tok/s; llama.cpp Vulkan with three layers'
+experts on the CPU: 1132 / 90). DeepSeek-type latent attention runs on the
+device too (#504, `caps.mla_device`): the absorbed layout of DeepSeek-V3 and
+GigaChat3 (one 576-dim KV head, V read from the K cache; tensor-core prefill
+with the q heads folded into each tile so a K chunk serves 16 of them,
+split-KV decode) and DeepSeek-V2-Lite's decompressed one
+(192-dim heads), with rmsnorm and `scale_f32` on row views and k_b / v_b per
+head through `linear_t_ids`. On the RTX 2080 Ti the decompressed files
+prefill 512 tokens 34x (V2-Lite) and 130x (GigaChat3) faster than with the
+latent attention assembled on the host and decode 2.7x / 4.5x faster;
+perplexity stays within 0.4 % of llama.cpp Vulkan in both layouts. Against
+llama.cpp Vulkan the absorbed files decode at 0.84-0.92x (V2-Lite at 2048
+tokens of context 1.6x); GigaChat3 prefills at 0.74x (512 tokens) and 1.88x
+(2048), DeepSeek-V2-Lite's split file at 0.29x / 0.44x, held back by its F32
+k_b / v_b (a matvec per token and head) and its host-resident experts.
+
 **Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
 Weights go to VRAM until one would leave less than a reserve for the KV cache
 and scratch (1/16 of the device, `GEIST_VK_WEIGHT_RESERVE` in bytes with a K/M/G
@@ -230,10 +263,12 @@ limit fails the load.
 | `GEIST_MOE_STAGE_M_MIN=<rows>` | the rows from which a prefill step copies a cold expert to the GPU, instead of the threshold measured at load (`GEIST_VERBOSE` prints it); `0` = off |
 | `GEIST_MOE_STAGE_MAX=<n>` | the most cold experts a prefill step copies (default 16, at most 64); their slots come out of the planner's VRAM headroom, past 256 MiB out of the hot experts |
 | `GEIST_MOE_STAGE_HOST=<MiB>` | host memory for the cold experts' copies on the GPU backend, which the staging copies from (default: 4 GiB, or a quarter of the host's memory if less; the profile's hottest cold experts first, the rest stay CPU-only) |
-| `GEIST_MOE_DEVICE=0` | a mixture of experts whose every expert is on the GPU keeps routing its decode steps on the host instead of on the device (#201: `fused->moe_route`, `linear_t_ids`, `moe_weighted_sum`; Metal) |
-| `GEIST_MOE_GPU_ROUTE=0` | a mixture of experts split between a discrete GPU and the CPU keeps routing its decode steps on the host instead of on the GPU (#162: the GPU ranks the router's experts as the host does, `fused->moe_route`, and starts the hot ones by id, `linear_t_sel`, while the host waits for the router alone, `submit_mark` / `map_marked`, and runs the cold ones; Vulkan) |
+| `GEIST_MOE_DEVICE=0` | a mixture of experts whose every expert is on the GPU keeps routing its decode steps on the host instead of on the device (#201: `fused->moe_route`, `linear_t_ids`, `moe_weighted_sum`; Metal, Vulkan since #499) |
+| `GEIST_MOE_DEVICE_PREFILL=0` | such a model routes its prefill chunks on the host and runs each expert's rows as GEMMs of their own, instead of on the device (#482: the decode route over the chunk's rows, `linear_t_ids` as grouped GEMMs from 9 rows -- since #486 `moe_ffn_ids`: one bucketing, gate and up with the GLU as one GEMM; Metal, default on; Vulkan since #499: one bucketing per layer, a grouped GEMM per projection, without cooperative matrices since #249) |
+| `GEIST_MOE_GPU_ROUTE=0` | a mixture of experts split between a discrete GPU and the CPU keeps routing its decode steps on the host instead of on the GPU (#162: the GPU ranks the router's experts as the host does, `fused->moe_route`, and starts the hot ones by id, `linear_t_sel`, while the host waits for the router alone, `submit_mark` / `map_marked`, and runs the cold ones; Vulkan; #499: GPT-OSS's router bias and softmax over the selected, and its experts' biases, too) |
 | `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
+| `GEIST_VK_NO_COOPMAT=1` | run as a device without `VK_KHR_cooperative_matrix`: no tensor-core GEMM or attention pipelines, the paths RDNA2 and older GPUs take (#249; for measuring and testing them on a card that has them) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
 | `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |

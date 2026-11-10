@@ -359,7 +359,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         }
         sess->logits_softcapped = false;
         sess->logits_sparse     = false;
-        return GEIST_OK;
+        return moe_gpu_device_check(sess); /* the rows routed on the device (#482) */
     }
 
     /* Per-row softcap + sampler. Softcap is monotonic, so for greedy
@@ -402,7 +402,7 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
         sess->logits_softcapped = do_softcap;
         sess->logits_sparse     = false;
     }
-    return GEIST_OK;
+    return moe_gpu_device_check(sess);
 }
 
 [[nodiscard]] enum geist_status finalize_logits_last_row(struct transformer_arch_session *sess,

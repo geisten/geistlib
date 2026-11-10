@@ -93,12 +93,19 @@ are not implemented. Expert pruning or merging is an offline model
 transformation, not a load-time placement decision. Unified-memory devices
 have no PCIe weight transfer to hide.
 
+Cold experts are not stored in a lower precision than hot ones: in the
+measurement the quality bar held only for a small share of the selections,
+no more experts fit in VRAM, and the lower-precision kernels were slower per
+token.
+
 ## Evidence
 
 [Offload measurements](../benchmark/results/OFFLOAD.md) retain the phase 0–3
 experiments, rejected per-linear routing, expert-staging and MTP results with
 raw-run references. [Layer-split results](../benchmark/results/LAYER-SPLIT.md)
 and [MoE route-tail results](../benchmark/results/MOE_ROUTE_TAIL_2026-10-30.md)
-record the split baseline and the quality cost of dropping selected experts.
+record the split baseline and the quality cost of dropping selected experts;
+[cold-expert precision results](../benchmark/results/MOE_COLD_EXPERT_PRECISION_2026-11-09.md)
+record the mixed-precision expert measurement.
 Those reports describe their measured revisions; use this page and
 [BACKENDS.md](BACKENDS.md) for current configuration.

@@ -1,0 +1,18 @@
+experts in Q4_K_M 17.55 GB; MB per expert: Q4_K_M 2.86, Q3_K 2.03, IQ2_S 1.51
+| VRAM for experts | cold experts | resident | GPU share of selections | CPU expert MB / token |
+| --: | :-- | --: | --: | --: |
+| 6.0 GB | none (all Q4_K_M) | 34.0 % | 75.0 % | 277 |
+| 6.0 GB | non-resident in Q3_K | 34.0 % | 75.0 % | 194 |
+| 6.0 GB | non-resident in IQ2_S | 34.0 % | 75.0 % | 145 |
+| 6.0 GB | least-used 50 % in Q3_K | 34.0 % | 75.0 % | 239 |
+| 6.0 GB | least-used 50 % in IQ2_S | 34.0 % | 75.0 % | 216 |
+| 8.0 GB | none (all Q4_K_M) | 45.3 % | 85.0 % | 167 |
+| 8.0 GB | non-resident in Q3_K | 45.3 % | 85.0 % | 116 |
+| 8.0 GB | non-resident in IQ2_S | 45.3 % | 85.0 % | 87 |
+| 8.0 GB | least-used 50 % in Q3_K | 45.3 % | 85.0 % | 129 |
+| 8.0 GB | least-used 50 % in IQ2_S | 45.3 % | 85.0 % | 106 |
+| 9.5 GB | none (all Q4_K_M) | 53.9 % | 90.1 % | 110 |
+| 9.5 GB | non-resident in Q3_K | 53.9 % | 90.1 % | 77 |
+| 9.5 GB | non-resident in IQ2_S | 53.9 % | 90.1 % | 57 |
+| 9.5 GB | least-used 50 % in Q3_K | 55.5 % | 90.8 % | 71 |
+| 9.5 GB | least-used 50 % in IQ2_S | 57.4 % | 91.5 % | 49 |

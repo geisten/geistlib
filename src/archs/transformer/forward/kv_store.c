@@ -704,13 +704,20 @@ enum geist_status transformer_kv_store_attention(struct transformer_layer_forwar
                                                                         (int64_t) kv_len_now,
                                                                         st->n_kv_heads,
                                                                         (int64_t) ctx->hd);
-        enum geist_status   s           = prims->attention(be,
-                                                           t_q_3d,
-                                                           &t_kcache_3d,
-                                                           &t_vcache_3d,
-                                                           ctx->q_position,
-                                                           L->sliding_window,
-                                                           t_attn_3d);
+        /* Absorbed MLA (#487): V is K before RoPE, which rotates only the
+         * leading pe dims, and only the latent dims after them are read
+         * from the output (v_b); so the K cache serves as V, and a key
+         * block is read once for both products (llama.cpp's V view of K). */
+        if (st->config.mla_absorbed) {
+            t_vcache_3d = t_kcache_3d;
+        }
+        enum geist_status s = prims->attention(be,
+                                               t_q_3d,
+                                               &t_kcache_3d,
+                                               &t_vcache_3d,
+                                               ctx->q_position,
+                                               L->sliding_window,
+                                               t_attn_3d);
         if (s != GEIST_OK) {
             return s;
         }

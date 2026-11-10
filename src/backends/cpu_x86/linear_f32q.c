@@ -39,7 +39,9 @@ static inline size_t f32q_blocks_per_row(size_t n_in) {
     return n_in / W8A8_BLOCK_ELEMS;
 }
 
-/* blob: [weights u8 : n_out*n_in] [w_scales f32 : n_out*nblk] [w_offsets f32]. */
+/* blob: [weights u8 : n_out*n_in] [w_scales f32 : n_out*nblk] [w_offsets f32],
+ * row-major or interleaved (the same sizes: the interleave is a pure
+ * permutation). */
 static void f32q_pointers(const uint8_t  *blob,
                           size_t          n_in,
                           size_t          n_out,
@@ -52,36 +54,24 @@ static void f32q_pointers(const uint8_t  *blob,
     *o_out            = *s_out + n_out * nblk;
 }
 
-static size_t f32q_rowmajor_bytes(size_t n_in, size_t n_out) {
-    return n_out * n_in + 2 * n_out * f32q_blocks_per_row(n_in) * sizeof(float);
+/* The blob's size; false if it overflows size_t (n_in, n_out come from the
+ * file). Every other product over n_in, n_out is smaller. */
+[[nodiscard]] static bool f32q_blob_bytes(size_t n_in, size_t n_out, size_t *bytes) {
+    size_t w_bytes = 0, n_sc = 0, sc_bytes = 0;
+    return !ckd_mul(&w_bytes, n_out, n_in) && !ckd_mul(&n_sc, n_out, f32q_blocks_per_row(n_in)) &&
+           !ckd_mul(&sc_bytes, n_sc, 2 * sizeof(float)) && !ckd_add(bytes, w_bytes, sc_bytes);
 }
 
-/* When n_out % 8 == 0 AND the host has AVX-512+VNNI, append a lane-parallel
- * W8x8 copy (same size, a pure permutation) and run w8x8_gemm at prefill —
- * 8 output rows per VPDPBUSD, reduced once per tile, vs w8a8_gemm's per-row
- * hsum. w8x8_gemm/w8x16_gemm live in the -mavx512vnni TU, so the VNNI check
- * is a SIGILL guard, not a tuning choice (same predicate at resolve and mN). */
+/* When n_out % 8 == 0 AND the host has AVX-512+VNNI, the blob holds the
+ * lane-parallel W8x8 / W8x16 interleave instead of the row-major layout,
+ * and decode and prefill both run w8x8_gemm / w8x16_gemm (8 or 16 output
+ * rows per VPDPBUSD, no per-row hsum; decode as a chunk of one token). The
+ * weight keeps the one layout both read, and a row takes the same kernel
+ * alone and in a chunk (#476). w8x8_gemm/w8x16_gemm live in the
+ * -mavx512vnni TU, so the VNNI check is a SIGILL guard, not a tuning
+ * choice (same predicate at resolve, m1 and mN). */
 static inline bool f32q_use_w8x8(size_t n_out) {
     return (n_out % W8X8_NROWS) == 0 && w8a8_isa_is_vnni();
-}
-
-static size_t f32q_blob_bytes(size_t n_in, size_t n_out) {
-    const size_t rm = f32q_rowmajor_bytes(n_in, n_out);
-    return f32q_use_w8x8(n_out) ? 2 * rm : rm;
-}
-
-/* Interleaved W8x8 region, appended after the row-major blob. */
-static void f32q_w8x8_pointers(const uint8_t  *blob,
-                               size_t          n_in,
-                               size_t          n_out,
-                               const uint8_t **qs,
-                               const float   **s,
-                               const float   **o) {
-    const size_t   nblk = f32q_blocks_per_row(n_in);
-    const uint8_t *base = blob + f32q_rowmajor_bytes(n_in, n_out);
-    *qs                 = base;
-    *s                  = (const float *) (base + n_out * n_in);
-    *o                  = *s + n_out * nblk;
 }
 
 void f32_to_w8a8_row(
@@ -113,17 +103,27 @@ void f32_to_w8a8_row(
     }
     const size_t n_in  = (size_t) w->n_in;
     const size_t n_out = (size_t) w->n_out;
-    if (n_in % W8A8_BLOCK_ELEMS != 0) {
+    size_t       bytes = 0;
+    if (n_in % W8A8_BLOCK_ELEMS != 0 || !f32q_blob_bytes(n_in, n_out, &bytes)) {
         return GEIST_E_INVALID_ARG; /* caller keeps the cblas F32 path. */
     }
+    const bool interleave = f32q_use_w8x8(n_out);
 
-    uint8_t *blob = heap_alloc_aligned(f32q_blob_bytes(n_in, n_out), OPTIMAL_ALIGNMENT);
+    uint8_t *blob = heap_alloc_aligned(bytes, OPTIMAL_ALIGNMENT);
     if (blob == nullptr) {
         return GEIST_E_OOM;
     }
+    /* The interleave is repacked from a row-major staging copy. */
+    void *staging = interleave ? heap_alloc_aligned(bytes, OPTIMAL_ALIGNMENT) : blob;
+    if (staging == nullptr) {
+        staging = blob;
+        safe_free(&staging);
+        return GEIST_E_OOM;
+    }
+    const uint8_t *rm = staging;
     const uint8_t *bw;
     const float   *bs, *bo;
-    f32q_pointers(blob, n_in, n_out, &bw, &bs, &bo);
+    f32q_pointers(rm, n_in, n_out, &bw, &bs, &bo);
     const size_t nblk = f32q_blocks_per_row(n_in);
     const float *src  = (const float *) w->raw;
     for (size_t r = 0; r < n_out; r++) {
@@ -134,35 +134,53 @@ void f32_to_w8a8_row(
                         (float *) bo + r * nblk);
     }
 
-    /* Interleave for the lane-parallel prefill kernel (n_out % 8 == 0). */
-    if (f32q_use_w8x8(n_out)) {
+    if (interleave) {
         const uint8_t *iq;
         const float   *is, *io;
-        f32q_w8x8_pointers(blob, n_in, n_out, &iq, &is, &io);
+        f32q_pointers(blob, n_in, n_out, &iq, &is, &io);
         if (n_out % W8X16_NROWS == 0) {
             w8x16_repack(n_out, n_in, bw, bs, bo, (uint8_t *) iq, (float *) is, (float *) io);
         } else {
             w8x8_repack(n_out, n_in, bw, bs, bo, (uint8_t *) iq, (float *) is, (float *) io);
         }
+        safe_free(&staging);
     }
 
-    geist_weight_attach_aux(w, blob, f32q_blob_bytes(n_in, n_out), 0, 0, 0);
+    geist_weight_attach_aux(w, blob, bytes, 0, 0, 0);
     w->linear_m1 = cpu_x86_linear_f32q_m1;
     w->linear_mN = cpu_x86_linear_f32q_mN;
     return GEIST_OK;
+}
+
+/* m quantized activation rows through the blob's layout. */
+static void f32q_gemm(size_t                     m,
+                      const int8_t              *acts,
+                      const int32_t             *sum_a,
+                      const float               *act_scales,
+                      const struct geist_weight *w,
+                      float                     *y) {
+    const size_t   n_in  = (size_t) w->n_in;
+    const size_t   n_out = (size_t) w->n_out;
+    const size_t   nblk  = f32q_blocks_per_row(n_in);
+    const uint8_t *qs;
+    const float   *sc, *of;
+    f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &qs, &sc, &of);
+    if (!f32q_use_w8x8(n_out)) {
+        w8a8_gemm(m, n_out, nblk, qs, sc, of, acts, sum_a, act_scales, y);
+    } else if (n_out % W8X16_NROWS == 0) {
+        w8x16_gemm(m, n_out, nblk, qs, sc, of, acts, sum_a, act_scales, y);
+    } else {
+        w8x8_gemm(m, n_out, nblk, qs, sc, of, acts, sum_a, act_scales, y);
+    }
 }
 
 void cpu_x86_linear_f32q_m1(const float               *x,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y) {
-    const size_t   n_in     = (size_t) w->n_in;
-    const size_t   n_out    = (size_t) w->n_out;
-    const size_t   nblk     = n_in / W8A8_BLOCK_ELEMS;
-    const size_t   n_groups = w8a8_act_groups(nblk);
-    const uint8_t *weights;
-    const float   *w_scales, *w_offsets;
-    f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
+    const size_t n_in     = (size_t) w->n_in;
+    const size_t nblk     = n_in / W8A8_BLOCK_ELEMS;
+    const size_t n_groups = w8a8_act_groups(nblk);
 
     /* One row of this thread's M>1 scratch (it has the scales slot). */
     struct cpu_x86_workspace *ws = nullptr;
@@ -178,8 +196,7 @@ void cpu_x86_linear_f32q_m1(const float               *x,
         return;
     }
     w8a8_quantize_acts_row(n_in, x, ws->mN_acts, ws->mN_sum_a, ws->mN_scale);
-    w8a8_gemv(
-            n_out, nblk, weights, w_scales, w_offsets, ws->mN_acts, ws->mN_sum_a, ws->mN_scale, y);
+    f32q_gemm(1, ws->mN_acts, ws->mN_sum_a, ws->mN_scale, w, y);
 }
 
 void cpu_x86_linear_f32q_mN(size_t                     m,
@@ -187,12 +204,8 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
                             const struct geist_weight *w,
                             struct geist_backend      *be,
                             float                     *y) {
-    const size_t   n_in  = (size_t) w->n_in;
-    const size_t   n_out = (size_t) w->n_out;
-    const size_t   nblk  = n_in / W8A8_BLOCK_ELEMS;
-    const uint8_t *weights;
-    const float   *w_scales, *w_offsets;
-    f32q_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &weights, &w_scales, &w_offsets);
+    const size_t n_in = (size_t) w->n_in;
+    const size_t nblk = n_in / W8A8_BLOCK_ELEMS;
 
     /* Per-thread workspace: int8 acts, 16-element sums, 256-element scales. */
     const size_t              n_groups   = w8a8_act_groups(nblk);
@@ -208,7 +221,7 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
     if (ws == nullptr) {
         /* No prefill scratch: the M=1 kernel per row still writes y. */
         for (size_t row = 0; row < m; row++) {
-            cpu_x86_linear_f32q_m1(x + row * n_in, w, be, y + row * n_out);
+            cpu_x86_linear_f32q_m1(x + row * n_in, w, be, y + row * (size_t) w->n_out);
         }
         return;
     }
@@ -219,16 +232,5 @@ void cpu_x86_linear_f32q_mN(size_t                     m,
         w8a8_quantize_acts_row(
                 n_in, x + j * n_in, acts + j * n_in, sum_a + j * nblk, act_scales + j * n_groups);
     }
-    if (f32q_use_w8x8(n_out)) {
-        const uint8_t *iq;
-        const float   *is, *io;
-        f32q_w8x8_pointers((const uint8_t *) w->aux_fp32, n_in, n_out, &iq, &is, &io);
-        if (n_out % W8X16_NROWS == 0) {
-            w8x16_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, act_scales, y);
-        } else {
-            w8x8_gemm(m, n_out, nblk, iq, is, io, acts, sum_a, act_scales, y);
-        }
-    } else {
-        w8a8_gemm(m, n_out, nblk, weights, w_scales, w_offsets, acts, sum_a, act_scales, y);
-    }
+    f32q_gemm(m, acts, sum_a, act_scales, w, y);
 }

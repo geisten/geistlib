@@ -141,7 +141,8 @@ moe_gpu_routed(const struct transformer_arch_session *sess, size_t layer, size_t
 /* #201: a decode step (seq == 1) of layer `layer` routes and runs its
  * experts on the device: mg->device[layer] and the session's buffers.
  * decode_rows: the seq rows are a batched decode's (#245), one token of
- * each of seq sessions; up to mg->device_rows of them take the route. */
+ * each of seq sessions; up to mg->device_rows of them take the route. A
+ * prefill chunk does when mg->device_prefill (#482). */
 [[nodiscard]] bool moe_gpu_device(const struct transformer_arch_session *sess,
                                   size_t                                 layer,
                                   size_t                                 seq,

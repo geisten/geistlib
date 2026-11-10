@@ -1,0 +1,110 @@
+#version 450
+#include "vk_limits.h"
+
+/* Buckets a chunk's routed slots by expert for the grouped expert GEMMs
+ * (#499, moe_mm_*.comp), as Metal's moe_map (#482, #486). One workgroup;
+ * the mk = m * k slots s read their expert ids[io + s] (< n, moe_route's).
+ * Writes, in words from map[mo]:
+ *   [e]          the first sorted row of expert e, [n] the slot count;
+ *   [n + 1 + r]  the slot of sorted row r: an expert's slots keep their
+ *                order, so the bucketing does not depend on the schedule;
+ *   [tb]         the count of (expert, bn-row tile) pairs with rows, and
+ *   [tb + 1 + i] tile i as e | (j << 16), the j-th tile of expert e, in
+ *                expert order (tb = n + 1 + mk);
+ *   [rk + s]     scratch: slot s's rank within its expert (rk past the
+ *                tiles' bound tb + 1 + mk / bn + min(n, mk)).
+ * n <= VK_MOE_TOPK_MAX_N. Dispatch: 1 workgroup. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer I { uint ids[]; };
+layout(set = 0, binding = 1) buffer M { uint map[]; };
+
+layout(push_constant) uniform Push {
+    uint n;
+    uint mk;
+    uint io; /* words into ids */
+    uint mo; /* words into map */
+    uint bn; /* rows per tile */
+    uint tb; /* the tile list, words from mo */
+    uint rk; /* the rank scratch, words from mo */
+} pc;
+
+shared uint cnt[VK_MOE_TOPK_MAX_N];
+shared uint off[VK_MOE_TOPK_MAX_N];
+shared uint toff[VK_MOE_TOPK_MAX_N];
+shared uint ce[256];
+shared uint part[2][256];
+
+void main() {
+    uint ti = gl_LocalInvocationID.x;
+    for (uint e = ti; e < pc.n; e += 256u) {
+        cnt[e] = 0u;
+    }
+    barrier();
+    /* ranks within an expert, 256 slots at a time in slot order */
+    for (uint c0 = 0u; c0 < pc.mk; c0 += 256u) {
+        uint s = c0 + ti;
+        uint e = s < pc.mk ? ids[pc.io + s] : 0xffffffffu;
+        ce[ti] = e;
+        barrier();
+        uint r = 0u;
+        for (uint j = 0u; j < ti; ++j) {
+            r += ce[j] == e ? 1u : 0u;
+        }
+        uint b0 = e < pc.n ? cnt[e] : 0u;
+        barrier();
+        if (e < pc.n) {
+            atomicAdd(cnt[e], 1u);
+            map[pc.mo + pc.rk + s] = b0 + r;
+        }
+        barrier();
+    }
+    /* exclusive prefix sums of the rows and of the tiles per expert, two
+     * experts per thread, then a scan over the 256 pairs */
+    uint e0 = 2u * ti, e1 = e0 + 1u;
+    uint c0 = e0 < pc.n ? cnt[e0] : 0u;
+    uint c1 = e1 < pc.n ? cnt[e1] : 0u;
+    uint t0 = (c0 + pc.bn - 1u) / pc.bn;
+    uint t1 = (c1 + pc.bn - 1u) / pc.bn;
+    part[0][ti] = c0 + c1;
+    part[1][ti] = t0 + t1;
+    barrier();
+    for (uint d = 1u; d < 256u; d <<= 1u) {
+        uint a = ti >= d ? part[0][ti - d] : 0u;
+        uint b = ti >= d ? part[1][ti - d] : 0u;
+        barrier();
+        part[0][ti] += a;
+        part[1][ti] += b;
+        barrier();
+    }
+    uint rows_before = part[0][ti] - (c0 + c1);
+    uint tiles_before = part[1][ti] - (t0 + t1);
+    if (e0 < pc.n) {
+        off[e0] = rows_before;
+        toff[e0] = tiles_before;
+        map[pc.mo + e0] = rows_before;
+    }
+    if (e1 < pc.n) {
+        off[e1] = rows_before + c0;
+        toff[e1] = tiles_before + t0;
+        map[pc.mo + e1] = rows_before + c0;
+    }
+    if (ti == 255u) {
+        map[pc.mo + pc.n] = part[0][255];
+        map[pc.mo + pc.tb] = part[1][255];
+    }
+    barrier();
+    for (uint s = ti; s < pc.mk; s += 256u) {
+        uint e = ids[pc.io + s];
+        if (e < pc.n) {
+            map[pc.mo + pc.n + 1u + off[e] + map[pc.mo + pc.rk + s]] = s;
+        }
+    }
+    for (uint e = ti; e < pc.n; e += 256u) {
+        uint nt = (cnt[e] + pc.bn - 1u) / pc.bn;
+        for (uint j = 0u; j < nt; ++j) {
+            map[pc.mo + pc.tb + 1u + toff[e] + j] = e | (j << 16u);
+        }
+    }
+}

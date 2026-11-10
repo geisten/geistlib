@@ -1,0 +1,45 @@
+#version 450
+
+/* The routed experts' outputs weighted by the router onto the residual
+ * (#499, fused->moe_weighted_sum): out[t][c] = add[t][c] + sum_{j < k}
+ * w[t * k + j] * (y[t * k + j][c] + bias[ids[t * k + j]][c] when hb), the
+ * sum in j order. out may alias add. Dispatch: gx = ceil(d / 256),
+ * gy = tokens. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Y { float y[]; };
+layout(set = 0, binding = 1) readonly buffer W { float w[]; };
+layout(set = 0, binding = 2) readonly buffer A { float add[]; };
+layout(set = 0, binding = 3) writeonly buffer O { float o[]; };
+layout(set = 0, binding = 4) readonly buffer B { float bs[]; };
+layout(set = 0, binding = 5) readonly buffer I { uint ids[]; };
+
+layout(push_constant) uniform Push {
+    uint d;
+    uint k;
+    uint yo, ys; /* offset and row stride, elements */
+    uint wo;
+    uint ao, as_;
+    uint oo, os;
+    uint hb, bo; /* output biases present: bs[bo + e * d + c] */
+    uint io;     /* words into ids */
+} pc;
+
+void main() {
+    uint c = gl_GlobalInvocationID.x;
+    uint t = gl_WorkGroupID.y;
+    if (c >= pc.d) {
+        return;
+    }
+    float a = add[pc.ao + t * pc.as_ + c];
+    for (uint j = 0u; j < pc.k; ++j) {
+        uint s = t * pc.k + j;
+        float v = y[pc.yo + s * pc.ys + c];
+        if (pc.hb != 0u) {
+            v += bs[pc.bo + ids[pc.io + s] * pc.d + c];
+        }
+        a += w[pc.wo + s] * v;
+    }
+    o[pc.oo + t * pc.os + c] = a;
+}

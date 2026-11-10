@@ -145,6 +145,9 @@ geist_ffn_activation_select(size_t act_len, enum geist_ffn_activation_kind dflt,
 /* A family refuses more experts than this at load (blk_moe_ffn lists the
  * active experts of a layer on the stack). */
 constexpr int GEIST_MOE_MAX_EXPERTS = 512;
+/* GEIST_MOE_ACT_SWIGLU_OAI's constants (llama.cpp's for GPT-OSS). */
+constexpr float GEIST_SWIGLU_OAI_ALPHA = 1.702f;
+constexpr float GEIST_SWIGLU_OAI_LIMIT = 7.0f;
 
 struct geist_arch_config {
     /* ---- Numerics. */
@@ -369,6 +372,17 @@ struct geist_arch_config {
     size_t mla_rope;
     size_t mla_v_dim;
     float  attn_q_scale;
+    /* Absorbed MLA (#375, llama.cpp's is_mla: the file has
+     * attention.key_length_mla / value_length_mla and the split attn_k_b /
+     * attn_v_b): no per-head K or V. Each q head's nope part is taken into
+     * the latent by k_b, the cache holds ONE head of head_dim = mla_rope +
+     * mla_kv_rank, [k_pe | latent], for K and V alike, every q head
+     * [q_pe | k_b q_nope] attends it (MQA), and v_b takes the latent dims
+     * of each output head to its mla_v_dim. mla_k_dim is a head's q.k
+     * width before the absorption (mla_rope + nope), which the q scale
+     * divides by in both forms. */
+    bool   mla_absorbed;
+    size_t mla_k_dim;
 
     /* ---- qwen35 hybrid family ------------------------------------------ *
      *

@@ -1,11 +1,10 @@
 /*
  * test_backend_metal_parity_unit — numerical parity gate for the Metal
  * linear path (#181/#296): resolve_weight + linear_m1/linear_mN for Q4_0,
- * Q4_1, Q8_0, Q4_K, Q5_K, Q6_K and F32 weights, compared against cpu_scalar on the SAME
- * weight bytes. cpu_scalar dequantizes with an independent implementation
- * (src/formats/gguf), so agreement means the MSL dequant and the full
- * dispatch chain (pipeline creation, buffer registry, batching) are
- * correct.
+ * Q4_1, Q5_0 (#376), Q8_0, Q4_K, Q5_K, Q6_K and F32 weights, compared against cpu_scalar on the
+ * SAME weight bytes. cpu_scalar dequantizes with an independent implementation (src/formats/gguf),
+ * so agreement means the MSL dequant and the full dispatch chain (pipeline creation, buffer
+ * registry, batching) are correct.
  *
  * The Metal linear op falls back to a HOST compute path when a pointer is
  * not a registered backend buffer — a parity test on malloc memory would
@@ -42,6 +41,7 @@ static int g_fail = 0;
 enum {
     Q40_BB   = 18,
     Q41_BB   = 20,
+    Q50_BB   = 22,
     Q80_BB   = 34,
     Q4K_BB   = 144,
     Q5K_BB   = 176,
@@ -80,6 +80,9 @@ static void block_geom(int dtype, size_t *elems, size_t *bytes) {
         return;
     case GEIST_DTYPE_Q8_0:
         *elems = 32u, *bytes = Q80_BB;
+        return;
+    case GEIST_DTYPE_Q5_0:
+        *elems = 32u, *bytes = Q50_BB;
         return;
     case GEIST_DTYPE_IQ4_NL:
         *elems = 32u, *bytes = IQ4NL_BB;
@@ -170,7 +173,8 @@ static void fill_blob(uint8_t *dst, size_t n_in, size_t n_out, int dtype) {
                     blk[sc] = (uint8_t) (0xCCu | (rng_u8() & 0x33u));
                 }
             } else if (dtype == GEIST_DTYPE_Q4_0 || dtype == GEIST_DTYPE_Q4_1 ||
-                       dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL) {
+                       dtype == GEIST_DTYPE_Q8_0 || dtype == GEIST_DTYPE_IQ4_NL ||
+                       dtype == GEIST_DTYPE_Q5_0) {
                 blk[0] = 0x00; /* d = fp16(1.0) */
                 blk[1] = 0x3C;
                 if (dtype == GEIST_DTYPE_Q4_1) {
@@ -595,15 +599,18 @@ static void run_staged_upload(struct geist_backend *mt) {
  * head_dim 256 and 512, sliding window) reads the F32 cache directly and
  * rounds as it loads; the flash cases (4- and 8-simdgroup kernels, a
  * ragged last 8-row tile, GQA, a sliding window) go through the f16
- * staging copy. The K/V views start mid-buffer at an odd element. */
-static void run_f32kv_attention_case(struct geist_backend *mt,
-                                     size_t                q_rows,
-                                     size_t                q_offset,
-                                     size_t                q_heads,
-                                     size_t                kv_heads,
-                                     size_t                hd,
-                                     size_t                window) {
-    enum { PAD = 7 };
+ * staging copy. The K/V views start mid-buffer at element PAD: an odd one
+ * (7), or 0 for a head past 512 (#376), whose decode only the 32-key-block
+ * kernel takes, at float4-aligned views (the scalar kernel, which reads an
+ * F32 cache unrounded, takes the others). */
+static void run_f32kv_attention_pad(struct geist_backend *mt,
+                                    size_t                PAD,
+                                    size_t                q_rows,
+                                    size_t                q_offset,
+                                    size_t                q_heads,
+                                    size_t                kv_heads,
+                                    size_t                hd,
+                                    size_t                window) {
     const struct geist_backend_vtbl *v       = mt->desc->vtbl;
     const size_t                     k_rows  = q_offset + q_rows;
     const size_t                     q_elems = q_rows * q_heads * hd;
@@ -683,6 +690,16 @@ static void run_f32kv_attention_case(struct geist_backend *mt,
     v->buffer_destroy(mt, b16);
     v->buffer_destroy(mt, bo32);
     v->buffer_destroy(mt, bo16);
+}
+
+static void run_f32kv_attention_case(struct geist_backend *mt,
+                                     size_t                q_rows,
+                                     size_t                q_offset,
+                                     size_t                q_heads,
+                                     size_t                kv_heads,
+                                     size_t                hd,
+                                     size_t                window) {
+    run_f32kv_attention_pad(mt, 7, q_rows, q_offset, q_heads, kv_heads, hd, window);
 }
 
 /* Largest |got - ref| of one decode row (the query at position k_rows - 1)
@@ -1885,6 +1902,14 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 97, 1);
     run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4", 2880, 97, 40);
     run_case(mt, ref, GEIST_DTYPE_MXFP4, "MXFP4tiny", 512, 3, 1);
+    /* Q5_0 (#376): n4 GEMV at m=1, the simdgroup GEMM above; 1408 is
+     * DeepSeek-V2-Lite's expert width (44 blocks). */
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 4);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 512, 383, 33);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 1408, 97, 1);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0", 1408, 97, 40);
+    run_case(mt, ref, GEIST_DTYPE_Q5_0, "Q5_0tiny", 512, 3, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 1);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 4);
     run_case(mt, ref, GEIST_DTYPE_IQ4_XS, "IQ4XS", 512, 383, 33);
@@ -2057,6 +2082,18 @@ int main(void) {
     run_flash_ref_case(mt, ref, 1, 100, 4, 1, 96, 0);
     run_flash_ref_case(mt, ref, 1, 77, 2, 1, 512, 16);
     run_flash_ref_case(mt, ref, 1, 31, 8, 2, 128, 0);
+    /* Absorbed MLA (#376): one KV head of 576 (DeepSeek-V3, GigaChat3) and
+     * of 520 (a 512 latent, no block kernel): prefill flash, the scalar
+     * kernel under 64 keys, the decode block kernel and the scalar one. */
+    run_flash_ref_case(mt, ref, 45, 300, 16, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 70, 0, 4, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 9, 20, 4, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 1, 700, 32, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 1, 20, 16, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 21, 100, 4, 1, 520, 0);
+    run_flash_ref_case(mt, ref, 1, 100, 4, 1, 520, 0);
+    run_f32kv_attention_pad(mt, 0, 1, 99, 16, 1, 576, 0);
+    run_f32kv_attention_case(mt, 24, 100, 4, 1, 576, 0);
 #ifdef GEIST_BACKEND_METAL
     run_staged_upload(mt);
     /* #196 */
@@ -2071,6 +2108,16 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 512, 383, 2);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 1536, 64, 7);
     run_case(mt, ref, GEIST_DTYPE_PQ2_0, "PQ2m8", 384, 1000, 8);
+    /* #487: absorbed MLA's GigaChat3 shape (32 q heads on one KV head of
+     * 576) over several 16-row tiles and a ragged last one, from the
+     * prompt's start and as a chunk after 400 rows: the tensor-API flash
+     * kernel at 576 where the GPU has matrix units, else attention_flash. */
+    run_flash_ref_case(mt, ref, 131, 0, 32, 1, 576, 0);
+    run_flash_ref_case(mt, ref, 77, 400, 32, 1, 576, 0);
+    /* Decompressed MLA (DeepSeek-V2-Lite): 16 heads of 192 (a tensor-API
+     * kernel of its own since #487). */
+    run_flash_ref_case(mt, ref, 99, 0, 16, 16, 192, 0);
+    run_flash_ref_case(mt, ref, 45, 300, 16, 16, 192, 0);
 
 #ifdef GEIST_BACKEND_METAL
     static const size_t argmax_n[] = {1, 255, 2049, 151936, 262144, 262144 * 2 + 77};

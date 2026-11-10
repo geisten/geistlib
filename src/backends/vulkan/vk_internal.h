@@ -438,11 +438,23 @@ struct vk_state {
      * place at uring_used bytes; free again once a flush has waited. */
     struct geist_buffer *uring;
     /* #162: linear_t_sel's address tables, built once per weight array
-     * (sel_key) in seltab; cleared when a weight leaves the registry. */
+     * (sel_key) in seltab; #499 linear_t_ids' per first expert's bytes
+     * (sel_n with VK_SEL_IDS set). Cleared when a weight leaves the
+     * registry or is replaced. */
     struct geist_buffer *seltab;
     const void          *sel_key[VK_SEL_TABS];
     uint32_t             sel_n[VK_SEL_TABS], sel_off[VK_SEL_TABS];
     uint32_t             n_sel_tabs, seltab_used;
+    /* #499: moe_map.comp's output, read by the grouped expert GEMMs of
+     * linear_t_ids: device-local, grown (after a flush) as a chunk needs.
+     * It stays valid for the next call with the same ids (gate, up and down
+     * of a layer bucket once) until ids_gen moves: moe_route writes ids, and
+     * a host write may (buffer_map, buffer_upload, buffer_copy). */
+    struct geist_buffer *moe_map;
+    VkBuffer             moe_map_ids;
+    uint64_t             moe_map_off, moe_map_gen;
+    size_t               moe_map_mk, moe_map_n;
+    uint64_t             ids_gen;
     size_t               uring_used;
     size_t               xring_used;
 
