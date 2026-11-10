@@ -646,6 +646,7 @@ struct mf_gpt_oss {
     uint64_t seed;
     float    sink_scale;
     bool     no_yarn;
+    float    gate_bias_scale; /* the experts' gate biases times this (0: 1) */
 };
 
 static inline struct tf_buf mf_gpt_oss_gguf(const struct mf_gpt_oss *c) {
@@ -674,6 +675,8 @@ static inline struct tf_buf mf_gpt_oss_gguf(const struct mf_gpt_oss *c) {
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
         ts.t[ts.n - 1].ne2 = c->experts;
         mf_add(&ts, c->expert_ff, c->experts, MF_RAND, "blk.%u.ffn_gate_exps.bias", l);
+        if (c->gate_bias_scale != 0.0f)
+            ts.t[ts.n - 1].scale = c->gate_bias_scale;
         mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
         ts.t[ts.n - 1].ne2 = c->experts;
         mf_add(&ts, c->expert_ff, c->experts, MF_RAND, "blk.%u.ffn_up_exps.bias", l);
