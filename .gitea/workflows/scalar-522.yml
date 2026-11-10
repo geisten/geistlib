@@ -1,0 +1,81 @@
+name: scalar-522
+
+# One-shot for #522 (probe branch only, not for main): gpt-oss-20b MXFP4 on
+# cpu_scalar and cpu_x86 on the 9950X, origin/main against the fix branch,
+# inside the desktop's bench lock.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "baseline revision"
+        type: string
+        default: origin/main
+      new:
+        description: "revision with the fix"
+        type: string
+        default: origin/agent/issue-522-scalar-x86-nonfinite
+      bytes:
+        description: "prompt: the first N bytes of docs/OFFLOAD.md"
+        type: string
+        default: "1100"
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: scalar-522 on geist-avx512
+    runs-on: geist-avx512
+    timeout-minutes: 240
+    env:
+      OMP_NUM_THREADS: "16"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Model (host cache, sha256-checked)
+        run: |
+          set -eo pipefail
+          echo "GPTOSS=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf --sha256 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901)" >> "$GITHUB_ENV"
+      - name: Build both revisions
+        env:
+          BASE: ${{ inputs.base }}
+          NEW: ${{ inputs.new }}
+        run: |
+          set -eo pipefail
+          mkdir -p out
+          git fetch origin
+          for r in base new; do
+            [ $r = base ] && rev="$BASE" || rev="$NEW"
+            git worktree add --detach "$RUNNER_TEMP/s522-$r" "$rev"
+            git -C "$RUNNER_TEMP/s522-$r" rev-parse HEAD | tee out/head-$r.txt
+            make -C "$RUNNER_TEMP/s522-$r" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build-$r.log 2>&1 || { tail -40 out/build-$r.log; exit 1; }
+          done
+          { lscpu | head -20; uname -a; gcc --version | head -1; } > out/env.txt
+      - name: Probe
+        env:
+          BYTES: ${{ inputs.bytes }}
+          LOCK_NOTE: "#522 cpu_scalar gpt-oss (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock sh tools/probes/scalar_522.sh \
+            "$RUNNER_TEMP/s522-base/bin/linux/release" "$RUNNER_TEMP/s522-new/bin/linux/release" \
+            "$GPTOSS" "$BYTES" "$PWD/out" 2>&1 | tee out/report.txt
+      - name: Clean up
+        if: always()
+        run: |
+          git worktree remove --force "$RUNNER_TEMP/s522-base" || true
+          git worktree remove --force "$RUNNER_TEMP/s522-new" || true
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat out/head-*.txt out/env.txt out/report.txt 2>/dev/null | tail -300; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: scalar-522
+          path: |
+            out/*.txt
+            out/*.log
