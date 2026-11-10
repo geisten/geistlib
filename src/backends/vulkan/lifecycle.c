@@ -417,7 +417,10 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->bda      = have12.bufferDeviceAddress && st->fn.GetBufferDeviceAddress != nullptr;
     st->has_int8_dot =
             have13.shaderIntegerDotProduct && have12.shaderInt8 && have12.storageBuffer8BitAccess;
-    st->has_coopmat = coop_ext && coop_have.cooperativeMatrix && st->has_fp16;
+    /* GEIST_VK_NO_COOPMAT=1: run as a device without them (#249: the
+     * paths of RDNA2 and older GPUs, measured on a card that has them). */
+    st->has_coopmat = coop_ext && coop_have.cooperativeMatrix && st->has_fp16 &&
+                      !geist_env_flag("GEIST_VK_NO_COOPMAT", false);
     /* #471: pin the tiled GEMMs to full 32-lane subgroups where the device
      * allows it (RADV wave64, Intel SIMD8/16), instead of looping matvecs. */
     st->sg32_pinnable =

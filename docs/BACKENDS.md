@@ -254,6 +254,7 @@ limit fails the load.
 | `GEIST_MOE_GPU_ROUTE=0` | a mixture of experts split between a discrete GPU and the CPU keeps routing its decode steps on the host instead of on the GPU (#162: the GPU ranks the router's experts as the host does, `fused->moe_route`, and starts the hot ones by id, `linear_t_sel`, while the host waits for the router alone, `submit_mark` / `map_marked`, and runs the cold ones; Vulkan; #499: GPT-OSS's router bias and softmax over the selected, and its experts' biases, too) |
 | `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
+| `GEIST_VK_NO_COOPMAT=1` | run as a device without `VK_KHR_cooperative_matrix`: no tensor-core GEMM or attention pipelines, the paths RDNA2 and older GPUs take (#249; for measuring and testing them on a card that has them) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
 | `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |
