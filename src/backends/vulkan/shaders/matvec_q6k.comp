@@ -1,4 +1,6 @@
 #version 450
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
 #include "vk_limits.h"
 
 /* Q6_K matvec, 8 rows per 256-thread workgroup (8 virtual warps of 32).
@@ -37,6 +39,11 @@ int load_i8(uint byte_offset) {
     return int(load_u8(byte_offset) ^ 0x80u) - 0x80;
 }
 
+/* #514: as matvec_q6k_sel (#505), each warp summed in registers and x read
+ * where it lies: the 24 KB staging held Turing to two workgroups per SM,
+ * which cost most on the lm_head's 6288 workgroups. */
+#define MV_SG_REDUCE
+#define MV_X_GLOBAL
 #define MV_BEGIN
 #define W2_LOAD(i) w2[i]
 #define W_ROW(e) (pc.w_offset + (e))
