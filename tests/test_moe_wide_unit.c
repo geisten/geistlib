@@ -8,7 +8,9 @@
  * logits with GEIST_MOE_WIDE=0 (each expert on one worker), =1 (every
  * expert on the whole team, the kernels' own split) and unset (the wide
  * ones by their share of the chunk's rows) are bit-identical: each output
- * element is the same dot product, whichever thread computes it.
+ * element is the same dot product, whichever thread computes it. The
+ * same prompt fed one token at a time (decode steps) gives the same bits
+ * with the split off and forced (=1: every step's experts on the team).
  */
 #include "model_fixtures.h"
 #include "test_helpers.h"
@@ -38,9 +40,10 @@ static const struct mf_qwen3moe GEOM = {.layers     = 2,
 static const struct geist_session_opts OPTS = {.top_p = 1.0f, .m_max = 32, .max_seq_len = 256};
 
 /* The prompt's chunked prefill on backend `name` with GEIST_MOE_WIDE set
- * to `wide` (nullptr: unset): its last logits into `out`. False when the
+ * to `wide` (nullptr: unset), `step` tokens at a time: its last logits
+ * into `out`. False when the
  * backend is not in the build or a step fails. */
-static bool run(const char *name, const char *wide, float out[static VOCAB]) {
+static bool run(const char *name, const char *wide, size_t step, float out[static VOCAB]) {
     if (wide != nullptr)
         setenv("GEIST_MOE_WIDE", wide, 1);
     else
@@ -56,8 +59,8 @@ static bool run(const char *name, const char *wide, float out[static VOCAB]) {
     geist_token_t         ids[N_PROMPT];
     for (size_t i = 0; i < N_PROMPT; i++)
         ids[i] = (geist_token_t) ((i * 37 + 5) % VOCAB);
-    for (size_t i = 0; ok && i < N_PROMPT; i += OPTS.m_max) {
-        const size_t k = N_PROMPT - i < OPTS.m_max ? N_PROMPT - i : OPTS.m_max;
+    for (size_t i = 0; ok && i < N_PROMPT; i += step) {
+        const size_t k = N_PROMPT - i < step ? N_PROMPT - i : step;
         ok             = geist_session_prefill_tokens(s, k, ids + i) == GEIST_OK;
     }
     size_t       nl = 0;
@@ -79,14 +82,17 @@ int main(void) {
                  (const char *const[]) {"cpu_scalar", "cpu_neon", "cpu_x86", nullptr};
          *b != nullptr;
          b++) {
-        float off[VOCAB], all[VOCAB], autov[VOCAB];
-        if (!run(*b, "0", off)) {
+        float off[VOCAB], all[VOCAB], autov[VOCAB], one0[VOCAB], one[VOCAB];
+        if (!run(*b, "0", OPTS.m_max, off)) {
             printf("skip %s: not in this build\n", *b);
             continue;
         }
         ran++;
-        fails += geist_expect(run(*b, "1", all), "every expert wide runs");
-        fails += geist_expect(run(*b, nullptr, autov), "the default runs");
+        fails += geist_expect(run(*b, "1", OPTS.m_max, all), "every expert wide runs");
+        fails += geist_expect(run(*b, nullptr, OPTS.m_max, autov), "the default runs");
+        fails += geist_expect(run(*b, "0", 1, one0) && run(*b, "1", 1, one), "token by token runs");
+        fails += geist_expect(memcmp(one0, one, sizeof one) == 0,
+                              "decode steps: the same bits with the split on and off");
         fails += geist_expect(memcmp(off, all, sizeof off) == 0,
                               "every expert on the team: the same bits as one per worker");
         fails += geist_expect(memcmp(off, autov, sizeof off) == 0,
