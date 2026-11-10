@@ -9,7 +9,7 @@
   (`test_backend_vulkan_ops_unit`, six geometries). OLMoE's attention block
   takes the plan-bound op after its whole-row QK norms on every backend that
   has it (Metal: greedy tokens identical to before). On the RTX 2080 Ti the
-  four OLMoE ops took ~12 us per layer, the fused one 3.6; `bench_revision_ab`
+  four OLMoE ops took ~12 us per layer, the fused one 3.6-4.4; `bench_revision_ab`
   against main (one hold of the bench lock, quiet host): decode Llama-3.2-3B
   Q4_K_M -1.5 % [-3.5, -1.3] (8/8), OLMoE-1B-7B -2.9 % [-6.2, +1.4] (8/10),
   Qwen3-30B-A3B and gpt-oss-20b (unchanged paths) and prefill within noise.
