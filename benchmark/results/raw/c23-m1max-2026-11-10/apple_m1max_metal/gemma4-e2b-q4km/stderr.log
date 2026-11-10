@@ -1,0 +1,63 @@
+with-mac-lock: waiting (#1 in queue, batch) behind pid 31691 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 2m20s of 60 min; queue 1: batch/32348 0s
+cycle 1/4: geist
+  waiting for quiet host: load 1.86 (0.186/core), 93.2 % idle
+  cooldown 60s
+  repeat spread 7.4 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.01 (0.201/core), 94.4 % idle
+  cooldown 60s
+  repeat spread 5.8 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.49 (0.149/core), 91.6 % idle
+  cooldown 60s
+  waiting for quiet host: load 1.19 (0.119/core), 93.6 % idle
+  cooldown 60s
+  repeat spread 6.2 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.24 (0.224/core), 92.3 % idle
+  cooldown 60s
+cycle 1/4: llama.cpp
+  waiting for quiet host: load 1.55 (0.155/core), 90.5 % idle
+  cooldown 60s
+  repeat spread 12.9 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.36 (0.236/core), 93.2 % idle
+  cooldown 60s
+  waiting for quiet host: load 2.04 (0.204/core), 68.5 % idle
+  waiting for quiet host: load 3.79 (0.379/core), 80.4 % idle
+  cooldown 60s
+  repeat spread 14.4 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 3.49 (0.349/core), 81.1 % idle
+  cooldown 60s
+  repeat spread 10.5 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 4.23 (0.423/core), 83.9 % idle
+  cooldown 60s
+  repeat spread 14.1 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [12.86, 14.4, 10.52, 14.1]
+with-mac-lock: waiting (#1 in queue, batch) behind pid 44419 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 2m20s of 60 min; queue 1: batch/47025 0s
+cycle 1/4: geist
+  waiting for quiet host: load 3.53 (0.353/core), 86.6 % idle
+  cooldown 60s
+  repeat spread 13.8 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.16 (0.216/core), 91.4 % idle
+  cooldown 60s
+  repeat spread 25.4 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.79 (0.279/core), 90.4 % idle
+  cooldown 60s
+  repeat spread 8.4 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.49 (0.249/core), 89.8 % idle
+  cooldown 60s
+  repeat spread 6.2 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [13.81, 25.43, 8.38, 6.18]
+with-mac-lock: waiting (#1 in queue, batch) behind pid 69565 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 2m20s of 60 min; queue 1: batch/72027 0s
+cycle 1/4: geist
+  waiting for quiet host: load 2.71 (0.271/core), 89.9 % idle
+  cooldown 60s
+  repeat spread 96.3 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.23 (0.223/core), 87.9 % idle
+  cooldown 60s
+  repeat spread 5.8 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.30 (0.230/core), 93.0 % idle
+  waiting for quiet host: load 2.30 (0.230/core), 92.2 % idle
+  cooldown 60s
+  repeat spread 6.5 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.28 (0.228/core), 91.5 % idle
+  cooldown 60s
+  repeat spread 6.4 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [96.33, 5.79, 6.45, 6.38]

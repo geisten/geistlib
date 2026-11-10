@@ -62,6 +62,9 @@ X(VK_PIPE_QKV_PREP_F16,           qkv_prep_f16_spv,            "qkv_prep_f16",  
 X(VK_PIPE_KV_APPEND_F16,          kv_append_f16_spv,           "kv_append_f16",          4, PLAIN)
 X(VK_PIPE_ATTN_PART_F16,          attn_part_f16_spv,           "attn_part_f16",          4, PLAIN)
 X(VK_PIPE_ATTN_PART_G2_F16,       attn_part_g2_f16_spv,        "attn_part_g2_f16",       4, PLAIN)
+/* the same for heads past 512 (absorbed MLA's 576, #504), F16 and FP32 cache */
+X(VK_PIPE_ATTN_PART_MLA_F16,      attn_part_f16_mla_spv,       "attn_part_f16_mla",      4, PLAIN)
+X(VK_PIPE_ATTN_PART_MLA_F32,      attn_part_f32_mla_spv,       "attn_part_f32_mla",      4, PLAIN)
 X(VK_PIPE_ATTN_COMB,              attn_comb_spv,               "attn_comb",              2, PLAIN)
 /* small-n_out tensor-core tile */
 X(VK_PIPE_MM_Q4K_CM32,            matmul_q4k_cm32_spv,         "mm_q4k_cm32",            3, COOPMAT)
@@ -122,11 +125,19 @@ X(VK_PIPE_ATTENTION_F16_HD128_CM, attention_f16_hd128_cm_spv,  "attention_f16_hd
 X(VK_PIPE_ATTENTION_F16_HD96_CM,  attention_f16_hd96_cm_spv,   "attention_f16_hd96_cm",  4, COOPMAT)
 /* the same, head_dim 512 (two column halves) */
 X(VK_PIPE_ATTENTION_F16_HD512_CM, attention_f16_hd512_cm_spv,  "attention_f16_hd512_cm", 4, COOPMAT)
+/* the same, head_dim 192 (DeepSeek-V2-Lite's decompressed MLA) and 576
+ * (absorbed MLA, three column thirds; F16 and FP32 cache), #504 */
+X(VK_PIPE_ATTENTION_F16_HD192_CM, attention_f16_hd192_cm_spv,  "attention_f16_hd192_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD576_CM, attention_f16_hd576_cm_spv,  "attention_f16_hd576_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F32_HD576_CM, attention_f32_hd576_cm_spv,  "attention_f32_hd576_cm", 4, COOPMAT)
 /* the same three, four subgroups per workgroup sharing 64-key steps, one
  * online-softmax pass (32-lane subgroups only) */
 X(VK_PIPE_ATTENTION_F16_MW_CM,       attention_f16_mw_cm_spv,       "attention_f16_mw_cm",       4, COOPMAT)
 X(VK_PIPE_ATTENTION_F16_HD128_MW_CM, attention_f16_hd128_mw_cm_spv, "attention_f16_hd128_mw_cm", 4, COOPMAT)
 X(VK_PIPE_ATTENTION_F16_HD512_MW_CM, attention_f16_hd512_mw_cm_spv, "attention_f16_hd512_mw_cm", 4, COOPMAT)
+/* the same at head_dim 576 with a KV head's q heads folded into the tile
+ * rows (absorbed MLA, #504) */
+X(VK_PIPE_ATTENTION_F16_HD576_MW_CM, attention_f16_hd576_mw_cm_spv, "attention_f16_hd576_mw_cm", 4, COOPMAT)
 /* Q8_0 tensor-core GEMM, 64 x 64 tile */
 X(VK_PIPE_MM_Q8_0_CM,             matmul_q8_0_cm_spv,          "mm_q8_0_cm",             3, COOPMAT)
 /* Q4_0 tensor-core GEMM, 64 x 64 tile */
@@ -179,6 +190,8 @@ X(VK_PIPE_MATVEC_MXFP4_SEL,       matvec_mxfp4_sel_spv,        "matvec_mxfp4_sel
 /* #499: the experts' GLU with biases and the routed weighted sum (device route) */
 X(VK_PIPE_MOE_GLU,                moe_glu_spv,                 "moe_glu",                6, PLAIN)
 X(VK_PIPE_MOE_WSUM,               moe_wsum_spv,                "moe_wsum",               6, PLAIN)
+/* #505: a decode step's expert gate + up + GLU in one dispatch (fused->moe_ffn_ids) */
+X(VK_PIPE_MOE_GATE_UP_Q4K_SEL,    moe_gate_up_q4k_sel_spv,     "moe_gate_up_q4k_sel",    6, PLAIN)
 /* #499: a prefill chunk's slots bucketed by expert, then the grouped expert GEMMs */
 X(VK_PIPE_MOE_MAP,                moe_map_spv,                 "moe_map",                2, PLAIN)
 X(VK_PIPE_MOE_MM_Q4K_CM,          moe_mm_q4k_cm_spv,           "moe_mm_q4k_cm",          4, COOPMAT)
@@ -190,3 +203,10 @@ X(VK_PIPE_MOE_MM_MXFP4_CM,        moe_mm_mxfp4_cm_spv,         "moe_mm_mxfp4_cm"
 /* #514: q/k norms + RoPE + q scale + KV append (fused->attn_rope_append) */
 X(VK_PIPE_ROPE_APPEND,            rope_append_f32_spv,         "rope_append",            9, PLAIN)
 X(VK_PIPE_ROPE_APPEND_F16,        rope_append_f16_spv,         "rope_append_f16",        9, PLAIN)
+/* #249: the same tiles without cooperative matrices (RDNA2, older GPUs) */
+X(VK_PIPE_MOE_MM_Q4K,             moe_mm_q4k_spv,              "moe_mm_q4k",             4, PLAIN)
+X(VK_PIPE_MOE_MM_Q5K,             moe_mm_q5k_spv,              "moe_mm_q5k",             4, PLAIN)
+X(VK_PIPE_MOE_MM_Q6K,             moe_mm_q6k_spv,              "moe_mm_q6k",             4, PLAIN)
+X(VK_PIPE_MOE_MM_Q8_0,            moe_mm_q8_0_spv,             "moe_mm_q8_0",            4, PLAIN)
+X(VK_PIPE_MOE_MM_Q5_0,            moe_mm_q5_0_spv,             "moe_mm_q5_0",            4, PLAIN)
+X(VK_PIPE_MOE_MM_MXFP4,           moe_mm_mxfp4_spv,            "moe_mm_mxfp4",           4, PLAIN)

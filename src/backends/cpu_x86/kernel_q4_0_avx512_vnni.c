@@ -24,11 +24,16 @@
  *
  * The int32 block sums equal the AVX2 kernel's; only the fp32 summation
  * order differs, so the two agree to float rounding.
+ *
+ * MXFP4 (GPT-OSS's experts, #374) has tiles of its own at the end of the
+ * file, described there.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q4_0_avx512_vnni.h"
 #include "linear_util.h"
+
+#include "quant.h"
 
 #include <immintrin.h>
 #include <stdbool.h>
@@ -251,4 +256,193 @@ void q4_1_gemm_rows_avx512_vnni(size_t                     m,
                                 const int32_t             *s_x,
                                 float                     *y) {
     gemm_rows(FMT_Q4_1, m, nb, n_out, j0, n_rows, (const uint8_t *) w, q_x, d_x, s_x, y);
+}
+
+/*
+ * MXFP4 x Q8_0 (#374). The codes index the signed table kvalues_mxfp4
+ * (-12..12), so the operands' roles swap: one VPSHUFB gives the signed
+ * weights, and the activations are the unsigned operand as x + 128 (the
+ * caller stores the Q8_0 codes XOR 0x80). The offset adds 128 sum(w) per
+ * 4-element lane, a weight-only term: one VPDPBUSD of 128 against -w per
+ * row and block pair gives -128 sum(w), which starts that row's
+ * accumulators, so every int32 lane is exactly sum(w x) over its four
+ * elements, and a block's lanes add up to the AVX2 kernel's sign-trick
+ * block sum. Each lane then takes d_w d_x in fp32 (d_w = mxfp4_e8m0_half(e),
+ * a power of two). No activation sums are read.
+ *
+ * From 4 tokens on, each group of 4 weight rows is unpacked once (codes,
+ * -128 sum(w) and the scales, up to MX_PAIRS_MAX block pairs, 48 KB on the
+ * stack) and every 4-token tile reads it from L1; the AVX2-era path
+ * unpacked the rows again for every 4 tokens. Fewer tokens, or a wider K,
+ * unpack in the tile itself. Both paths do the same operations on the same
+ * values in the same order per output, so a token's result does not depend
+ * on m or on which other tokens share its tile: m = 1 gives the bits of the
+ * same token inside any m-row call.
+ */
+
+constexpr size_t MX_STRIDE    = sizeof(struct block_mxfp4_t);
+constexpr size_t MX_PAIRS_MAX = 64; /* K up to 4096 unpacked once per row group */
+static_assert(MX_STRIDE == 17, "MXFP4: the exponent byte, then 16 bytes of nibbles");
+
+/* Up to 4 weight rows of an MXFP4 matrix, unpacked: per block pair the
+ * signed codes, -128 sum(w) per 4-element lane, and [d_b x8 | d_b+1 x8]. */
+struct mx_rows {
+    alignas(64) int8_t q[TILE_ROWS][MX_PAIRS_MAX][64];
+    alignas(64) int32_t neg[TILE_ROWS][MX_PAIRS_MAX][16];
+    alignas(64) float dw[TILE_ROWS][MX_PAIRS_MAX][16];
+};
+
+/* Block pair (b, b + 1) of one weight row, or the odd last block alone
+ * (pair == false: code 0, value 0, above it). */
+[[gnu::always_inline]] static inline void
+mx_unpack(bool pair, const uint8_t *b0, __m512i *q, __m512i *neg, __m512 *dw) {
+    const uint8_t *b1    = pair ? b0 + MX_STRIDE : nullptr;
+    const __m512i  table = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i *) kvalues_mxfp4));
+    *q                   = _mm512_shuffle_epi8(table, unpack_pair(b0 + 1, pair ? b1 + 1 : nullptr));
+    *neg                 = _mm512_dpbusd_epi32(_mm512_setzero_si512(),
+                                               _mm512_set1_epi8((char) 0x80),
+                                               _mm512_sub_epi8(_mm512_setzero_si512(), *q));
+    *dw                  = halves(mxfp4_e8m0_half(b0[0]), pair ? mxfp4_e8m0_half(b1[0]) : 0.0f);
+}
+
+/* rows x tokens outputs, weight rows from w (u == nullptr) or from u's rows
+ * [r0, r0 + rows). q_x / d_x point at the first token, y at (first token,
+ * first row). */
+[[gnu::always_inline]] static inline void mx_tile(size_t                rows,
+                                                  size_t                tokens,
+                                                  size_t                nb,
+                                                  size_t                n_out,
+                                                  const uint8_t        *w,
+                                                  const struct mx_rows *u,
+                                                  size_t                r0,
+                                                  const uint8_t        *q_x,
+                                                  const float          *d_x,
+                                                  float                *y) {
+    const size_t n_in   = nb * QK;
+    const size_t row_by = nb * MX_STRIDE;
+    __m512       acc[TILE_ROWS][TILE_TOKENS];
+    for (size_t r = 0; r < rows; r++) {
+        for (size_t t = 0; t < tokens; t++) {
+            acc[r][t] = _mm512_setzero_ps();
+        }
+    }
+    for (size_t b = 0; b < nb; b += 2) {
+        const bool pair = b + 1 < nb;
+        __m512i    xs[TILE_TOKENS];
+        __m512     dx[TILE_TOKENS];
+        for (size_t t = 0; t < tokens; t++) {
+            const uint8_t *xt = q_x + t * n_in + b * QK;
+            xs[t] = pair ? _mm512_loadu_si512(xt)
+                         : _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i *) xt));
+            dx[t] = halves(d_x[t * nb + b], pair ? d_x[t * nb + b + 1] : 0.0f);
+        }
+        for (size_t r = 0; r < rows; r++) {
+            __m512i q, neg;
+            __m512  dw;
+            if (u != nullptr) {
+                q   = _mm512_load_si512(u->q[r0 + r][b / 2]);
+                neg = _mm512_load_si512(u->neg[r0 + r][b / 2]);
+                dw  = _mm512_load_ps(u->dw[r0 + r][b / 2]);
+            } else {
+                mx_unpack(pair, w + r * row_by + b * MX_STRIDE, &q, &neg, &dw);
+            }
+            for (size_t t = 0; t < tokens; t++) {
+                const __m512i s = _mm512_dpbusd_epi32(neg, xs[t], q);
+                acc[r][t] =
+                        _mm512_fmadd_ps(_mm512_cvtepi32_ps(s), _mm512_mul_ps(dw, dx[t]), acc[r][t]);
+            }
+        }
+    }
+    for (size_t r = 0; r < rows; r++) {
+        for (size_t t = 0; t < tokens; t++) {
+            y[t * n_out + r] = hsum512_ps(acc[r][t]);
+        }
+    }
+}
+
+/* The tiles of rows [j0, j0 + n_rows), weight rows from u where given. */
+[[gnu::always_inline]] static inline void mx_tiles(size_t                m,
+                                                   size_t                nb,
+                                                   size_t                n_out,
+                                                   size_t                j0,
+                                                   size_t                n_rows,
+                                                   const uint8_t        *w0,
+                                                   const struct mx_rows *u,
+                                                   const uint8_t        *q_x,
+                                                   const float          *d_x,
+                                                   float                *y) {
+    const size_t n_in   = nb * QK;
+    const size_t row_by = nb * MX_STRIDE;
+/* A macro, not a function (#348): it spells the caller's locals into one call of mx_tile(). */
+#define MX_TILE(R, T, J, TT)   \
+    mx_tile(R,                 \
+            T,                 \
+            nb,                \
+            n_out,             \
+            w0 + (J) * row_by, \
+            u,                 \
+            J,                 \
+            q_x + (TT) * n_in, \
+            d_x + (TT) * nb,   \
+            y + (TT) * n_out + j0 + (J))
+    if (n_rows == TILE_ROWS) {
+        size_t t = 0;
+        for (; t + TILE_TOKENS <= m; t += TILE_TOKENS) {
+            MX_TILE(4, 4, 0, t);
+        }
+        switch (m - t) {
+        case 3:
+            MX_TILE(4, 3, 0, t);
+            break;
+        case 2:
+            MX_TILE(4, 2, 0, t);
+            break;
+        case 1:
+            MX_TILE(4, 1, 0, t);
+            break;
+        default:
+            break;
+        }
+        return;
+    }
+    /* A last group of fewer than 4 rows: one row at a time. */
+    for (size_t r = 0; r < n_rows; r++) {
+        size_t t = 0;
+        for (; t + TILE_TOKENS <= m; t += TILE_TOKENS) {
+            MX_TILE(1, 4, r, t);
+        }
+        for (; t < m; t++) {
+            MX_TILE(1, 1, r, t);
+        }
+    }
+#undef MX_TILE
+}
+
+void mxfp4_gemm_rows_avx512_vnni(size_t                      m,
+                                 size_t                      nb,
+                                 size_t                      n_out,
+                                 size_t                      j0,
+                                 size_t                      n_rows,
+                                 const struct block_mxfp4_t *w,
+                                 const uint8_t              *q_x,
+                                 const float                *d_x,
+                                 float                      *y) {
+    const size_t   row_by = nb * MX_STRIDE;
+    const uint8_t *w0     = (const uint8_t *) w + j0 * row_by;
+    if (m < TILE_TOKENS || (nb + 1) / 2 > MX_PAIRS_MAX) {
+        mx_tiles(m, nb, n_out, j0, n_rows, w0, nullptr, q_x, d_x, y);
+        return;
+    }
+    struct mx_rows u;
+    for (size_t r = 0; r < n_rows; r++) {
+        for (size_t b = 0; b < nb; b += 2) {
+            __m512i q, neg;
+            __m512  dw;
+            mx_unpack(b + 1 < nb, w0 + r * row_by + b * MX_STRIDE, &q, &neg, &dw);
+            _mm512_store_si512(u.q[r][b / 2], q);
+            _mm512_store_si512(u.neg[r][b / 2], neg);
+            _mm512_store_ps(u.dw[r][b / 2], dw);
+        }
+    }
+    mx_tiles(m, nb, n_out, j0, n_rows, w0, &u, q_x, d_x, y);
 }

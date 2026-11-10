@@ -69,6 +69,10 @@ static const struct rule_case RULE_CASES[] = {
         {"gemma4", nullptr, -1, false, true},
         {"gpt2", "gemma4", 0, false, true},
         {"gpt2", "granite-embed-multi-311m", 0, false, true},
+        /* GLM (#242): llama.cpp clears the BOS id, so the flag cannot add one. */
+        {"gpt2", "glm4", 1, true, false},
+        {"gpt2", "glm5", -1, true, false},
+        {"gpt2", "chatglm-bpe", 1, false, false},
         /* ... but only as a byte-BPE vocabulary: SPM keeps the flag. */
         {"llama", "gemma4", 0, false, false},
         /* Unknown to llama.cpp: geist's fallback answers. */

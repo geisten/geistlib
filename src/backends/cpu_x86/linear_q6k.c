@@ -225,6 +225,13 @@ static void w8x_repack_groups(void *ctx, size_t g0, size_t g1) {
     safe_free(&p);
 }
 
+/* Decode reads the GGUF rows whatever prefill keeps in the blob, so the
+ * row-range entry is the same for every layout. */
+static void bind_q6k_rows(struct geist_weight *w) {
+    w->linear_m1_rows       = cpu_x86_linear_q6k_m1_rows;
+    w->linear_m1_rows_align = 1;
+}
+
 [[nodiscard]] enum geist_status cpu_x86_linear_q6k_resolve(struct geist_weight *w) {
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0) {
         return GEIST_E_INVALID_ARG;
@@ -236,11 +243,13 @@ static void w8x_repack_groups(void *ctx, size_t g0, size_t g1) {
     }
     if (q6k_reads_raw()) {
         w->linear_m1 = cpu_x86_linear_q6k_m1;
+        bind_q6k_rows(w);
         w->linear_mN = cpu_x86_linear_q6k_raw_mN;
         return GEIST_OK;
     }
     if (q6k_tiled_on()) {
         w->linear_m1 = cpu_x86_linear_q6k_m1;
+        bind_q6k_rows(w);
         w->linear_mN = cpu_x86_linear_q6k_tiled_mN;
         return GEIST_OK;
     }
@@ -285,6 +294,7 @@ static void w8x_repack_groups(void *ctx, size_t g0, size_t g1) {
     geist_weight_attach_aux(w, blob, blob_bytes, 0, 0, 0);
     w->linear_m1 = cpu_x86_linear_q6k_m1;
     w->linear_mN = cpu_x86_linear_q6k_mN;
+    bind_q6k_rows(w);
     return GEIST_OK;
 }
 
@@ -298,6 +308,23 @@ void cpu_x86_linear_q6k_m1(const float               *x,
      * decode (ffn_down, lm_head) is bandwidth-bound, so halving the weight
      * traffic is the win. The blob holds the prefill layout only. */
     q6k_gemv_m1((size_t) w->n_out, (size_t) w->n_in, x, (const uint8_t *) w->raw, y);
+}
+
+/* Rows [r0, r1) of cpu_x86_linear_q6k_m1: its GGUF rows are independent,
+ * so a slice of them gives the full call's bits (#374). */
+void cpu_x86_linear_q6k_m1_rows(size_t                     r0,
+                                size_t                     r1,
+                                const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    (void) be;
+    const size_t n_in = (size_t) w->n_in;
+    q6k_gemv_m1(r1 - r0,
+                n_in,
+                x,
+                (const uint8_t *) w->raw + r0 * (n_in / Q6_K_BLOCK_ELEMS) * Q6_K_BLOCK_BYTES,
+                y);
 }
 
 /* Prefill (M>1) path. Quantizes all m tokens to int8 once, then runs a

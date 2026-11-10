@@ -15,6 +15,9 @@ layout(push_constant) uniform Push {
     uint x_offset;
     uint y_offset;
     float scale;
+    uint cols;     /* n = rows * cols; contiguous: cols = n */
+    uint x_stride; /* row strides in floats (#504: row views of a wider */
+    uint y_stride; /* tensor, deepseek2's strided copies) */
 } pc;
 
 void main() {
@@ -22,5 +25,7 @@ void main() {
     if (i >= pc.n) {
         return;
     }
-    y[pc.y_offset + i] = x[pc.x_offset + i] * pc.scale;
+    uint r = i / pc.cols;
+    uint c = i - r * pc.cols;
+    y[pc.y_offset + r * pc.y_stride + c] = x[pc.x_offset + r * pc.x_stride + c] * pc.scale;
 }

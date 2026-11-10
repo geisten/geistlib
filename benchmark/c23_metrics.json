@@ -13,11 +13,11 @@
    "what": "__builtin_* calls and names"
   },
   "define_function": {
-   "max": 97,
+   "max": 98,
    "what": "function-like #define"
   },
   "define_object": {
-   "max": 65,
+   "max": 68,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
@@ -41,7 +41,7 @@
    "what": "#elif, #elifdef, #elifndef"
   },
   "switch_with_default": {
-   "max": 20,
+   "max": 21,
    "what": "switch statements with a default: label of their own"
   },
   "void_pp_cast": {
@@ -49,7 +49,7 @@
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
-   "max": 1273,
+   "max": 1275,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {

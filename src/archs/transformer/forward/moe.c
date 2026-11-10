@@ -474,7 +474,7 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
 /* Rows [r0, r1) of w as a weight of their own, for a decode step that
  * splits an expert's rows over threads. Only a weight in the file's own
  * row-major blocks qualifies: a repacked or backend-owned layout is not
- * addressable by rows. */
+ * addressable by rows (its backend may offer linear_m1_rows instead). */
 static bool
 weight_rows(const struct geist_weight *w, size_t r0, size_t r1, struct geist_weight *out) {
     constexpr uint16_t repacked = GEIST_W_BACKEND_OWNS | GEIST_W_AUX_BACKEND_REPACK |
@@ -491,8 +491,42 @@ weight_rows(const struct geist_weight *w, size_t r0, size_t r1, struct geist_wei
     return true;
 }
 
-/* A decode step whose active experts are fewer than half the threads
- * (#243: GPT-OSS runs 4 of 32 on 8 threads): instead of one thread per
+/* Whether rows [lo, hi) of w can be computed on their own: a row view
+ * (weight_rows) or the backend's row-range entry at its granularity, for a
+ * repacked layout (cpu_x86's Q4_Kx8, #374). */
+static bool rows_ok(const struct geist_weight *w, size_t lo, size_t hi) {
+    struct geist_weight probe;
+    if (w->linear_m1 == nullptr)
+        return false;
+    if (weight_rows(w, lo, hi, &probe))
+        return true;
+    const size_t n = w->n_out > 0 ? (size_t) w->n_out : 0, a = w->linear_m1_rows_align;
+    return w->linear_m1_rows != nullptr && a > 0 && lo < hi && hi <= n && lo % a == 0 &&
+           (hi % a == 0 || hi == n);
+}
+
+/* y[0, hi - lo) = rows [lo, hi) of w x, one activation row: through a row
+ * view where the layout allows, else the backend's row-range entry. Each
+ * element is the dot product linear_m1 computes for that row. */
+static bool moe_rows_m1(const struct geist_weight *w,
+                        size_t                     lo,
+                        size_t                     hi,
+                        const float               *x,
+                        struct geist_backend      *be,
+                        float                     *y) {
+    struct geist_weight v;
+    bool                ok = true;
+    if (weight_rows(w, lo, hi, &v))
+        moe_linear(1, x, &v, be, y, &ok);
+    else if (rows_ok(w, lo, hi))
+        w->linear_m1_rows(lo, hi, x, w, be, y);
+    else
+        ok = false;
+    return ok;
+}
+
+/* A decode step whose active experts are fewer than the threads (#243:
+ * GPT-OSS runs 4 of 32 on 8 threads): instead of one thread per
  * expert, each expert's rows split into `parts` slices, one task each, in
  * two passes -- gate / up / activation over a slice of the intermediate,
  * then down over a slice of the output, which needs the whole activation.
@@ -524,17 +558,16 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
         struct geist_weight a, b;
         bool                ok = true;
         if (sp->pass == 0) {
-            const float *x = j->sess->moe_xg + row0 * j->d;
-            float       *g = j->sess->moe_g + row0 * j->inter;
-            float       *u = j->sess->moe_u + row0 * j->inter;
-            ok             = weight_rows(&j->L->moe_gate_w[e], lo, hi, &a) &&
-                             weight_rows(&j->L->moe_up_w[e], lo, hi, &b);
-            if (ok && a.linear_pair_m1 != nullptr && a.linear_pair_m1 == b.linear_pair_m1)
+            const float               *x  = j->sess->moe_xg + row0 * j->d;
+            float                     *g  = j->sess->moe_g + row0 * j->inter;
+            float                     *u  = j->sess->moe_u + row0 * j->inter;
+            const struct geist_weight *wg = &j->L->moe_gate_w[e], *wu = &j->L->moe_up_w[e];
+            if (weight_rows(wg, lo, hi, &a) && weight_rows(wu, lo, hi, &b) &&
+                a.linear_pair_m1 != nullptr && a.linear_pair_m1 == b.linear_pair_m1)
                 a.linear_pair_m1(x, &a, &b, j->be, g + lo, u + lo);
-            else if (ok) {
-                moe_linear(1, x, &a, j->be, g + lo, &ok);
-                moe_linear(1, x, &b, j->be, u + lo, &ok);
-            }
+            else
+                ok = moe_rows_m1(wg, lo, hi, x, j->be, g + lo) &&
+                     moe_rows_m1(wu, lo, hi, x, j->be, u + lo);
             if (ok)
                 ok = moe_act(j,
                              row0,
@@ -547,9 +580,7 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
             const float *g  = j->sess->moe_g + row0 * j->inter;
             float       *y  = j->sess->moe_y + row0 * j->d;
             const float *db = moe_bias(j, j->L->moe_down_b, e, j->d);
-            ok              = weight_rows(&j->L->moe_down_w[e], lo, hi, &a);
-            if (ok)
-                moe_linear(1, g, &a, j->be, y + lo, &ok);
+            ok              = moe_rows_m1(&j->L->moe_down_w[e], lo, hi, g, j->be, y + lo);
             for (size_t c = lo; ok && db != nullptr && c < hi; c++)
                 y[c] += db[c];
         }
@@ -558,29 +589,40 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
     }
 }
 
-/* Whether j's active experts take moe_split: one row each (a decode step
- * of one sequence), rows addressable as slices, at least two slices per
- * expert on the threads there are. */
+/* Whether j's active experts take moe_split, and into how many slices
+ * each: a decode step of one sequence, rows addressable as slices. The
+ * slices of all experts fill the threads evenly: threads / gcd(n_active,
+ * threads) per expert, so their count is a multiple of the threads
+ * (DeepSeek-V2-Lite's 6 of 16: 8 each, 48 tasks, where 16 / 6 = 2 left 4
+ * threads idle, #374). None when that is one (as many experts as threads,
+ * or a multiple): one per worker already fills them. */
 static size_t moe_split_parts(const struct moe_job *j, size_t seq, size_t threads) {
-    /* GEIST_MOE_SPLIT=0: one thread per expert as before (A/B runs). */
-    static _Atomic int off = -1;
-    if (atomic_load_explicit(&off, memory_order_relaxed) < 0) {
-        const char *v = getenv("GEIST_MOE_SPLIT");
-        atomic_store_explicit(&off, v != nullptr && v[0] == '0', memory_order_relaxed);
+    /* GEIST_MOE_SPLIT=0: one thread per expert as before (A/B runs). Read
+     * per call (once per layer and step), so a test can flip it. */
+    const char *v = getenv("GEIST_MOE_SPLIT");
+    size_t      g = j->n_active, t = threads;
+    while (t != 0) {
+        const size_t r = g % t;
+        g              = t;
+        t              = r;
     }
-    if (seq != 1 || j->decode_rows || j->n_active == 0 || threads / j->n_active < 2 ||
-        atomic_load_explicit(&off, memory_order_relaxed) == 1)
+    const size_t parts = g != 0 ? threads / g : 0; /* g = gcd(n_active, threads) */
+    if (seq != 1 || j->decode_rows || j->n_active == 0 || parts < 2 ||
+        (v != nullptr && v[0] == '0'))
         return 0;
     for (size_t a = 0; a < j->n_active; a++) {
         const size_t               e    = j->active[a];
         const struct geist_weight *w[3] = {
                 &j->L->moe_gate_w[e], &j->L->moe_up_w[e], &j->L->moe_down_w[e]};
-        struct geist_weight probe;
-        for (size_t i = 0; i < 3; i++)
-            if (w[i]->linear_m1 == nullptr || !weight_rows(w[i], 0, 1, &probe))
+        /* moe_split_range's slices start at multiples of 32 and end at one
+         * or at n_out, so the first slice's answer holds for all. */
+        for (size_t i = 0; i < 3; i++) {
+            const size_t n = w[i]->n_out > 0 ? (size_t) w[i]->n_out : 0;
+            if (!rows_ok(w[i], 0, n < 32 ? n : 32))
                 return 0;
+        }
     }
-    return threads / j->n_active;
+    return parts;
 }
 
 /* Expert e over its rows: as one m-row block, or, for a batched decode's
@@ -622,6 +664,61 @@ static void moe_worker(void *ctx, size_t begin, size_t end) {
         if (!moe_expert(j, j->active[a]))
             atomic_store_explicit(&j->failed, true, memory_order_relaxed);
     }
+}
+
+/* #374: a prefill chunk's CPU experts, largest first. One whose rows are
+ * more than a thread's share of the chunk's (m * threads > rows) would be
+ * the critical path on one thread: those run one after another on the
+ * calling thread, each projection split over the team by the kernel's own
+ * geist_par_for; the others then one per worker, largest first. Returns
+ * how many lead j->active (the wide ones). Each output element is the same
+ * dot product either way, so the result does not depend on the split.
+ * A decode step's experts all go wide when they would keep fewer than
+ * half the threads busy (below). GEIST_MOE_WIDE=0: off (A/B runs); =N: a
+ * prefill chunk's experts wide from N rows on, every decode step's (tests). */
+static size_t moe_order_wide(struct moe_job *j, size_t seq, size_t threads) {
+    /* Read per call (once per layer and chunk), so a test can flip it. */
+    const char *s = getenv("GEIST_MOE_WIDE");
+    const long  v = s != nullptr && s[0] != '\0' ? strtol(s, nullptr, 10) : -1;
+    if (v == 0 || threads < 2)
+        return 0;
+    /* A decode step that moe_split did not take (a repacked weight without
+     * a row-range entry, or GEIST_MOE_SPLIT=0) with experts for fewer than half
+     * the threads: one per worker leaves most of them idle (DeepSeek-V2-
+     * Lite: 6 of 16 on the 9950X, decode -12 %), so each runs on the whole
+     * team instead. From half on, one per worker is faster: Qwen3-30B-A3B's
+     * 8 of 16 took +10 % on the team, one after another (#374 run 3445). */
+    if (seq == 1)
+        return v > 0 || j->n_active * 2 < threads ? j->n_active : 0;
+    if (j->n_active < 2)
+        return 0;
+    const size_t *rs   = j->sess->moe_row_start;
+    size_t        rows = 0;
+    for (size_t a = 0; a < j->n_active; a++)
+        rows += rs[j->active[a] + 1] - rs[j->active[a]];
+    /* Insertion sort, rows descending, ties by expert id (n_active <=
+     * GEIST_MOE_MAX_EXPERTS, once per layer and chunk). */
+    for (size_t a = 1; a < j->n_active; a++) {
+        const uint32_t e  = j->active[a];
+        const size_t   me = rs[e + 1] - rs[e];
+        size_t         b  = a;
+        for (; b > 0; b--) {
+            const uint32_t p  = j->active[b - 1];
+            const size_t   mp = rs[p + 1] - rs[p];
+            if (mp > me || (mp == me && p < e))
+                break;
+            j->active[b] = p;
+        }
+        j->active[b] = e;
+    }
+    size_t wide = 0;
+    while (wide < j->n_active) {
+        const size_t m = rs[j->active[wide] + 1] - rs[j->active[wide]];
+        if (v > 0 ? m < (size_t) v : m * threads <= rows)
+            break;
+        wide++;
+    }
+    return wide;
 }
 
 /* #239: of the n staged candidates, keep the cap with the most rows (ties:
@@ -894,7 +991,17 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
         if (atomic_load_explicit(&sp.failed, memory_order_relaxed))
             atomic_store_explicit(&j->failed, true, memory_order_relaxed);
     } else {
-        geist_par_for(tasks < threads ? tasks : threads, moe_worker, j);
+        /* #374: a prefill chunk without a GPU batch for the caller: the
+         * wide experts on the whole team first, then the rest. */
+        const size_t wide = !j->decode_rows && (j->n_hot == 0 || launched)
+                                    ? moe_order_wide(j, seq, threads)
+                                    : 0;
+        for (size_t a = 0; a < wide; a++)
+            if (!moe_expert(j, j->active[a]))
+                atomic_store_explicit(&j->failed, true, memory_order_relaxed);
+        atomic_store_explicit(&j->next, wide, memory_order_relaxed);
+        const size_t left = tasks - wide;
+        geist_par_for(left < threads ? left : threads, moe_worker, j);
     }
     moe_gpu_task(j); /* a thread library that gave the caller no range */
     moe_profile_mark(MOE_PROFILE_EXPERTS, &t0);

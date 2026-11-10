@@ -4,11 +4,11 @@
  * whose value row is zero: the online softmax starts at m = sink, l = 1 and
  * nothing accumulated, so out = sum_s e^{s_s} v_s / (e^{sink} + sum_s e^{s_s}).
  * The includer declares Q, K, V, S (sinks), Out, the push block, and
- * LOAD_K(i) / LOAD_V(i) as floats. head_dim <= 512. */
+ * LOAD_K(i) / LOAD_V(i) as floats. head_dim <= VK_ATTN_SINKS_MAX_HEAD_DIM. */
 
 layout(local_size_x = 256) in;
 
-shared float q_sh[VK_ATTN_MAX_HEAD_DIM];
+shared float q_sh[VK_ATTN_SINKS_MAX_HEAD_DIM];
 shared float red[256];
 shared float w_sh[256];
 
@@ -17,7 +17,7 @@ void main() {
     uint q_head = gl_WorkGroupID.y;
     uint lid    = gl_LocalInvocationID.x;
     if (q_pos >= pc.n_q || q_head >= pc.n_q_heads || pc.head_dim == 0 ||
-        pc.head_dim > VK_ATTN_MAX_HEAD_DIM) {
+        pc.head_dim > VK_ATTN_SINKS_MAX_HEAD_DIM) {
         return;
     }
     uint kv_group = pc.n_q_heads / pc.n_kv_heads;
