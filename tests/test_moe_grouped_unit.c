@@ -24,10 +24,12 @@
  *   - fused->linear_t over each expert's rows alone (the per-expert path
  *     a prefill chunk took before): within 1e-3 of the scale;
  *   - its own second run: bit-identical (the bucketing keeps slot order).
+ *   - the per-slot matvecs linear_t_ids runs for a decode step's rows (the
+ *     chunk in pieces of at most 8 tokens): within 1e-3 of the scale.
  * supported(GEIST_FUSED_MOE_DEVICE) says yes for these dtypes at m = 512
- * (Metal; #499: Vulkan where it has tensor cores, elsewhere linear_t_ids
- * runs a matvec per slot, to the same bounds) and no for F32 there (no
- * grouped GEMM: the chunk stays on the host).
+ * (Metal; Vulkan: #499 on the tensor cores, #249 without them, e.g.
+ * lavapipe) and no for F32 there (no grouped GEMM: the chunk stays on the
+ * host).
  *
  * The experts' FFN in one call (#486, fused->moe_ffn_ids), per dtype: gate
  * and up of 256 (K-quants) or 160 outputs (a ragged 64-wide tile), down of
@@ -331,17 +333,18 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
     uint8_t                          *blob = malloc(N_EXP * wb + 16384);
     uint8_t *al = blob != nullptr ? blob + (16384 - ((uintptr_t) blob % 16384)) % 16384 : nullptr;
     struct geist_weight  w[N_EXP] = {0};
-    struct geist_buffer *bw = nullptr, *bx = nullptr, *by = nullptr, *bi = nullptr;
+    struct geist_buffer *bw = nullptr, *bx = nullptr, *by = nullptr, *bi = nullptr, *bp = nullptr;
     const size_t         nkmax = M_MAX * K_MAX;
     float               *xs    = malloc(nkmax * N_IN * sizeof *xs);
     float               *yg    = malloc(nkmax * N_OUT * sizeof *yg);
     float               *yg2   = malloc(nkmax * N_OUT * sizeof *yg2);
     float               *y1    = malloc(nkmax * N_OUT * sizeof *y1);
+    float               *yp    = malloc(nkmax * N_OUT * sizeof *yp);        /* per slot */
     float               *wd    = malloc(N_EXP * N_OUT * N_IN * sizeof *wd); /* dequantized */
     uint32_t            *ids   = malloc(nkmax * sizeof *ids);
     int                  fails = 0;
     if (blob == nullptr || xs == nullptr || yg == nullptr || yg2 == nullptr || y1 == nullptr ||
-        wd == nullptr || ids == nullptr) {
+        yp == nullptr || wd == nullptr || ids == nullptr) {
         fails += geist_expect(false, "host memory");
         goto out;
     }
@@ -361,14 +364,8 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                                           .gate_w = &w[0],
                                           .up_w   = &w[0],
                                           .down_w = &w[0]};
-    /* #499: Vulkan's grouped GEMM needs tensor cores; without them (lavapipe)
-     * the probe says no and linear_t_ids still runs a chunk (a matvec per
-     * slot), which the checks below hold to the same bounds. */
-    const bool chunk = f->supported(be, &qq);
-    if (strcmp(be->desc->name, "metal") == 0)
-        fails += geist_expect(chunk, "supported(GEIST_FUSED_MOE_DEVICE) at m = 512");
-    else if (!chunk)
-        printf("  %s: no grouped GEMM here (the probe says no at m = 512)\n", q->name);
+    /* #249: Vulkan has a grouped GEMM with and without tensor cores */
+    fails += geist_expect(f->supported(be, &qq), "supported(GEIST_FUSED_MOE_DEVICE) at m = 512");
     /* Not exact in half: the GEMM's staging rounds them. */
     for (size_t i = 0; i < nkmax * N_IN; i++)
         xs[i] = (float) rng_u8() / 64.0f - 2.0f + (float) rng_u8() / 65536.0f;
@@ -382,6 +379,8 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                             GEIST_OK &&
                     v->buffer_create(be, nkmax * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bi) ==
                             GEIST_OK &&
+                    v->buffer_create(be, 8 * K_MAX * 4, GEIST_BUFFER_IO, GEIST_MEMORY_AUTO, &bp) ==
+                            GEIST_OK &&
                     v->buffer_upload(bx, nkmax * N_IN * 4, (const uint8_t *) xs) == GEIST_OK,
             "buffers");
     if (fails > 0)
@@ -394,7 +393,7 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                                       .shape  = {N_EXP * N_OUT, N_IN},
                                       .stride = {N_IN, 1}};
     static const size_t       ms[] = {9, 37, M_MAX}, ks[] = {1, 4, K_MAX};
-    double                    worst_d = 0.0, worst_1 = 0.0;
+    double                    worst_d = 0.0, worst_1 = 0.0, worst_p = 0.0;
     for (size_t mi = 0; mi < 3 && fails == 0; mi++)
         for (size_t ki = 0; ki < 3 && fails == 0; ki++)
             for (int pat = 0; pat < 3 && fails == 0; pat++)
@@ -475,7 +474,35 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                     fails += geist_expect(xe != nullptr && ye != nullptr, "host memory");
                     free(xe);
                     free(ye);
-                    double ed = 0.0, e1 = 0.0, scale = 0.0;
+                    /* The per-slot matvecs: the chunk in pieces of at most 8
+                     * tokens (a decode step's rows), into the same y. */
+                    for (size_t t0 = 0; t0 < m && fails == 0; t0 += 8) {
+                        const size_t        mt  = m - t0 < 8 ? m - t0 : 8;
+                        const size_t        xr0 = per_slot ? t0 * k : t0;
+                        struct geist_tensor txp =
+                                mat(bx, xr0 * N_IN * sizeof(float), per_slot ? mt * k : mt, N_IN);
+                        struct geist_tensor typ =
+                                mat(by, t0 * k * N_OUT * sizeof(float), mt * k, N_OUT);
+                        fails += geist_expect(v->buffer_upload(bp,
+                                                               mt * k * 4,
+                                                               (const uint8_t *) (ids + t0 * k)) ==
+                                                              GEIST_OK &&
+                                                      f->linear_t_ids(be,
+                                                                      N_EXP,
+                                                                      mt,
+                                                                      k,
+                                                                      per_slot != 0,
+                                                                      &w[0],
+                                                                      &ex,
+                                                                      bp,
+                                                                      &txp,
+                                                                      &typ) == GEIST_OK,
+                                              "per-slot linear_t_ids");
+                    }
+                    fails += geist_expect(v->buffer_download(nk * N_OUT * 4, (uint8_t *) yp, by) ==
+                                                  GEIST_OK,
+                                          "download");
+                    double ed = 0.0, e1 = 0.0, ep = 0.0, scale = 0.0;
                     size_t nan = 0;
                     for (size_t s = 0; s < nk; s++) {
                         const float *xr = xs + (per_slot ? s : s / k) * N_IN;
@@ -488,15 +515,18 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                             nan += isnan(g);
                             ed    = fmax(ed, fabs(ref - g));
                             e1    = fmax(e1, fabs((double) y1[s * N_OUT + o] - g));
+                            ep    = fmax(ep, fabs((double) yp[s * N_OUT + o] - g));
                             scale = fmax(scale, fabs(ref));
                         }
                     }
                     worst_d = fmax(worst_d, scale > 0.0 ? ed / scale : 1.0);
                     worst_1 = fmax(worst_1, scale > 0.0 ? e1 / scale : 1.0);
-                    if (nan > 0 || !(ed <= 1e-3 * scale) || !(e1 <= 1e-3 * scale))
+                    worst_p = fmax(worst_p, scale > 0.0 ? ep / scale : 1.0);
+                    if (nan > 0 || !(ed <= 1e-3 * scale) || !(e1 <= 1e-3 * scale) ||
+                        !(ep <= 1e-3 * scale))
                         fprintf(stderr,
                                 "  %s m=%zu k=%zu ids %d x per %s: %zu unwritten, vs double %.3g, "
-                                "vs per-expert %.3g of scale %.3g\n",
+                                "vs per-expert %.3g, vs per-slot %.3g of scale %.3g\n",
                                 q->name,
                                 m,
                                 k,
@@ -505,19 +535,22 @@ static int test_grouped(struct geist_backend *be, const struct qfmt *q) {
                                 nan,
                                 ed,
                                 e1,
+                                ep,
                                 scale);
                     fails += geist_expect(nan == 0, "every slot's row is written");
                     fails += geist_expect(ed <= 1e-3 * scale, "grouped GEMM matches double");
                     fails += geist_expect(e1 <= 1e-3 * scale, "grouped GEMM matches per-expert");
+                    fails += geist_expect(ep <= 1e-3 * scale, "grouped GEMM matches per-slot");
                 }
     printf("  %-5s grouped linear_t_ids: max |d|/scale %.3g vs double, %.3g vs per-expert "
-           "linear_t\n",
+           "linear_t, %.3g vs per-slot matvecs\n",
            q->name,
            worst_d,
-           worst_1);
+           worst_1,
+           worst_p);
 out:
-    struct geist_buffer *bs[] = {bw, bx, by, bi};
-    for (size_t i = 0; i < 4; i++)
+    struct geist_buffer *bs[] = {bw, bx, by, bi, bp};
+    for (size_t i = 0; i < 5; i++)
         if (bs[i] != nullptr)
             v->buffer_destroy(be, bs[i]);
     free(blob);
@@ -525,6 +558,7 @@ out:
     free(yg);
     free(yg2);
     free(y1);
+    free(yp);
     free(wd);
     free(ids);
     return fails;
