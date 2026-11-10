@@ -46,13 +46,14 @@ enum geist_status transformer_output_norm(struct transformer_arch_state *st,
                                           struct geist_tensor           *t_h) {
     struct geist_backend                  *be    = st->backend;
     const struct geist_backend_primitives *prims = be->desc->prims;
-    struct geist_tensor                    t_w   = view_1d(st->output_norm.buffer, st->d_model);
+    const int64_t                          d     = (int64_t) st->d_model;
+    struct geist_tensor                    t_w   = view_1d(st->output_norm.buffer, d);
     if (st->output_norm_b.buffer == nullptr) {
         return prims->rmsnorm(be, t_h, &t_w, st->config.rms_eps, t_h);
     }
     /* The loader refused the model on a backend without the primitive. */
     struct geist_tensor t_b =
-            view_1d_at(st->output_norm_b.buffer, (size_t) st->output_norm_b.offset, st->d_model);
+            view_1d_at(st->output_norm_b.buffer, (size_t) st->output_norm_b.offset, d);
     return prims->layernorm(be, t_h, &t_w, &t_b, st->config.rms_eps, t_h);
 }
 
