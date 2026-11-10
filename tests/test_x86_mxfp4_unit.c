@@ -20,9 +20,10 @@
  * written (y poisoned, compared by bits: this file builds with
  * -ffast-math).
  *
- * Row-count independence (VNNI tier only; the AVX2 kernels sum the m % 4
- * tail tokens in another order): every token of every m-row call must
- * equal, bit for bit, the m = 1 call on that token alone.
+ * Row-count independence of the prefill kernel (VNNI tier only; the AVX2
+ * kernels sum the m % 4 tail tokens in another order): every token of every
+ * m-row call must equal, bit for bit, the same token in a 2-row call. (The
+ * m = 1 entry is the AVX2 GEMV on every tier, so it is held to the bound.)
  */
 #include "test_helpers.h"
 
@@ -158,7 +159,8 @@ static int check_shape(struct geist_backend *x86, struct geist_backend *ref, str
     float       *x     = xmalloc(M_MAX * s.n_in * sizeof(float));
     float       *y     = xmalloc(M_MAX * s.n_out * sizeof(float));
     float       *y_ref = xmalloc(M_MAX * s.n_out * sizeof(float));
-    float       *y1    = xmalloc(s.n_out * sizeof(float));
+    float       *x2    = xmalloc(2 * s.n_in * sizeof(float));
+    float       *y2    = xmalloc(2 * s.n_out * sizeof(float));
     char         what[192];
     const bool   tiles = vnni_tier();
     const size_t n_ms  = s.n_out >= 2880 ? 6 : sizeof MS / sizeof MS[0]; /* scalar ref is slow */
@@ -207,12 +209,14 @@ static int check_shape(struct geist_backend *x86, struct geist_backend *ref, str
         }
         bool same = true;
         for (size_t t = 0; t < m && same; t++) {
-            wx.linear_m1(x + t * s.n_in, &wx, x86, y1);
-            same = memcmp(y1, y + t * s.n_out, s.n_out * sizeof(float)) == 0;
+            memcpy(x2, x + t * s.n_in, s.n_in * sizeof(float));
+            memcpy(x2 + s.n_in, x, s.n_in * sizeof(float));
+            wx.linear_mN(2, x2, &wx, x86, y2);
+            same = memcmp(y2, y + t * s.n_out, s.n_out * sizeof(float)) == 0;
         }
         snprintf(what,
                  sizeof what,
-                 "n_in=%zu n_out=%zu m=%zu: each token's row is the m = 1 call's bits",
+                 "n_in=%zu n_out=%zu m=%zu: each token's row is its bits in a 2-row call",
                  s.n_in,
                  s.n_out,
                  m);
@@ -223,7 +227,8 @@ out:
     free(x);
     free(y);
     free(y_ref);
-    free(y1);
+    free(x2);
+    free(y2);
     return fails;
 }
 

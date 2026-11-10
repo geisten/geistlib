@@ -44,9 +44,10 @@
  * into a fixed 16-entry int8 table (kvalues_mxfp4, twice the E2M1 values)
  * and one scale per 32-element block, its E8M0 exponent byte as
  * mxfp4_e8m0_half(e). Its 17-byte blocks leave every row unaligned; the
- * kernels only use unaligned loads. On AVX-512 VNNI hosts both MXFP4 entry
- * points (m = 1 and m > 1) bind kernel_q4_0_avx512_vnni.c's register tiles
- * (#374), so a token's output is the same bits whatever the row count.
+ * kernels only use unaligned loads. On AVX-512 VNNI hosts MXFP4's m > 1
+ * binds kernel_q4_0_avx512_vnni.c's register tiles (#374), whose output for
+ * a token is the same bits whatever the row count. m = 1 keeps the AVX2
+ * GEMV: the tiles at m = 1 made GPT-OSS's decode 1.7 % slower on the 9950X.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -722,8 +723,8 @@ static void quant_rows_u8(void *ctx, size_t i0, size_t i1) {
     }
 }
 
-/* MXFP4 on a VNNI host, any m >= 1: the rows to Q8_0 blocks (x + 128),
- * then the register tiles, one call per group of output rows. */
+/* MXFP4 on a VNNI host, m >= 1: the rows to Q8_0 blocks (x + 128), then
+ * the register tiles, one call per group of output rows. */
 static void linear_mxfp4_vnni(size_t                     m,
                               const float               *x,
                               const struct geist_weight *w,
@@ -755,13 +756,6 @@ static void linear_mxfp4_vnni(size_t                     m,
     geist_par_for((n_out + Q4_0_VNNI_TILE_ROWS - 1) / Q4_0_VNNI_TILE_ROWS, mxfp4_tiles_vnni, &c);
 }
 
-static void cpu_x86_linear_mxfp4_m1_vnni(const float               *x,
-                                         const struct geist_weight *w,
-                                         struct geist_backend      *be,
-                                         float                     *y) {
-    linear_mxfp4_vnni(1, x, w, be, y);
-}
-
 static void cpu_x86_linear_mxfp4_mN_vnni(size_t                     m,
                                          const float               *x,
                                          const struct geist_weight *w,
@@ -777,7 +771,7 @@ void cpu_x86_linear_q4_0_bind(struct geist_weight *w) {
 
 void cpu_x86_linear_iq4_bind(struct geist_weight *w) {
     if (w->dtype == GEIST_DTYPE_MXFP4 && vnni_tiles_usable()) {
-        w->linear_m1 = cpu_x86_linear_mxfp4_m1_vnni;
+        w->linear_m1 = cpu_x86_linear_iq4_m1;
         w->linear_mN = cpu_x86_linear_mxfp4_mN_vnni;
         return;
     }
