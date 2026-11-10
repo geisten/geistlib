@@ -46,23 +46,24 @@ struct shape {
     enum geist_dtype dt;
     size_t           n_in, n_out;
     bool             pair; /* gate+up through the pair hook */
+    uint16_t         flags;
 };
 
 static const struct shape SHAPES[] = {
-        {"qwen3moe gate/up", GEIST_DTYPE_Q4_K, 2048, 768, true},
-        {"qwen3moe down", GEIST_DTYPE_Q4_K, 768, 2048, false},
-        {"qwen3moe down", GEIST_DTYPE_Q6_K, 768, 2048, false},
-        {"deepseek2 gate/up", GEIST_DTYPE_Q4_K, 2048, 1408, true},
-        {"deepseek2 down", GEIST_DTYPE_Q5_0, 1408, 2048, false},
-        {"deepseek2 down", GEIST_DTYPE_Q8_0, 1408, 2048, false},
-        {"deepseek2 shexp gate/up", GEIST_DTYPE_Q4_K, 2048, 2816, true},
-        {"deepseek2 shexp down", GEIST_DTYPE_Q4_K, 2816, 2048, false},
-        {"deepseek2 shexp down", GEIST_DTYPE_Q6_K, 2816, 2048, false},
-        {"gpt-oss gate/up", GEIST_DTYPE_MXFP4, 2880, 2880, true},
-        {"gpt-oss down", GEIST_DTYPE_MXFP4, 2880, 2880, false},
-        {"qwen3moe router", GEIST_DTYPE_F32, 2048, 128, false},
-        {"deepseek2 router", GEIST_DTYPE_F32, 2048, 64, false},
-        {"gpt-oss router", GEIST_DTYPE_F32, 2880, 32, false},
+        {"qwen3moe gate/up", GEIST_DTYPE_Q4_K, 2048, 768, true, 0},
+        {"qwen3moe down", GEIST_DTYPE_Q4_K, 768, 2048, false, 0},
+        {"qwen3moe down", GEIST_DTYPE_Q6_K, 768, 2048, false, 0},
+        {"deepseek2 gate/up", GEIST_DTYPE_Q4_K, 2048, 1408, true, 0},
+        {"deepseek2 down", GEIST_DTYPE_Q5_0, 1408, 2048, false, 0},
+        {"deepseek2 down", GEIST_DTYPE_Q8_0, 1408, 2048, false, 0},
+        {"deepseek2 shexp gate/up", GEIST_DTYPE_Q4_K, 2048, 2816, true, 0},
+        {"deepseek2 shexp down", GEIST_DTYPE_Q4_K, 2816, 2048, false, 0},
+        {"deepseek2 shexp down", GEIST_DTYPE_Q6_K, 2816, 2048, false, 0},
+        {"gpt-oss gate/up", GEIST_DTYPE_MXFP4, 2880, 2880, true, 0},
+        {"gpt-oss down", GEIST_DTYPE_MXFP4, 2880, 2880, false, 0},
+        {"qwen3moe router", GEIST_DTYPE_F32, 2048, 128, false, GEIST_W_EXACT},
+        {"deepseek2 router", GEIST_DTYPE_F32, 2048, 64, false, GEIST_W_EXACT},
+        {"gpt-oss router", GEIST_DTYPE_F32, 2880, 32, false, GEIST_W_EXACT},
 };
 
 static size_t dtype_index(enum geist_dtype dt) {
@@ -102,7 +103,8 @@ static bool weight_make(struct geist_backend *be, const struct shape *s, struct 
                                   .raw_nbytes = bytes,
                                   .n_in       = (int32_t) s->n_in,
                                   .n_out      = (int32_t) s->n_out,
-                                  .dtype      = (uint16_t) s->dt};
+                                  .dtype      = (uint16_t) s->dt,
+                                  .flags      = s->flags};
     return be->desc->vtbl->resolve_weight(be, &t->w) == GEIST_OK;
 }
 
@@ -177,12 +179,19 @@ static int check_shape(struct geist_backend *be, const char *bname, const struct
         if (!same) {
             bad++;
             if (report) {
-                printf("  %s %s %s: m=%zu differs from m=%zu\n",
+                char rows[256] = "";
+                size_t nb = 0;
+                for (size_t r = 0; r < m && nb < 200; r++) {
+                    bool eq = memcmp(y0 + r * n_out, ref0 + (r0 + r) * n_out, n_out * sizeof *y0) == 0;
+                    if (s->pair) eq = eq && memcmp(y1 + r * n_out, ref1 + (r0 + r) * n_out, n_out * sizeof *y1) == 0;
+                    if (!eq) nb += (size_t) snprintf(rows + nb, sizeof rows - nb, "%zu,", r);
+                }
+                printf("  %s %s %s: m=%zu differs from m=%zu, rows %s\n",
                        bname,
                        s->model,
                        DTYPES[dtype_index(s->dt)].name,
                        m,
-                       M_MAX);
+                       M_MAX, rows);
             } else {
                 snprintf(what,
                          sizeof what,

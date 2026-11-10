@@ -289,7 +289,12 @@ dot_row_iq4(enum lut4_fmt fmt, size_t nb, const uint8_t *row, const int8_t *qx, 
     return hsum_ps(_mm256_add_ps(acc[0], acc[1]));
 }
 
-/* NR activation rows against one IQ4 weight row, each block looked up once. */
+/* NR activation rows against one IQ4 weight row, each block looked up once.
+ * Each row accumulates exactly as dot_row_iq4 does (the same two
+ * accumulators, even and odd blocks, the same final sum), so a token's
+ * result does not depend on whether it came in a group of NR or as one of
+ * the m % NR rows: an MoE expert's rows per call vary with the prefill
+ * chunk, and its outputs must not. */
 [[gnu::always_inline]] static inline void dot_rows_iq4(enum lut4_fmt  fmt,
                                                        size_t         nb,
                                                        size_t         n_in,
@@ -298,9 +303,10 @@ dot_row_iq4(enum lut4_fmt fmt, size_t nb, const uint8_t *row, const int8_t *qx, 
                                                        const float   *dx,
                                                        float          out[static NR]) {
     const __m256i table = iq4_table(fmt);
-    __m256        acc[NR];
+    __m256        acc[NR][2];
     for (size_t r = 0; r < NR; r++) {
-        acc[r] = _mm256_setzero_ps();
+        acc[r][0] = _mm256_setzero_ps();
+        acc[r][1] = _mm256_setzero_ps();
     }
     for (size_t b = 0; b < nb; b++) {
         float          dw;
@@ -311,12 +317,12 @@ dot_row_iq4(enum lut4_fmt fmt, size_t nb, const uint8_t *row, const int8_t *qx, 
             const __m256i x = _mm256_loadu_si256((const __m256i *) (qx + r * n_in + b * QK));
             const __m256i p = _mm256_madd_epi16(_mm256_maddubs_epi16(aw, _mm256_sign_epi8(x, w)),
                                                 _mm256_set1_epi16(1));
-            acc[r]          = _mm256_fmadd_ps(
-                    _mm256_set1_ps(dw * dx[r * nb + b]), _mm256_cvtepi32_ps(p), acc[r]);
+            acc[r][b & 1]   = _mm256_fmadd_ps(
+                    _mm256_set1_ps(dw * dx[r * nb + b]), _mm256_cvtepi32_ps(p), acc[r][b & 1]);
         }
     }
     for (size_t r = 0; r < NR; r++) {
-        out[r] = hsum_ps(acc[r]);
+        out[r] = hsum_ps(_mm256_add_ps(acc[r][0], acc[r][1]));
     }
 }
 
