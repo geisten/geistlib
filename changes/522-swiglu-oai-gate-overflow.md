@@ -10,7 +10,10 @@
   those gate units instead. arm64 and clang builds were not affected. The
   activation (and the plain SwiGLU host path beside it) now uses
   `silu_fp32_ooo`'s form with the exp argument never above 0.
-  `test_gpt_oss_unit` runs the fixture with gate biases down to -100: on an
+  On the 9950X (gcc, 285 prompt tokens, runs 3660 and 3661) the first
+  non-finite values were 4 gate units at -53.0 in layer 18's experts;
+  cpu_scalar now runs the prompt, and cpu_x86's final logits moved by 1.3 %.
+  `test_gpt_oss_unit` runs its fixture with gate biases down to -100: on an
   x86 gcc build cpu_scalar failed with the router error before the fix and
   matches the double reference within 1e-5 after it, and cpu_x86's relative
   L2 to that reference went from 0.82 to 0.009.
