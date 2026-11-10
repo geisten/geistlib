@@ -1,0 +1,150 @@
+name: moe-rowinv-probe
+
+# One-shot for the MoE expert GEMM row-count invariance work (probe branch
+# only, not for main), on the 9950X (cpu_x86):
+#   survey: build `ref`, run test_moe_row_invariant_unit with the report on,
+#           once per env variant (`variants`, ';'-separated, '-' = none)
+#   logits: build `ref`, final + teacher-forced logits at 64- vs 128-row
+#           prefill chunks (GEIST_M_MAX), bit-identical or not
+#   ab:     tools/bench_revision_ab.py base vs new; the whole step is ONE
+#           with-desktop-lock hold, and before every measurement
+#           tools/probes/rowinv_quiet.sh waits for no GITEA-ACTIONS-TASK
+#           container and >= 97 % idle CPU over 10 s and logs ps.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "survey | logits | ab"
+        type: string
+        default: survey
+      ref:
+        description: "survey/logits: revision to build"
+        type: string
+        default: origin/agent/moe-rowinv-probe
+      variants:
+        description: "survey: env variants, ';'-separated, '-' = none"
+        type: string
+        default: "-;SURVEY_MN1=1;SURVEY_INLINE=1;SURVEY_NOPAIR=1;GEIST_Q4K_RAW=1"
+      models:
+        description: "logits/ab: qwen3moe;deepseek;gptoss"
+        type: string
+        default: "qwen3moe;deepseek"
+      base:
+        description: "ab: baseline revision"
+        type: string
+        default: origin/main
+      new:
+        description: "ab: revision to compare"
+        type: string
+        default: origin/agent/moe-gemm-row-invariant
+      seq_lens:
+        description: "ab: prefill lengths"
+        type: string
+        default: "512"
+      decode_n:
+        description: "ab: decode steps"
+        type: string
+        default: "32"
+      cycles:
+        description: "ab: cycles (>= 6)"
+        type: string
+        default: "10"
+
+jobs:
+  run:
+    name: moe-rowinv ${{ inputs.mode }} on geist-avx512
+    runs-on: geist-avx512
+    timeout-minutes: 360
+    env:
+      OMP_NUM_THREADS: "16"
+      MODELS: ${{ inputs.models }}
+      MAKEARGS: TARGET=linux GEMM_PROVIDER=native
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Models (host cache, sha256-checked)
+        if: inputs.mode != 'survey'
+        run: |
+          set -eo pipefail
+          echo "GPTOSS=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf --sha256 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901)" >> "$GITHUB_ENV"
+          echo "DEEPSEEK=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/mradermacher/DeepSeek-V2-Lite-GGUF/resolve/0f37fdf276e8094747457f0ae4d40f2e8d2521f9/DeepSeek-V2-Lite.Q4_K_M.gguf --sha256 70985c39ba3e51a53e6ad6ae25ce29a3efc92b4802f61645760e1bc1eb89ad1a)" >> "$GITHUB_ENV"
+          echo "QWEN3MOE=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf --sha256 0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5)" >> "$GITHUB_ENV"
+      - name: Build ref
+        if: inputs.mode != 'ab'
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -o pipefail
+          mkdir -p out
+          git fetch origin
+          git worktree add --detach "$RUNNER_TEMP/ri" "$REF"
+          git -C "$RUNNER_TEMP/ri" log --oneline -1 | tee out/head.txt
+          make -C "$RUNNER_TEMP/ri" $MAKEARGS BACKENDS="cpu_x86 cpu_scalar" -j16 bin > out/build.log 2>&1 || { tail -60 out/build.log; exit 1; }
+          lscpu | grep -E 'Model name|Flags' | cut -c1-400 > out/env.txt
+      - name: Survey
+        if: inputs.mode == 'survey'
+        env:
+          VARIANTS: ${{ inputs.variants }}
+        run: |
+          set -o pipefail
+          T="$RUNNER_TEMP/ri/bin/linux/release/tests/test_moe_row_invariant_unit"
+          echo "$VARIANTS" | tr ';' '\n' | while read -r v; do
+            [ -n "$v" ] || continue
+            echo "== variant: $v" | tee -a out/report.txt
+            if [ "$v" = "-" ]; then e=""; else e="$v"; fi
+            env $e GEIST_ROWINV_REPORT=1 "$T" 2>&1 | tee -a out/report.txt || true
+          done
+      - name: Logits, 64- vs 128-row chunks
+        if: inputs.mode == 'logits'
+        env:
+          LOCK_NOTE: "moe row invariance: 64 vs 128 chunk logits (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          L=""
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in gptoss) L="$L $GPTOSS" ;; deepseek) L="$L $DEEPSEEK" ;; qwen3moe) L="$L $QWEN3MOE" ;; esac
+          done
+          LOCK_PRIO=batch LOCK_MAX=60 ~/bin/with-desktop-lock sh tools/probes/rowinv_logits.sh \
+            "$RUNNER_TEMP/ri/bin/linux/release" cpu_x86 "$PWD/out/logits" $L 2>&1 | tee -a out/report.txt
+      - name: A/B (one lock hold)
+        if: inputs.mode == 'ab'
+        env:
+          BASE: ${{ inputs.base }}
+          NEW: ${{ inputs.new }}
+          SEQ: ${{ inputs.seq_lens }}
+          DN: ${{ inputs.decode_n }}
+          CYC: ${{ inputs.cycles }}
+          LOCK_NOTE: "moe row invariance A/B (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          mkdir -p out
+          git fetch origin
+          cat > "$RUNNER_TEMP/ab.sh" <<'SH'
+          set -u
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
+            echo "== $m"
+            QUIET_LOG="$PWD/out/quiet.log" python3 tools/bench_revision_ab.py \
+              --rev "base=$BASE" --rev "new=$NEW" --gguf "$F" --seq-lens "$SEQ" \
+              --decode-n "$DN" --repeats 1 --warmup 1 --cycles "$CYC" \
+              --env GEIST_BENCH_BACKEND=cpu_x86 --prompt-file docs/OFFLOAD.md \
+              --make-arg TARGET=linux --make-arg "BACKENDS=cpu_x86 cpu_scalar" \
+              --make-arg GEMM_PROVIDER=native --pre-run "sh tools/probes/rowinv_quiet.sh" \
+              --out-dir out/ab-$m
+          done
+          SH
+          LOCK_PRIO=batch LOCK_MAX=240 ~/bin/with-desktop-lock sh "$RUNNER_TEMP/ab.sh" 2>&1 | tee -a out/report.txt
+      - name: Job summary
+        if: always()
+        run: |
+          { echo '```'; cat out/head.txt out/env.txt out/report.txt 2>/dev/null | grep -v '^\s*$' | tail -400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          git worktree remove --force "$RUNNER_TEMP/ri" 2>/dev/null || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: moe-rowinv-probe
+          path: out/
+          if-no-files-found: warn

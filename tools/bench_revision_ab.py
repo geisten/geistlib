@@ -331,6 +331,8 @@ def main() -> int:
     parser.add_argument("--no-power-gate", action="store_true",
                         help="on macOS, start runs without requiring AC power and "
                              "Low Power Mode off")
+    parser.add_argument("--pre-run", default=None,
+                        help="shell command run before every measurement; nonzero fails the A/B")
     parser.add_argument("--out-dir", type=Path,
                         default=Path.home() / "bench-geistlib" / "revision-ab")
     args = parser.parse_args()
@@ -417,6 +419,8 @@ def main() -> int:
                 start = wait_for_apple_power(deadline) if metadata["power_gate"] else {}
                 if metadata["cool_gate"]:
                     start.update(wait_for_apple_cool(metadata["cool_gate"], deadline))
+                if args.pre_run and subprocess.run(args.pre_run, shell=True).returncode != 0:
+                    raise RuntimeError(f"--pre-run failed: {args.pre_run}")
                 rows = run_variant(variant["binary"], args, env)
             except (RuntimeError, TimeoutError) as error:
                 print(f"ERROR: {error}", file=sys.stderr)
