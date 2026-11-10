@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "survey | unit | logits | ab"
+        description: "survey | unit | logits | dump | ab"
         type: string
         default: survey
       ref:
@@ -116,6 +116,18 @@ jobs:
           done
           LOCK_PRIO=batch LOCK_MAX=60 ~/bin/with-desktop-lock sh tools/probes/rowinv_logits.sh \
             "$RUNNER_TEMP/ri/bin/linux/release" cpu_x86 "$PWD/out/logits" $L 2>&1 | tee -a out/report.txt
+      - name: Layer-0 expert dump, 64- vs 128-row chunks
+        if: inputs.mode == 'dump'
+        env:
+          LOCK_NOTE: "moe row invariance: layer-0 dump (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          for m in $(echo "$MODELS" | tr ';' ' '); do
+            case $m in deepseek) F=$DEEPSEEK; DI="2048 1408" ;; qwen3moe) F=$QWEN3MOE; DI="2048 768" ;; gptoss) F=$GPTOSS; DI="2880 2880" ;; esac
+            echo "== $m" | tee -a out/report.txt
+            LOCK_PRIO=batch LOCK_MAX=30 ~/bin/with-desktop-lock sh tools/probes/rowinv_dump.sh \
+              "$RUNNER_TEMP/ri/bin/linux/release" cpu_x86 "$RUNNER_TEMP/dump" $DI "$F" 2>&1 | tee -a out/report.txt
+          done
       - name: A/B (one lock hold)
         if: inputs.mode == 'ab'
         env:

@@ -320,6 +320,7 @@ struct moe_job {
     _Atomic size_t    next;
     _Atomic bool      failed;
     enum geist_status gpu_status;
+    size_t            dbg_pos0, dbg_k;
 };
 
 static void moe_linear(size_t                     m,
@@ -468,6 +469,23 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     for (size_t r = 0; ok && db != nullptr && r < m; r++)
         for (size_t c = 0; c < j->d; c++)
             y[r * j->d + c] += db[c];
+    const char *dbg = getenv("GEIST_ROWINV_DUMP");
+    if (dbg != nullptr && j->layer == 0) {
+        static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+        pthread_mutex_lock(&mu);
+        FILE *f = fopen(dbg, "ab");
+        for (size_t r = 0; f != nullptr && r < m; r++) {
+            const uint32_t hdr[3] = {(uint32_t) (j->dbg_pos0 + sess->moe_rows[row0 + r] / j->dbg_k),
+                                     (uint32_t) e, (uint32_t) m};
+            fwrite(hdr, sizeof hdr, 1, f);
+            fwrite(sess->moe_xg + (row0 + r) * j->d, sizeof(float), j->d, f);
+            fwrite(g + r * j->inter, sizeof(float), j->inter, f);
+            fwrite(y + r * j->d, sizeof(float), j->d, f);
+        }
+        if (f != nullptr)
+            fclose(f);
+        pthread_mutex_unlock(&mu);
+    }
     return ok;
 }
 
@@ -865,6 +883,8 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->layer            = (size_t) ctx->layer_idx;
     j->decode_rows      = ctx->decode_rows;
     j->gpu_status       = GEIST_OK;
+    j->dbg_pos0         = ctx->q_position;
+    j->dbg_k            = k;
     size_t rows_gpu     = 0;
     /* #239: a prefill step on the model's GPU copies the cold experts with
      * the most rows there, from mg->stage_m_min rows on. */
