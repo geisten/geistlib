@@ -1,0 +1,14 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Multi-subgroup tensor-core prefill attention, head_dim 576 (absorbed MLA's
+ * one latent KV head, #504), the q heads of a KV head folded into the rows of
+ * a tile, with an exact running max (RESCALE_T 0: the stale max of the other
+ * variants raised the unit cases' error from 2.3-2.7e-4 to 2.6-4.9e-4;
+ * exact, they stay at or below the one-subgroup kernel's, for ~2 % of the
+ * kernel's time on the RTX 2080 Ti). Body and notes:
+ * attention_f16_mw_body.glsl. */
+#define HD 576
+#define GQA_FOLD 1
+#define RESCALE_T_V 0.0
+#include "attention_f16_mw_body.glsl"
