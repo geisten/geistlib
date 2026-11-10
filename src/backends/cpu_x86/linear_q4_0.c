@@ -777,8 +777,9 @@ void cpu_x86_linear_q4_0_bind(struct geist_weight *w) {
 
 void cpu_x86_linear_iq4_bind(struct geist_weight *w) {
     if (w->dtype == GEIST_DTYPE_MXFP4 && vnni_tiles_usable()) {
-        w->linear_m1 = cpu_x86_linear_mxfp4_m1_vnni;
+        w->linear_m1 = cpu_x86_linear_iq4_m1;
         w->linear_mN = cpu_x86_linear_mxfp4_mN_vnni;
+        (void) cpu_x86_linear_mxfp4_m1_vnni;
         return;
     }
     w->linear_m1 = cpu_x86_linear_iq4_m1;
