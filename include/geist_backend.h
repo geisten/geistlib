@@ -1255,8 +1255,8 @@ struct geist_backend_caps {
      * row views, fused->linear_t_ids on per-head row views with a stride,
      * attention at the absorbed MLA's 520-576-dim head. Consumer:
      * deepseek2's mla_device; without it a GPU refuses the absorbed layout
-     * and assembles the decompressed one on the host. Set by metal (#499:
-     * vulkan has linear_t_ids for its experts, not the rest yet). */
+     * and assembles the decompressed one on the host. Set by metal and
+     * vulkan (#504). */
     bool mla_device;
 };
 

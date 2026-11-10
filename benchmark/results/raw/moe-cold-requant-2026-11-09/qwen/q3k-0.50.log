@@ -1,0 +1,107 @@
+cold: 64 of 128 experts per layer (Q3_K, least); their share of the selections: profile 9.28 %, held-out 11.68 %
+$W/qwen-q3k-0.50.gguf: 144 expert tensors rewritten, 31.80 GB of tensor data
+=== en
+0.04.813.673 I kl_divergence: computing over 25 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :  15.097105 ±   0.595334
+Mean PPL(base)                :  14.872010 ±   0.589341
+Cor(ln(PPL(Q)), ln(PPL(base))):  98.97%
+Mean ln(PPL(Q)/PPL(base))     :   0.015022 ±   0.005690
+Mean PPL(Q)/PPL(base)         :   1.015135 ±   0.005776
+Mean PPL(Q)-PPL(base)         :   0.225094 ±   0.085417
+Mean    KLD:   0.057259 ±   0.002344
+Maximum KLD:   5.903973
+99.9%   KLD:   2.202224
+99.0%   KLD:   0.793485
+95.0%   KLD:   0.215579
+90.0%   KLD:   0.111269
+Median  KLD:   0.015570
+10.0%   KLD:   0.000512
+ 5.0%   KLD:   0.000052
+ 1.0%   KLD:   0.000000
+ 0.1%   KLD:  -0.000004
+Minimum KLD:  -0.000007
+Mean    Δp: -0.584 ± 0.095 %
+Maximum Δp: 80.098%
+Median  Δp: -0.002%
+RMS Δp    :  7.575 ± 0.284 %
+Same top p: 90.149 ± 0.373 %
+=== de
+0.02.091.422 I kl_divergence: computing over 23 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :  12.958178 ±   0.514400
+Mean PPL(base)                :  12.888848 ±   0.512114
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.37%
+Mean ln(PPL(Q)/PPL(base))     :   0.005365 ±   0.004456
+Mean PPL(Q)/PPL(base)         :   1.005379 ±   0.004480
+Mean PPL(Q)-PPL(base)         :   0.069330 ±   0.057627
+Mean    KLD:   0.027253 ±   0.001663
+Maximum KLD:   8.214262
+99.9%   KLD:   0.853242
+99.0%   KLD:   0.279928
+95.0%   KLD:   0.101476
+90.0%   KLD:   0.057379
+Median  KLD:   0.008310
+10.0%   KLD:   0.000071
+ 5.0%   KLD:   0.000009
+ 1.0%   KLD:  -0.000000
+ 0.1%   KLD:  -0.000003
+Minimum KLD:  -0.000004
+Mean    Δp: -0.261 ± 0.061 %
+Maximum Δp: 52.064%
+Median  Δp: -0.001%
+RMS Δp    :  4.686 ± 0.185 %
+Same top p: 92.771 ± 0.338 %
+=== c
+0.02.093.951 I kl_divergence: computing over 26 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :   3.491773 ±   0.110849
+Mean PPL(base)                :   3.492433 ±   0.111036
+Cor(ln(PPL(Q)), ln(PPL(base))):  99.34%
+Mean ln(PPL(Q)/PPL(base))     :  -0.000189 ±   0.003653
+Mean PPL(Q)/PPL(base)         :   0.999811 ±   0.003652
+Mean PPL(Q)-PPL(base)         :  -0.000660 ±   0.012756
+Mean    KLD:   0.017403 ±   0.000879
+Maximum KLD:   3.324406
+99.9%   KLD:   0.783342
+99.0%   KLD:   0.268883
+95.0%   KLD:   0.070623
+90.0%   KLD:   0.040622
+Median  KLD:   0.000747
+10.0%   KLD:   0.000000
+ 5.0%   KLD:  -0.000000
+ 1.0%   KLD:  -0.000003
+ 0.1%   KLD:  -0.000004
+Minimum KLD:  -0.000004
+Mean    Δp: -0.104 ± 0.060 %
+Maximum Δp: 56.068%
+Median  Δp:  0.000%
+RMS Δp    :  4.852 ± 0.219 %
+Same top p: 96.305 ± 0.232 %
+=== py
+0.02.066.272 I kl_divergence: computing over 11 chunks, n_ctx=512, batch_size=512, n_seq=1
+chunk             PPL               ln(PPL(Q)/PPL(base))          KL Divergence              Δp RMS            Same top p
+Mean PPL(Q)                   :   2.262202 ±   0.104431
+Mean PPL(base)                :   2.211967 ±   0.092903
+Cor(ln(PPL(Q)), ln(PPL(base))):  95.82%
+Mean ln(PPL(Q)/PPL(base))     :   0.022457 ±   0.013389
+Mean PPL(Q)/PPL(base)         :   1.022711 ±   0.013693
+Mean PPL(Q)-PPL(base)         :   0.050235 ±   0.030712
+Mean    KLD:   0.013463 ±   0.001128
+Maximum KLD:   1.107039
+99.9%   KLD:   0.800514
+99.0%   KLD:   0.265751
+95.0%   KLD:   0.065861
+90.0%   KLD:   0.027663
+Median  KLD:   0.000042
+10.0%   KLD:   0.000000
+ 5.0%   KLD:  -0.000001
+ 1.0%   KLD:  -0.000003
+ 0.1%   KLD:  -0.000004
+Minimum KLD:  -0.000004
+Mean    Δp: -0.027 ± 0.073 %
+Maximum Δp: 52.350%
+Median  Δp:  0.000%
+RMS Δp    :  3.860 ± 0.320 %
+Same top p: 97.433 ± 0.299 %
+done

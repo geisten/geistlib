@@ -62,6 +62,9 @@ X(VK_PIPE_QKV_PREP_F16,           qkv_prep_f16_spv,            "qkv_prep_f16",  
 X(VK_PIPE_KV_APPEND_F16,          kv_append_f16_spv,           "kv_append_f16",          4, PLAIN)
 X(VK_PIPE_ATTN_PART_F16,          attn_part_f16_spv,           "attn_part_f16",          4, PLAIN)
 X(VK_PIPE_ATTN_PART_G2_F16,       attn_part_g2_f16_spv,        "attn_part_g2_f16",       4, PLAIN)
+/* the same for heads past 512 (absorbed MLA's 576, #504), F16 and FP32 cache */
+X(VK_PIPE_ATTN_PART_MLA_F16,      attn_part_f16_mla_spv,       "attn_part_f16_mla",      4, PLAIN)
+X(VK_PIPE_ATTN_PART_MLA_F32,      attn_part_f32_mla_spv,       "attn_part_f32_mla",      4, PLAIN)
 X(VK_PIPE_ATTN_COMB,              attn_comb_spv,               "attn_comb",              2, PLAIN)
 /* small-n_out tensor-core tile */
 X(VK_PIPE_MM_Q4K_CM32,            matmul_q4k_cm32_spv,         "mm_q4k_cm32",            3, COOPMAT)
@@ -122,6 +125,11 @@ X(VK_PIPE_ATTENTION_F16_HD128_CM, attention_f16_hd128_cm_spv,  "attention_f16_hd
 X(VK_PIPE_ATTENTION_F16_HD96_CM,  attention_f16_hd96_cm_spv,   "attention_f16_hd96_cm",  4, COOPMAT)
 /* the same, head_dim 512 (two column halves) */
 X(VK_PIPE_ATTENTION_F16_HD512_CM, attention_f16_hd512_cm_spv,  "attention_f16_hd512_cm", 4, COOPMAT)
+/* the same, head_dim 192 (DeepSeek-V2-Lite's decompressed MLA) and 576
+ * (absorbed MLA, three column thirds; F16 and FP32 cache), #504 */
+X(VK_PIPE_ATTENTION_F16_HD192_CM, attention_f16_hd192_cm_spv,  "attention_f16_hd192_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD576_CM, attention_f16_hd576_cm_spv,  "attention_f16_hd576_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F32_HD576_CM, attention_f32_hd576_cm_spv,  "attention_f32_hd576_cm", 4, COOPMAT)
 /* the same three, four subgroups per workgroup sharing 64-key steps, one
  * online-softmax pass (32-lane subgroups only) */
 X(VK_PIPE_ATTENTION_F16_MW_CM,       attention_f16_mw_cm_spv,       "attention_f16_mw_cm",       4, COOPMAT)
@@ -179,6 +187,8 @@ X(VK_PIPE_MATVEC_MXFP4_SEL,       matvec_mxfp4_sel_spv,        "matvec_mxfp4_sel
 /* #499: the experts' GLU with biases and the routed weighted sum (device route) */
 X(VK_PIPE_MOE_GLU,                moe_glu_spv,                 "moe_glu",                6, PLAIN)
 X(VK_PIPE_MOE_WSUM,               moe_wsum_spv,                "moe_wsum",               6, PLAIN)
+/* #505: a decode step's expert gate + up + GLU in one dispatch (fused->moe_ffn_ids) */
+X(VK_PIPE_MOE_GATE_UP_Q4K_SEL,    moe_gate_up_q4k_sel_spv,     "moe_gate_up_q4k_sel",    6, PLAIN)
 /* #499: a prefill chunk's slots bucketed by expert, then the grouped expert GEMMs */
 X(VK_PIPE_MOE_MAP,                moe_map_spv,                 "moe_map",                2, PLAIN)
 X(VK_PIPE_MOE_MM_Q4K_CM,          moe_mm_q4k_cm_spv,           "moe_mm_q4k_cm",          4, COOPMAT)

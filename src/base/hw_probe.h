@@ -79,8 +79,28 @@ struct geist_hw_probe {
 
 void geist_hw_probe_fill(struct geist_hw_probe *out);
 
-/* Performance-core count on Apple silicon (hw.perflevel0.physicalcpu), 0
- * elsewhere or when the sysctl is missing. One sysctl, no other probing. */
+/* One Apple silicon performance level: hw.perflevelN.name ("Super",
+ * "Performance", "Efficiency"; empty when unreadable) and .physicalcpu. */
+struct geist_hw_perflevel {
+    char name[32];
+    int  physicalcpu;
+};
+
+/* Physical cores split into efficiency cores and the rest. */
+struct geist_hw_core_split {
+    int perf;
+    int eff;
+};
+
+/* Every level except the one named "Efficiency" counts as performance, so
+ * the M6's "Super" + "Performance" levels both land in `perf` (#513). When a
+ * name is missing, level 0 is P and level 1+ is E (the M1-M4 layout). Pure:
+ * the sysctl reads live in geist_hw_perf_cores and the probe. */
+[[nodiscard]] struct geist_hw_core_split
+geist_hw_core_split(size_t n_levels, const struct geist_hw_perflevel levels[static n_levels]);
+
+/* Non-efficiency physical cores on Apple silicon (all hw.perflevelN except
+ * the "Efficiency" one), 0 elsewhere or when the sysctls are missing. */
 [[nodiscard]] int geist_hw_perf_cores(void);
 
 /* The instruction-set bits only (has_neon ... has_amx_int8), everything

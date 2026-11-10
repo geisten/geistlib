@@ -31,15 +31,18 @@
  *
  * The experts' FFN in one call (#486, fused->moe_ffn_ids), per dtype: gate
  * and up of 256 (K-quants) or 160 outputs (a ragged 64-wide tile), down of
- * 136; m / k / ids from 9 x 1 to 300 x 6 (random, skewed, uniform), with
- * the plain SwiGLU and with swiglu_oai and both biases. g and y against
+ * 136; m / k / ids from 1 x 8 (a decode step) to 300 x 6 (random, skewed,
+ * uniform), with the plain SwiGLU and with swiglu_oai and both biases, on
+ * the rows each backend fuses (Metal a chunk's, from 9; Vulkan a decode
+ * step's, Q4_K gate and up, #505); g and y against
  *   - the four calls it fuses (linear_t_ids gate and up, silu_mul or glu,
  *     linear_t_ids down): within 1e-5 of the scale (the same tiles; the
  *     count of bit-identical cases is printed);
  *   - a double-precision FFN of the dequantized weights: within 2e-3 of
  *     the scale (x and g are staged as half);
  *   - its own second run: bit-identical.
- * 8 rows and gate / up of different dtypes return GEIST_E_UNSUPPORTED.
+ * The other rows, and gate / up of different dtypes, return
+ * GEIST_E_UNSUPPORTED.
  *
  * SKIPs when no backend in the build has the ops.
  */
@@ -529,7 +532,16 @@ out:
 
 /* ---- the experts' FFN in one call (#486) --------------------------------- */
 
-enum { F_OUT = 136, F_CASES = 7 };
+enum { F_OUT = 136, F_CASES = 11 };
+
+/* The rows a backend's moe_ffn_ids takes: Metal a chunk's (#486, from 9),
+ * Vulkan a decode step's with Q4_K gate and up (#505, up to 8); every other
+ * case returns GEIST_E_UNSUPPORTED (the four calls run instead). */
+static bool ffn_takes(const struct geist_backend *be, const struct qfmt *q, size_t m) {
+    if (strcmp(be->desc->name, "vulkan") == 0)
+        return m <= 8 && q->dtype == GEIST_DTYPE_Q4_K;
+    return m >= 9;
+}
 
 /* Uploads n_exp experts of rows x cols of q (random blocks) as one weight
  * buffer; their dequantized rows into wd. */
@@ -622,7 +634,17 @@ static int test_ffn(struct geist_backend *be, const struct qfmt *q, size_t inter
     const struct geist_backend_vtbl  *v                 = be->desc->vtbl;
     const struct geist_backend_fused *f                 = be->desc->fused;
     static const size_t               cases[F_CASES][3] = /* m, k, ids pattern */
-            {{9, 1, 0}, {9, 6, 1}, {37, 4, 0}, {37, 4, 2}, {37, 6, 1}, {300, 6, 0}, {300, 4, 1}};
+            {{1, 8, 0},
+             {1, 6, 1},
+             {4, 8, 2},
+             {8, 6, 0},
+             {9, 1, 0},
+             {9, 6, 1},
+             {37, 4, 0},
+             {37, 4, 2},
+             {37, 6, 1},
+             {300, 6, 0},
+             {300, 4, 1}};
     const size_t         nkmax   = M_MAX * K_MAX;
     uint8_t             *blob[3] = {nullptr, nullptr, nullptr};
     struct geist_weight  w[3][N_EXP];
@@ -721,6 +743,11 @@ static int test_ffn(struct geist_backend *be, const struct qfmt *q, size_t inter
                                                   .x       = &tx,
                                                   .g       = &tg,
                                                   .y       = &ty};
+            if (!ffn_takes(be, q, m)) {
+                fails += geist_expect(f->moe_ffn_ids(be, &fa) == GEIST_E_UNSUPPORTED,
+                                      "rows the backend does not fuse: GEIST_E_UNSUPPORTED");
+                continue;
+            }
             for (int run = 0; run < 2; run++)
                 fails += geist_expect(
                         f->moe_ffn_ids(be, &fa) == GEIST_OK &&
@@ -812,34 +839,34 @@ static int test_ffn(struct geist_backend *be, const struct qfmt *q, size_t inter
             fails += geist_expect(egd <= 2e-3 * sg && eyd <= 2e-3 * sy,
                                   "moe_ffn_ids matches double");
         }
-    printf("  %-5s moe_ffn_ids (inter %zu): g / y max |d|/scale %.3g / %.3g vs the four calls (%zu "
-           "of %zu cases bit-identical), %.3g / %.3g vs double\n",
-           q->name,
-           inter,
-           worst_g1,
-           worst_y1,
-           same,
-           total,
-           worst_gd,
-           worst_yd);
-    /* A decode step's rows and gate / up of different dtypes: not here. */
-    struct geist_tensor       tx = mat(bx, 0, 8, N_IN), tg = mat(bg, 0, 8, inter),
-                              ty  = mat(by, 0, 8, F_OUT);
-    struct geist_moe_ffn_args few = {.n       = N_EXP,
-                                     .m       = 8,
-                                     .k       = 1,
-                                     .w0      = {&w[0][0], &w[1][0], &w[2][0]},
-                                     .experts = {&ex[0], &ex[1], &ex[2]},
-                                     .ids     = bi,
-                                     .x       = &tx,
-                                     .g       = &tg,
-                                     .y       = &ty};
-    fails += geist_expect(f->moe_ffn_ids(be, &few) == GEIST_E_UNSUPPORTED,
-                          "8 rows: GEIST_E_UNSUPPORTED");
-    struct geist_weight wu_other = w[1][0];
+    if (total > 0)
+        printf("  %-5s moe_ffn_ids (inter %zu): g / y max |d|/scale %.3g / %.3g vs the four calls "
+               "(%zu "
+               "of %zu cases bit-identical), %.3g / %.3g vs double\n",
+               q->name,
+               inter,
+               worst_g1,
+               worst_y1,
+               same,
+               total,
+               worst_gd,
+               worst_yd);
+    /* Gate and up of different dtypes: not here, at rows it otherwise takes. */
+    const size_t              mt = ffn_takes(be, q, 9) ? 9 : 1;
+    struct geist_tensor       tx = mat(bx, 0, mt, N_IN), tg = mat(bg, 0, mt, inter),
+                              ty       = mat(by, 0, mt, F_OUT);
+    struct geist_moe_ffn_args few      = {.n       = N_EXP,
+                                          .m       = mt,
+                                          .k       = 1,
+                                          .w0      = {&w[0][0], &w[1][0], &w[2][0]},
+                                          .experts = {&ex[0], &ex[1], &ex[2]},
+                                          .ids     = bi,
+                                          .x       = &tx,
+                                          .g       = &tg,
+                                          .y       = &ty};
+    struct geist_weight       wu_other = w[1][0];
     wu_other.dtype =
             (uint16_t) (q->dtype == GEIST_DTYPE_Q8_0 ? GEIST_DTYPE_Q5_0 : GEIST_DTYPE_Q8_0);
-    few.m     = 9;
     few.w0[1] = &wu_other;
     fails += geist_expect(f->moe_ffn_ids(be, &few) == GEIST_E_UNSUPPORTED,
                           "gate and up of different dtypes: GEIST_E_UNSUPPORTED");

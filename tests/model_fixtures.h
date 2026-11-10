@@ -883,6 +883,125 @@ static inline struct tf_buf mf_deepseek2_gguf(const struct mf_deepseek2 *c) {
     return o;
 }
 
+/* GLM-4.5 (#242, architecture glm4moe): q/k/v biases, per-head QK norms
+ * unless no_qk_norm (the Air has none), NEOX RoPE on the first `rot` dims
+ * of each head, the pre-FFN norm named post_attention_norm, `lead` dense
+ * layers, then a sigmoid router with exp_probs_b, renormalised and scaled
+ * by w_scale, plus `shared` shared experts. One NextN layer follows the
+ * stack in block_count, as the converter writes it. F32 weights. */
+struct mf_glm4moe {
+    uint32_t layers, lead, d_model, heads, kv_heads, head_dim, rot, ff;
+    uint32_t experts, used, expert_ff, shared, vocab;
+    uint64_t seed;
+    bool     no_qk_norm;
+    float    w_scale;
+};
+
+static inline struct tf_buf mf_glm4moe_gguf(const struct mf_glm4moe *c) {
+    const uint32_t    d  = c->d_model;
+    const uint32_t    qo = c->heads * c->head_dim, ko = c->kv_heads * c->head_dim;
+    struct mf_tensors ts = {0};
+    mf_add(&ts, d, c->vocab, MF_RAND, "token_embd.weight");
+    mf_add(&ts, d, c->vocab, MF_RAND, "output.weight");
+    mf_add(&ts, d, 0, MF_ONE, "output_norm.weight");
+    for (uint32_t l = 0; l < c->layers; l++) {
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
+        mf_add(&ts, d, qo, MF_RAND, "blk.%u.attn_q.weight", l);
+        mf_add(&ts, qo, 0, MF_RAND, "blk.%u.attn_q.bias", l);
+        ts.t[ts.n - 1].scale = 5.0f;
+        mf_add(&ts, d, ko, MF_RAND, "blk.%u.attn_k.weight", l);
+        mf_add(&ts, ko, 0, MF_RAND, "blk.%u.attn_k.bias", l);
+        ts.t[ts.n - 1].scale = 5.0f;
+        mf_add(&ts, d, ko, MF_RAND, "blk.%u.attn_v.weight", l);
+        mf_add(&ts, ko, 0, MF_RAND, "blk.%u.attn_v.bias", l);
+        ts.t[ts.n - 1].scale = 5.0f;
+        mf_add(&ts, qo, d, MF_RAND, "blk.%u.attn_output.weight", l);
+        if (!c->no_qk_norm) {
+            mf_add(&ts, c->head_dim, 0, MF_RAMP, "blk.%u.attn_q_norm.weight", l);
+            mf_add(&ts, c->head_dim, 0, MF_RAMP, "blk.%u.attn_k_norm.weight", l);
+        }
+        mf_add(&ts, d, 0, MF_ONE, "blk.%u.post_attention_norm.weight", l);
+        if (l < c->lead) {
+            mf_add(&ts, d, c->ff, MF_RAND, "blk.%u.ffn_gate.weight", l);
+            mf_add(&ts, d, c->ff, MF_RAND, "blk.%u.ffn_up.weight", l);
+            mf_add(&ts, c->ff, d, MF_RAND, "blk.%u.ffn_down.weight", l);
+            continue;
+        }
+        mf_add(&ts, d, c->experts, MF_RAND, "blk.%u.ffn_gate_inp.weight", l);
+        ts.t[ts.n - 1].scale = 10.0f; /* routing with clear margins */
+        mf_add(&ts, c->experts, 0, MF_RAND, "blk.%u.exp_probs_b.bias", l);
+        ts.t[ts.n - 1].scale = 10.0f; /* shifts the selection by up to 0.5 */
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_gate_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->expert_ff, MF_RAND, "blk.%u.ffn_up_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_exps.weight", l);
+        ts.t[ts.n - 1].ne2 = c->experts;
+        mf_add(&ts, d, c->shared * c->expert_ff, MF_RAND, "blk.%u.ffn_gate_shexp.weight", l);
+        mf_add(&ts, d, c->shared * c->expert_ff, MF_RAND, "blk.%u.ffn_up_shexp.weight", l);
+        mf_add(&ts, c->shared * c->expert_ff, d, MF_RAND, "blk.%u.ffn_down_shexp.weight", l);
+    }
+    /* The NextN layer's own tensors; the stack must not read them. */
+    mf_add(&ts, 2 * d, d, MF_RAND, "blk.%u.nextn.eh_proj.weight", c->layers);
+    mf_add(&ts, d, 0, MF_ONE, "blk.%u.nextn.enorm.weight", c->layers);
+    mf_add(&ts, d, 0, MF_ONE, "blk.%u.nextn.hnorm.weight", c->layers);
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } u32[] = {
+            {"block_count", c->layers + 1},
+            {"nextn_predict_layers", 1},
+            {"embedding_length", d},
+            {"attention.head_count", c->heads},
+            {"attention.head_count_kv", c->kv_heads},
+            {"attention.key_length", c->head_dim},
+            {"attention.value_length", c->head_dim},
+            {"rope.dimension_count", c->rot},
+            {"expert_count", c->experts},
+            {"expert_used_count", c->used},
+            {"context_length", 4096},
+            {"vocab_size", c->vocab},
+            {"feed_forward_length", c->ff},
+            {"expert_feed_forward_length", c->expert_ff},
+            {"expert_shared_count", c->shared},
+            {"leading_dense_block_count", c->lead},
+            {"expert_gating_func", 2},
+    };
+    const struct {
+        const char *key;
+        float       v;
+    } f32[] = {
+            {"rope.freq_base", 10000.0f},
+            {"attention.layer_norm_rms_epsilon", 1e-6f},
+            {"expert_weights_scale", c->w_scale},
+    };
+    const size_t  n_u32 = sizeof u32 / sizeof u32[0], n_f32 = sizeof f32 / sizeof f32[0];
+    const char    arch[] = "glm4moe";
+    char          key[80];
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o, 1 + n_u32 + n_f32 + 1);
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, arch, strlen(arch));
+    for (size_t i = 0; i < n_u32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, u32[i].key);
+        mf_key(&o, key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    for (size_t i = 0; i < n_f32; i++) {
+        snprintf(key, sizeof key, "%s.%s", arch, f32[i].key);
+        mf_key(&o, key, TF_GGUF_FLOAT32);
+        tf_f32(&o, f32[i].v);
+    }
+    snprintf(key, sizeof key, "%s.expert_weights_norm", arch);
+    mf_key(&o, key, 7 /* bool */);
+    tf_put(&o, "\1", 1);
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
 /* Llama 4 (#244): every moe_step-th layer (1-based) a mixture of experts
  * plus a shared expert, the rest dense; rope_freqs.weight factors (1, 1.5,
  * 2, ...); attention.chunk_size / temperature_length shrink llama.cpp's

@@ -1,0 +1,43 @@
+with-mac-lock: waiting (#1 in queue, batch) behind pid 33293 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 3m27s of 60 min; queue 1: batch/37517 0s
+cycle 1/4: geist
+  waiting for quiet host: load 3.68 (0.368/core), 86.8 % idle
+  cooldown 60s
+  repeat spread 8.2 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.04 (0.204/core), 92.3 % idle
+  cooldown 60s
+  repeat spread 7.7 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.32 (0.132/core), 89.3 % idle
+  cooldown 60s
+  repeat spread 6.5 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.70 (0.170/core), 83.9 % idle
+  waiting for quiet host: load 4.91 (0.491/core), 86.8 % idle
+  cooldown 60s
+  repeat spread 6.0 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [8.22, 7.71, 6.46, 6.04]
+with-mac-lock: waiting (#1 in queue, batch) behind pid 48129 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 2m22s of 60 min; queue 1: batch/50014 0s
+cycle 1/4: geist
+  waiting for quiet host: load 2.17 (0.217/core), 88.3 % idle
+  cooldown 60s
+  repeat spread 5.7 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.11 (0.211/core), 88.6 % idle
+  cooldown 60s
+  repeat spread 5.1 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.67 (0.167/core), 92.7 % idle
+  cooldown 60s
+  repeat spread 6.4 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.70 (0.170/core), 91.9 % idle
+  cooldown 60s
+cycle 1/4: llama.cpp
+  waiting for quiet host: load 1.68 (0.168/core), 91.7 % idle
+  cooldown 60s
+  repeat spread 24.0 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.92 (0.192/core), 85.8 % idle
+  cooldown 60s
+  repeat spread 22.8 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.28 (0.128/core), 89.4 % idle
+  cooldown 60s
+  repeat spread 24.3 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 1.71 (0.171/core), 87.4 % idle
+  cooldown 60s
+  repeat spread 24.0 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [24.01, 22.75, 24.29, 23.98]

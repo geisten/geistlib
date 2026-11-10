@@ -10,7 +10,7 @@
  *   - V accumulated per-thread, one 4-wide dim slice per thread.
  * Q/K/V stream as 4-wide vectors (scalar f16 loads dominate otherwise);
  * host guards q/k/v element offsets % 4 == 0. Two passes over K/V total;
- * no serial per-position loop. head_dim <= 512.
+ * no serial per-position loop. head_dim <= VK_ATTN_MAX_HEAD_DIM (576).
  * No score scale: Gemma encodes 1/sqrt(d) in the Q/K norms. */
 
 layout(local_size_x = 256) in;
