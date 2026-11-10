@@ -447,12 +447,13 @@ bool attention_kv_items(size_t       i0,
     return true;
 }
 
+static constexpr size_t SINKS_RUN_MAX = 16;
+
 /* The heads [h0, h0 + nh) of query t, all of KV head kv_h, for
  * attention_sinks_items: every K / V row is read (and widened) once for
  * the whole run instead of once per head; each head's arithmetic is the
  * one-head sequence (block by block, scores, running max, exp, values in
  * key order). */
-enum { SINKS_RUN_MAX = 16 };
 static void attention_sinks_run(size_t       t,
                                 size_t       h0,
                                 size_t       nh,
