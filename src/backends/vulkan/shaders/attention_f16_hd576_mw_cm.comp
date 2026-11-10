@@ -1,0 +1,9 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Multi-subgroup tensor-core prefill attention, head_dim 576 (absorbed MLA's
+ * one latent KV head, #504), the q heads of a KV head folded into the rows of
+ * a tile. Body and notes: attention_f16_mw_body.glsl. */
+#define HD 576
+#define GQA_FOLD 1
+#include "attention_f16_mw_body.glsl"

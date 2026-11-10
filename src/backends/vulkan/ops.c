@@ -1812,6 +1812,25 @@ attn_generic:;
                                          : hd == 256 ? VK_PIPE_ATTENTION_F16_MW_CM
                                          : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_MW_CM
                                                      : VK_PIPE_COUNT;
+            /* 576 (absorbed MLA, #504): the same kernel with the q heads of a
+             * KV head folded into the 16 rows of a tile (one token's heads
+             * at MLA's one latent KV head), so a K / V chunk serves 16 heads
+             * and the scores are computed once. Rows of a dispatch: n_q x
+             * the group, in tiles of 16 along x. */
+            const uint64_t fold_tiles = ((uint64_t) n_q * (qh / kvh) + 15u) / 16u;
+            if (kv16 && n_q > 1 && hd == 576 && stt->subgroup_size == 32u &&
+                fold_tiles <= 65535u /* x limit Vulkan guarantees */ &&
+                stt->pipes[VK_PIPE_ATTENTION_F16_HD576_MW_CM] != VK_NULL_HANDLE) {
+                return vk_seq_dispatch_acc(be,
+                                           VK_PIPE_ATTENTION_F16_HD576_MW_CM,
+                                           bi,
+                                           acc,
+                                           push,
+                                           sizeof(push),
+                                           (uint32_t) fold_tiles,
+                                           kvh,
+                                           1);
+            }
             if (kv16 && n_q > 1 && mw_pipe != VK_PIPE_COUNT && stt->subgroup_size == 32u &&
                 stt->pipes[mw_pipe] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,

@@ -1,0 +1,49 @@
+# Scratch (agent/issue-504b-probe, never merged): one probe script on the
+# desktop's RTX 2080 Ti for #504. The step takes the bench + GPU locks once
+# (scripts/gpu-lock.sh with GEIST_QUIET=1) and holds them for the whole job;
+# the scripts never lock again (a second flock on the same file would wait
+# on this one).
+name: vk-probe-504
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: "probe script under tools/probes of this branch"
+        default: vk504b.sh
+      args:
+        description: "args for the script"
+        default: "unit"
+      revs:
+        description: "geistlib revisions (label=rev), space separated; first = new"
+        default: "new=origin/agent/issue-504b-probe base=origin/agent/issue-504-vulkan-mla"
+
+jobs:
+  probe:
+    runs-on: geist-vulkan
+    timeout-minutes: 175
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: probe
+        env:
+          ARGS: ${{ inputs.args }}
+          REVS: ${{ inputs.revs }}
+        run: |
+          set -eo pipefail
+          export PROBE_OUT="$RUNNER_TEMP/probe"
+          rm -rf "$PROBE_OUT"; mkdir -p "$PROBE_OUT"
+          git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
+          export GEIST_QUIET=1
+          . scripts/gpu-lock.sh
+          # shellcheck disable=SC2086
+          sh "tools/probes/${{ inputs.script }}" $ARGS 2>&1 | tee "$PROBE_OUT/log.txt"
+          cat "$PROBE_OUT"/*.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 14
+          name: vk-probe-504-${{ github.run_id }}
+          path: ${{ runner.temp }}/probe/
+          if-no-files-found: ignore
