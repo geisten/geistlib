@@ -1,0 +1,55 @@
+# One-shot for #249 (scratch branch, not for merge): GEIST_VK_PROFILE of
+# OLMoE pp512 on the RTX 2080 Ti with GEIST_VK_NO_COOPMAT=1 (where the
+# prefill time goes with the new grouped GEMM). NVIDIA ICD only.
+name: moe-nocm-prof-249
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prof:
+    runs-on: geist-vulkan
+    timeout-minutes: 90
+    env:
+      M: /home/germar/geist-models
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Guard (NVIDIA ICD only, never the iGPU)
+        run: |
+          case "${VK_DRIVER_FILES:-}" in
+            *nvidia*) ;;
+            *) echo "VK_DRIVER_FILES is not pinned to the NVIDIA ICD -- refusing"; exit 1 ;;
+          esac
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build (outside the lock)
+        run: |
+          mkdir -p out
+          make TARGET=linux BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native bin > out/build.txt 2>&1
+      - name: Profile under one desktop lock
+        env:
+          GEIST_QUIET: "1"
+        run: |
+          set +e
+          . scripts/gpu-lock.sh
+          for i in $(seq 120); do
+            n=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -c GITEA-ACTIONS-TASK)
+            read -r _ u1 n1 s1 i1 w1 q1 sq1 st1 _ < /proc/stat; sleep 10
+            read -r _ u2 n2 s2 i2 w2 q2 sq2 st2 _ < /proc/stat
+            t=$(( (u2+n2+s2+i2+w2+q2+sq2+st2) - (u1+n1+s1+i1+w1+q1+sq1+st1) ))
+            idle=$(( 100 * ((i2+w2) - (i1+w1)) / (t > 0 ? t : 1) ))
+            [ "$n" = 0 ] && [ "$idle" -ge 97 ] && break
+          done
+          { echo "docker CI jobs $n, idle $idle %"; ps -eo pid,pcpu,etime,comm --sort=-pcpu | head -8; } | tee out/ps.txt
+          for nocm in 1 0; do
+            echo "=== GEIST_VK_NO_COOPMAT=$nocm" >> out/prof.txt
+            GEIST_VK_NO_COOPMAT=$nocm GEIST_VK_PROFILE=1 GEIST_BENCH_BACKEND=vulkan timeout 900 bin/linux/release/tests/bench_perf_sweep \
+              --gguf "$M/OLMoE-1B-7B-0125-Instruct-Q4_K_M.gguf" --seq-lens 512 --decode-n 0 --warmup 1 --repeats 1 >> out/prof.txt 2>&1
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          retention-days: 30
+          name: moe-nocm-prof-249
+          path: out/
