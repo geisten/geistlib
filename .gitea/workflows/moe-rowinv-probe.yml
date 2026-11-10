@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "survey | unit | logits | dump | ab"
+        description: "survey | unit | logits | dump | mb | ab"
         type: string
         default: survey
       ref:
@@ -128,6 +128,29 @@ jobs:
             LOCK_PRIO=batch LOCK_MAX=30 ~/bin/with-desktop-lock sh tools/probes/rowinv_dump.sh \
               "$RUNNER_TEMP/ri/bin/linux/release" cpu_x86 "$RUNNER_TEMP/dump" $DI "$F" 2>&1 | tee -a out/report.txt
           done
+      - name: Decode GEMV microbench, base vs ref (one lock hold)
+        if: inputs.mode == 'mb'
+        env:
+          BASE: ${{ inputs.base }}
+          LOCK_NOTE: "moe row invariance: GEMV microbench (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          git worktree add --detach "$RUNNER_TEMP/rb" "$BASE"
+          make -C "$RUNNER_TEMP/rb" $MAKEARGS BACKENDS="cpu_x86 cpu_scalar" -j16 lib > out/build_base.log 2>&1 || { tail -40 out/build_base.log; exit 1; }
+          for v in rb ri; do
+            gcc -std=c23 -O3 -march=x86-64-v3 -fopenmp -I"$RUNNER_TEMP/$v/include" -I"$RUNNER_TEMP/$v" -I"$RUNNER_TEMP/$v/src/base" -I"$RUNNER_TEMP/$v/src/quant" -I"$RUNNER_TEMP/$v/tests" \
+              tools/probes/rowinv_mb.c "$RUNNER_TEMP/$v/lib/linux/release/libgeist.a" -lm -o "$RUNNER_TEMP/mb_$v" || exit 1
+          done
+          cat > "$RUNNER_TEMP/mb.sh" <<'SH'
+          for round in 1 2 3; do
+            for v in rb ri; do
+              QUIET_LOG="$PWD/out/quiet.log" sh tools/probes/rowinv_quiet.sh || exit 1
+              echo "== $v (round $round)"; "$RUNNER_TEMP/mb_$v"
+            done
+          done
+          SH
+          LOCK_PRIO=batch LOCK_MAX=30 ~/bin/with-desktop-lock sh "$RUNNER_TEMP/mb.sh" 2>&1 | tee -a out/report.txt
+          git worktree remove --force "$RUNNER_TEMP/rb"
       - name: A/B (one lock hold)
         if: inputs.mode == 'ab'
         env:
