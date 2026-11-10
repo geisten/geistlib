@@ -66,6 +66,24 @@ def engine_metadata(label: str, kind: str, binary: Path) -> dict:
     }
 
 
+def apple_performance_cores() -> str:
+    """Physical cores on every perf level except "Efficiency": the M6 has a
+    "Super" and a "Performance" level, so perflevel0 alone undercounts (#513)."""
+    try:
+        levels = int(command_output(["sysctl", "-n", "hw.nperflevels"]))
+    except ValueError:
+        return "unavailable"
+    total = 0
+    for i in range(levels):
+        if command_output(["sysctl", "-n", f"hw.perflevel{i}.name"]) == "Efficiency":
+            continue
+        try:
+            total += int(command_output(["sysctl", "-n", f"hw.perflevel{i}.physicalcpu"]))
+        except ValueError:
+            return "unavailable"
+    return str(total)
+
+
 def system_metadata() -> dict:
     """Host facts a reader needs to judge a number, per platform.
 
@@ -77,7 +95,7 @@ def system_metadata() -> dict:
         return {
             "cpu": command_output(["sysctl", "-n", "machdep.cpu.brand_string"]),
             "logical_cores": os.cpu_count(),
-            "performance_cores": command_output(["sysctl", "-n", "hw.perflevel0.physicalcpu"]),
+            "performance_cores": apple_performance_cores(),
             "memory_bytes": command_output(["sysctl", "-n", "hw.memsize"]),
             "os": f"{platform.system()} {platform.release()}",
             "product": command_output(["sw_vers"]),
