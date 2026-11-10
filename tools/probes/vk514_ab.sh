@@ -15,6 +15,7 @@ for spec in $REVS; do revargs="$revargs --rev $spec"; done
 export GEIST_QUIET=1
 . scripts/gpu-lock.sh
 uptime | tee "$OUT/load.txt"
+ps -eo pcpu,etime,user,comm --sort=-pcpu | head -12 | tee -a "$OUT/load.txt"
 cat "$MODEL" >/dev/null # page cache
 # shellcheck disable=SC2086
 python3 tools/bench_revision_ab.py $revargs \
@@ -25,4 +26,5 @@ python3 tools/bench_revision_ab.py $revargs \
     --make-arg GEMM_PROVIDER=native --jobs 16 \
     --out-dir "$OUT/ab" | tee "$OUT/report.txt"
 uptime | tee -a "$OUT/load.txt"
+ps -eo pcpu,etime,user,comm --sort=-pcpu | head -12 | tee -a "$OUT/load.txt"
 { echo "### $(basename "$MODEL")"; echo '```'; cat "$OUT/report.txt"; cat "$OUT/load.txt"; echo '```'; } >"$OUT/summary.md"
