@@ -21,6 +21,13 @@
  * Metal runs the experts on the GPU (#373) and matches the double
  * reference within 1e-5, as it does with GEIST_MOE_HOT=0 (experts on the
  * CPU).
+ *
+ * #522: the same model with the experts' gate biases drawn 1000 times
+ * wider, so about a quarter of the gate pre-activations lie below -52.13,
+ * where swiglu_oai's exp(-alpha * g) overflows a float. The CPU backends
+ * still match the double reference (cpu_scalar within 1e-5): gcc's x86
+ * -ffast-math division gave NaN there, and layer 1's router then refused
+ * the hidden state.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #define GEIST_INTERNAL_ENGINE_LAYER
@@ -60,6 +67,15 @@ static const struct mf_gpt_oss GEOM = {.layers     = LAYERS,
  * against the double reference. */
 static const struct geist_session_opts OPTS = {
         .top_p = 1.0f, .m_max = 8, .max_seq_len = 256, .kv_mode = GEIST_KV_FP32};
+
+/* The experts' gate biases times this (#522); 0: as drawn. */
+static float gate_bias_scale = 0.0f;
+
+static struct tf_buf fixture(void) {
+    struct mf_gpt_oss c = GEOM;
+    c.gate_bias_scale   = gate_bias_scale;
+    return mf_gpt_oss_gguf(&c);
+}
 
 static geist_token_t prompt_id(size_t i) {
     return (geist_token_t) ((i * 37 + 5) % VOCAB);
@@ -325,7 +341,7 @@ static int check_backend(const char *name, float out[static VOCAB], float *out1)
         printf("skip %s: not in this build\n", name);
         return -1;
     }
-    struct tf_buf         g     = mf_gpt_oss_gguf(&GEOM);
+    struct tf_buf         g     = fixture();
     struct geist_model   *m     = nullptr;
     struct geist_session *s     = nullptr;
     int                   fails = 0;
@@ -362,12 +378,73 @@ static int check_backend(const char *name, float out[static VOCAB], float *out1)
     return fails;
 }
 
+/* No NaN or Inf, read from the bits: gcc's -ffast-math may fold isfinite
+ * and a comparison against NaN. */
+static bool all_finite(const float a[static VOCAB]) {
+    for (size_t i = 0; i < VOCAB; i++) {
+        uint32_t bits;
+        memcpy(&bits, &a[i], sizeof bits);
+        if ((bits & 0x7f800000u) == 0x7f800000u)
+            return false;
+    }
+    return true;
+}
+
+/* #522: gate pre-activations down to about -100 (file header). */
+static int check_deep_gates(void) {
+    int fails            = 0;
+    gate_bias_scale      = 1000.0f;
+    struct tf_buf    g   = fixture();
+    const char      *err = nullptr;
+    struct gguf_ctx *gc  = gguf_open_memory(g.b, g.n, &err);
+    struct ref_model rm  = {0};
+    static double    ref[VOCAB];
+    float            scalar[VOCAB], other[VOCAB];
+    if (gc == nullptr || !ref_load(gc, &rm)) {
+        fails += geist_expect(false, "the deep-gate fixture reads");
+    } else {
+        size_t deep = 0;
+        for (size_t i = 0; i < (size_t) LAYERS * EXPERTS * FF; i++)
+            deep += rm.l[i / (EXPERTS * FF)].bg[i % (EXPERTS * FF)] < -53.0f;
+        printf("deep gates: %zu of %d gate biases below -53\n", deep, LAYERS * EXPERTS * FF);
+        fails += geist_expect(deep >= (size_t) LAYERS * EXPERTS * FF / 8,
+                              "the fixture has gates below the exp overflow");
+        ref_forward(&rm, (struct ref_knobs) {0}, ref);
+        const int sc = check_backend("cpu_scalar", scalar, nullptr);
+        fails += sc != 0 ? geist_expect(false, "cpu_scalar runs the deep-gate fixture") : 0;
+        if (sc == 0) {
+            const double d = rel_l2_d(scalar, ref);
+            printf("deep gates: cpu_scalar vs the double reference: relative L2 %.3g\n", d);
+            fails += geist_expect(all_finite(scalar) && d <= 1e-5,
+                                  "cpu_scalar matches the reference within 1e-5 with deep gates");
+        }
+        const char *const more[] = {"cpu_neon", "cpu_x86"};
+        for (size_t b = 0; b < sizeof more / sizeof more[0]; b++) {
+            const int r = check_backend(more[b], other, nullptr);
+            if (r < 0)
+                continue;
+            fails += r;
+            if (r == 0 && sc == 0) {
+                const double c = cosine(other, scalar);
+                printf("deep gates: %s vs cpu_scalar: cosine %.6f\n", more[b], c);
+                fails += geist_expect(all_finite(other) && c >= 0.999,
+                                      "a CPU backend matches cpu_scalar with deep gates");
+            }
+        }
+    }
+    ref_free(&rm);
+    gguf_close(gc);
+    free(g.b);
+    gate_bias_scale = 0.0f;
+    return fails;
+}
+
 int main(void) {
     setenv("GEIST_MOE_PROFILE_CACHE", "0", 1);
     int fails = 0;
 
     /* The reference, and that each mechanism moves it. */
-    struct tf_buf    g   = mf_gpt_oss_gguf(&GEOM);
+    struct tf_buf    g   = fixture();
     const char      *err = nullptr;
     struct gguf_ctx *gc  = gguf_open_memory(g.b, g.n, &err);
     struct ref_model rm  = {0};
@@ -466,5 +543,6 @@ int main(void) {
             }
         }
     }
+    fails += check_deep_gates();
     return fails ? GEIST_TEST_FAIL : GEIST_TEST_PASS;
 }
