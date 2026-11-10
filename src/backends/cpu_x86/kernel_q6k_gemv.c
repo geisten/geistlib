@@ -22,7 +22,8 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q6k_gemv.h"
-#include "linear_util.h"
+#include "linear_util.h" /* hsum_epi32 */
+#include "q8_kx4.h"      /* quantize_q8_K_superblock */
 
 #include "quant.h" /* fp16_to_fp32 */
 #include "quant_blocks.h"
@@ -42,26 +43,17 @@ struct q8k_act {
     int16_t bsums[16];
 };
 
-/* Quantize one fp32 activation super-block group to q8_K (matches the format
- * the dot expects: d = amax/127, qs = round(x/d), bsums summed per 16). */
+/* Quantize one fp32 activation super-block group to q8_K through
+ * quantize_q8_K_superblock, the quantizer of the Q8_Kx4 groups the tiled
+ * GEMM reads, and sum the codes per 16: a token gets the same codes and
+ * scale here (GEMV, raw GEMM) as in the tiled GEMM (#527). */
 static void quantize_q8k_act(size_t n_super, const float *x, struct q8k_act *out) {
     for (size_t s = 0; s < n_super; s++) {
-        const float *xs   = x + s * 256;
-        float        amax = 0.0f;
-        for (size_t k = 0; k < 256; k++) {
-            const float ax = fabsf(xs[k]);
-            if (ax > amax)
-                amax = ax;
-        }
-        const float d  = amax / 127.0f;
-        const float id = (amax > 0.0f) ? 127.0f / amax : 0.0f;
-        out[s].d       = d;
+        quantize_q8_K_superblock(x + s * 256, out[s].qs, &out[s].d);
         for (size_t g = 0; g < 16; g++) {
             int32_t sum = 0;
             for (size_t i = 0; i < 16; i++) {
-                const int v           = (int) lrintf(xs[g * 16 + i] * id);
-                out[s].qs[g * 16 + i] = (int8_t) v;
-                sum += v;
+                sum += out[s].qs[g * 16 + i];
             }
             out[s].bsums[g] = (int16_t) sum;
         }
@@ -155,56 +147,95 @@ blk_unpack(enum kfmt f, const uint8_t *b, size_t j, __m256i q[4]) {
     }
 }
 
-/* One output row's dot: sum over n_super super-blocks of w (row-major,
- * kfmt_bytes(f) each). */
-[[gnu::always_inline]] static inline float
-dot_q8k(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y) {
-    __m256 acc = _mm256_setzero_ps();
+/* The exact integer dot of super-block b (kfmt_bytes(f) bytes) against the
+ * activation's super-block a, offset included, as 8 int32 lanes to sum. */
+[[gnu::always_inline]] static inline __m256i
+sb_dot(enum kfmt f, const uint8_t *b, const struct q8k_act *a) {
+    const int8_t *q8       = a->qs;
+    const __m256i q8sums   = _mm256_loadu_si256((const __m256i *) a->bsums);
+    const __m128i scales   = blk_scales(f, b);
+    const __m256i scales16 = _mm256_cvtepi8_epi16(scales);
+    const __m256i q8sclsub =
+            _mm256_slli_epi32(_mm256_madd_epi16(q8sums, scales16), kfmt_offset_shift(f));
+    __m256i sumi = _mm256_setzero_si256();
+    int     is   = 0;
+    for (size_t j = 0; j < 2; j++) { /* QK_K/128 = 2 */
+        __m256i q[4];
+        blk_unpack(f, b, j, q);
+        for (int k = 0; k < 4; k++) {
+            const __m256i q8k = _mm256_loadu_si256((const __m256i *) (q8 + 32 * k));
+            const __m128i s   = _mm_shuffle_epi8(scales, scale_shuffle(is + k));
+            q[k] = _mm256_madd_epi16(_mm256_cvtepi8_epi16(s), _mm256_maddubs_epi16(q[k], q8k));
+        }
+        q8 += 128;
+        is += 4;
+        sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(q[0], q[1]));
+        sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(q[2], q[3]));
+    }
+    return _mm256_sub_epi32(sumi, q8sclsub);
+}
 
+/* Four exact lane sums in the lanes of one vector (integer adds: any
+ * order gives the same sums). */
+static inline __m128i hsum4_epi32(__m256i v0, __m256i v1, __m256i v2, __m256i v3) {
+    const __m256i h = _mm256_hadd_epi32(_mm256_hadd_epi32(v0, v1), _mm256_hadd_epi32(v2, v3));
+    return _mm_add_epi32(_mm256_castsi256_si128(h), _mm256_extracti128_si256(h, 1));
+}
+
+/* One output row's dot: acc plus the sum over n_super super-blocks of w
+ * (row-major, kfmt_bytes(f) each). Per super-block the integer dot is
+ * exact, and the float epilogue is the tiled GEMM's
+ * (kernel_q4k_tiled_avx512_vnni.c, micro_8x16 for Q6_K):
+ *   acc = fma(s * d_w, d_a, acc)
+ * in super-block order, so an activation row gets the same bits from this
+ * GEMV, the raw GEMM below and the tiled GEMM: the path an MoE expert's rows
+ * take changes with how many rows the prefill chunk routed to it. */
+[[gnu::always_inline]] static inline float
+dot_q8k(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y, float acc) {
+    for (size_t i = 0; i < n_super; i++) {
+        const uint8_t *b = w + i * kfmt_bytes(f);
+        const float    r = (float) hsum_epi32(sb_dot(f, b, &y[i])) * blk_d(f, b);
+        acc              = fmaf(r, y[i].d, acc);
+    }
+    return acc;
+}
+
+/* dot_q8k for four output rows (w, w + row_bytes, ...) against one
+ * activation row: their sums reduced together, the epilogue in the four
+ * lanes of one vector, each lane the same operations as dot_q8k. */
+[[gnu::always_inline]] static inline __m128 dot_q8k_4w(enum kfmt             f,
+                                                       size_t                n_super,
+                                                       size_t                row_bytes,
+                                                       const uint8_t        *w,
+                                                       const struct q8k_act *y,
+                                                       __m128                acc) {
     for (size_t i = 0; i < n_super; i++) {
         const uint8_t *b  = w + i * kfmt_bytes(f);
-        const float    d  = y[i].d * blk_d(f, b);
-        const int8_t  *q8 = y[i].qs;
-
-        const __m256i q8sums   = _mm256_loadu_si256((const __m256i *) y[i].bsums);
-        const __m128i scales   = blk_scales(f, b);
-        const __m256i scales16 = _mm256_cvtepi8_epi16(scales);
-        const __m256i q8sclsub =
-                _mm256_slli_epi32(_mm256_madd_epi16(q8sums, scales16), kfmt_offset_shift(f));
-
-        __m256i sumi = _mm256_setzero_si256();
-        int     is   = 0;
-        for (size_t j = 0; j < 2; j++) { /* QK_K/128 = 2 */
-            __m256i q[4];
-            blk_unpack(f, b, j, q);
-            for (int k = 0; k < 4; k++) {
-                const __m256i q8k = _mm256_loadu_si256((const __m256i *) (q8 + 32 * k));
-                const __m128i s   = _mm_shuffle_epi8(scales, scale_shuffle(is + k));
-                q[k] = _mm256_madd_epi16(_mm256_cvtepi8_epi16(s), _mm256_maddubs_epi16(q[k], q8k));
-            }
-            q8 += 128;
-            is += 4;
-            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(q[0], q[1]));
-            sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(q[2], q[3]));
-        }
-        sumi = _mm256_sub_epi32(sumi, q8sclsub);
-        acc  = _mm256_fmadd_ps(_mm256_broadcast_ss(&d), _mm256_cvtepi32_ps(sumi), acc);
+        const __m128i  s4 = hsum4_epi32(sb_dot(f, b, &y[i]),
+                                        sb_dot(f, b + row_bytes, &y[i]),
+                                        sb_dot(f, b + 2 * row_bytes, &y[i]),
+                                        sb_dot(f, b + 3 * row_bytes, &y[i]));
+        const __m128   d4 = _mm_setr_ps(blk_d(f, b),
+                                        blk_d(f, b + row_bytes),
+                                        blk_d(f, b + 2 * row_bytes),
+                                        blk_d(f, b + 3 * row_bytes));
+        acc = _mm_fmadd_ps(_mm_mul_ps(_mm_cvtepi32_ps(s4), d4), _mm_set1_ps(y[i].d), acc);
     }
-    return hsum_ps_hadd(acc);
+    return acc;
 }
 
 /* One instance per format. The OpenMP regions below are outlined once for
  * both formats, with f a runtime value there, so they pick an instance per
  * row rather than inline the dot with an unknown f. */
-static float dot_q6k(size_t n_super, const uint8_t *w, const struct q8k_act *y) {
-    return dot_q8k(KF_Q6K, n_super, w, y);
+static float dot_q6k(size_t n_super, const uint8_t *w, const struct q8k_act *y, float acc) {
+    return dot_q8k(KF_Q6K, n_super, w, y, acc);
 }
-static float dot_q3k(size_t n_super, const uint8_t *w, const struct q8k_act *y) {
-    return dot_q8k(KF_Q3K, n_super, w, y);
+static float dot_q3k(size_t n_super, const uint8_t *w, const struct q8k_act *y, float acc) {
+    return dot_q8k(KF_Q3K, n_super, w, y, acc);
 }
 static inline float
-dot_fmt(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y) {
-    return f == KF_Q6K ? dot_q6k(n_super, w, y) : dot_q3k(n_super, w, y);
+dot_fmt(enum kfmt f, size_t n_super, const uint8_t *w, const struct q8k_act *y, float acc) {
+    return f == KF_Q6K ? dot_q6k(n_super, w, y, acc) : dot_q3k(n_super, w, y, acc);
 }
 
 /* Super-blocks of quantized activation held on the stack at once (16384
@@ -227,9 +258,26 @@ struct kq_call {
 [[gnu::always_inline]] static inline void
 gemv_rows(enum kfmt f, const struct kq_call *pc, size_t r0, size_t r1) {
     const struct kq_call c = *pc;
-    for (size_t r = r0; r < r1; r++) {
-        const float d = dot_fmt(f, c.n_super, c.raw + r * c.row_bytes + c.w_off, c.a);
-        c.y[r]        = c.first ? d : c.y[r] + d;
+    size_t               r = r0;
+    for (; r + 4 <= r1; r += 4) {
+        const __m128 acc = c.first ? _mm_setzero_ps() : _mm_loadu_ps(c.y + r);
+        _mm_storeu_ps(c.y + r,
+                      f == KF_Q6K ? dot_q8k_4w(KF_Q6K,
+                                               c.n_super,
+                                               c.row_bytes,
+                                               c.raw + r * c.row_bytes + c.w_off,
+                                               c.a,
+                                               acc)
+                                  : dot_q8k_4w(KF_Q3K,
+                                               c.n_super,
+                                               c.row_bytes,
+                                               c.raw + r * c.row_bytes + c.w_off,
+                                               c.a,
+                                               acc));
+    }
+    for (; r < r1; r++) {
+        c.y[r] = dot_fmt(
+                f, c.n_super, c.raw + r * c.row_bytes + c.w_off, c.a, c.first ? 0.0f : c.y[r]);
     }
 }
 
@@ -241,9 +289,9 @@ static void gemv_rows_q3k(void *ctx, size_t r0, size_t r1) {
 }
 
 /* K up to Q8K_SEG * 256 = 16384 is one segment. Beyond it (ffn_down of any
- * model wider than 16384) each segment's partial dot is added into y. The
- * activation is quantized per super-block either way, so segmenting changes
- * only the order of the fp32 sum across segments. */
+ * model wider than 16384) each segment continues the accumulator the
+ * previous one left in y, so the sum runs as in one pass. The activation is
+ * quantized per super-block either way. */
 static void gemv_m1(enum kfmt f, size_t N, size_t K, const float *x, const uint8_t *raw, float *y) {
     const size_t n_super = K / 256;
     if (n_super == 0) {
@@ -272,17 +320,16 @@ void q3k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q3k_raw, flo
 constexpr size_t KQ_NR = 4;
 
 /* KQ_NR activation rows against one weight row: each super-block's codes and
- * scales unpacked once per tile, then the same sequence of integer ops as
- * dot_q8k per row (bit-identical per output). */
+ * scales unpacked once per tile, then the same integer dot and the same
+ * float epilogue as dot_q8k per row, the KQ_NR rows' in the lanes of one
+ * vector (bit-identical per output). */
+static_assert(KQ_NR == 4, "dot_q8k_rows reduces four rows into one __m128");
 [[gnu::always_inline]] static inline void dot_q8k_rows(enum kfmt             f,
                                                        size_t                n_super,
                                                        const uint8_t        *w,
                                                        const struct q8k_act *y,
                                                        float                 out[static KQ_NR]) {
-    __m256 acc[KQ_NR];
-    for (size_t r = 0; r < KQ_NR; r++) {
-        acc[r] = _mm256_setzero_ps();
-    }
+    __m128 acc = _mm_setzero_ps();
 
     for (size_t i = 0; i < n_super; i++) {
         const uint8_t *b        = w + i * kfmt_bytes(f);
@@ -322,15 +369,15 @@ constexpr size_t KQ_NR = 4;
             const __m256i         q8sums = _mm256_loadu_si256((const __m256i *) a->bsums);
             const __m256i         sub =
                     _mm256_slli_epi32(_mm256_madd_epi16(q8sums, scales16), kfmt_offset_shift(f));
-            const float d = a->d * dw;
-            acc[r]        = _mm256_fmadd_ps(_mm256_broadcast_ss(&d),
-                                            _mm256_cvtepi32_ps(_mm256_sub_epi32(sumi[r], sub)),
-                                            acc[r]);
+            sumi[r] = _mm256_sub_epi32(sumi[r], sub);
         }
+        const __m128i s4 = hsum4_epi32(sumi[0], sumi[1], sumi[2], sumi[3]);
+        const __m128  r4 = _mm_mul_ps(_mm_cvtepi32_ps(s4), _mm_set1_ps(dw));
+        const __m128  a4 =
+                _mm_setr_ps(y[i].d, y[n_super + i].d, y[2 * n_super + i].d, y[3 * n_super + i].d);
+        acc = _mm_fmadd_ps(r4, a4, acc);
     }
-    for (size_t r = 0; r < KQ_NR; r++) {
-        out[r] = hsum_ps_hadd(acc[r]);
-    }
+    _mm_storeu_ps(out, acc);
 }
 
 static void
@@ -382,7 +429,7 @@ gemm_rows(enum kfmt f, const struct kq_call *pc, size_t r0, size_t r1) {
             }
         }
         for (size_t i = m_til; i < M; i++) {
-            y[i * N + r] = dot_fmt(f, n_super, wr, a + i * n_super);
+            y[i * N + r] = dot_fmt(f, n_super, wr, a + i * n_super, 0.0f);
         }
     }
 }
