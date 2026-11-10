@@ -47,6 +47,7 @@
     X(gpt_oss,    GPT_OSS,    gpt_oss,     "gpt-oss")         \
     X(deepseek2,  DEEPSEEK2,  deepseek2,   "deepseek2")       \
     X(glm4moe,    GLM4MOE,    glm4moe,     "glm4moe")         \
+    X(phimoe,     PHIMOE,     phimoe,      "phimoe")          \
     X(llama4,     LLAMA4,     llama4,      "llama4")
 /* clang-format on */
 

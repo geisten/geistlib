@@ -1137,6 +1137,8 @@ jobs:
                    test_gpt_oss_unit \
                    test_deepseek2_unit \
                    test_glm4moe_unit \
+                   test_phimoe_unit \
+                   test_layernorm_unit \
                    test_gguf_release_range_unit; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
