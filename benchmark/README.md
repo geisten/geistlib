@@ -88,6 +88,7 @@ Sub-parity rows are kept on purpose — nothing cherry-picked.</sub>
 | …on **AMD x86-64** (AVX-512)? | [results/X86.md](results/X86.md) — Gemma & Llama vs llama.cpp, BitNet vs bitnet.cpp |
 | …on the **Apple GPU** (Metal, experimental)? | [results/METAL.md](results/METAL.md) — M1 Max vs llama.cpp Metal, the two scalar-fallback fixes, and why the program closed |
 | …on an **NVIDIA GPU** (Vulkan, experimental)? | [results/VULKAN.md](results/VULKAN.md) — RTX 2080 Ti vs llama.cpp Vulkan, incl. the measured dead ends |
+| What did **offload and expert placement** change? | [results/OFFLOAD.md](results/OFFLOAD.md) — historical split, streaming, MoE and MTP experiments; current configuration is in [docs/OFFLOAD.md](../docs/OFFLOAD.md) |
 | What about **ternary BitNet**? | [results/TERNARY.md](results/TERNARY.md) — supported formats, conversion, the per-token byte budget, the ternary measurement protocol |
 
 ## Running them

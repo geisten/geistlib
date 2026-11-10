@@ -104,6 +104,12 @@ scripts/required_checks.py sync`.
 
 ## Benchmarks
 
+On the shared M1 Max, wrap every benchmark, reported timing measurement and
+heavy real-model run in `~/bin/with-mac-lock <command...>`. Builds and ordinary
+unit tests do not require it. On the Pi 5, use `~/bin/with-pi-lock` on the
+board and check temperature below 60 °C and load below 0.5 before measuring.
+See [shared-host procedure](benchmark/METHODOLOGY.md#shared-host-locks).
+
 ```sh
 make bench           # reproducible run vs any llama.cpp / bitnet.cpp found on the machine
 make bench-small     # perf suite; records a new best to benchmark/results/APPLE.md

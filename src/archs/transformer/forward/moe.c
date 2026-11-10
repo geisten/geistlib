@@ -385,6 +385,17 @@ static const float *moe_bias(const struct moe_job *j, const float *b, size_t e, 
     return e < j->n_routed && b != nullptr ? b + e * n : nullptr;
 }
 
+/* v * sigmoid(t) with the exp argument never above 0, silu_fp32_ooo's form
+ * (#275). v / (1 + expf(-t)) divides by infinity once expf overflows
+ * (t < -88.72), and gcc's -ffast-math on x86 vectorizes a float division
+ * as rcpps and a Newton-Raphson step, r * (2 - d * r): for d = inf that is
+ * 0 * inf = NaN where the division gives 0. GPT-OSS's gates go below
+ * -88.72 / alpha = -52.13 (#522). */
+static inline float sigmoid_mul(float v, float t) {
+    const float e = expf(-fabsf(t));
+    return t >= 0.0f ? v / (1.0f + e) : v * e / (1.0f + e);
+}
+
 /* g[lo, hi) = act(g + gate bias, u + up bias) over one row of the
  * intermediate (gb / ub nullptr: none). */
 static void moe_act_cols(enum geist_moe_act act,
@@ -405,11 +416,11 @@ static void moe_act_cols(enum geist_moe_act act,
         for (size_t i = lo; i < hi; i++) {
             const float gc = g[i] < limit ? g[i] : limit;
             const float uc = u[i] < -limit ? -limit : u[i] > limit ? limit : u[i];
-            g[i]           = gc / (1.0f + expf(-alpha * gc)) * (uc + 1.0f);
+            g[i]           = sigmoid_mul(gc, alpha * gc) * (uc + 1.0f);
         }
     } else {
         for (size_t i = lo; i < hi; i++)
-            g[i] = g[i] / (1.0f + expf(-g[i])) * u[i];
+            g[i] = sigmoid_mul(g[i], g[i]) * u[i];
     }
 }
 
