@@ -18,7 +18,11 @@ for rev in base new; do
         GEIST_DUMP_BACKEND=$be "$B/tools/dump_geist_logits" "$MODEL" "$OUT/prompt.txt" \
             "$OUT/ids-$rev-$be.bin" "$OUT/logits-$rev-$be.bin" > "$OUT/run-$rev-$be.log" 2>&1
         echo "rc=$? after $(($(date +%s) - t0)) s"
-        tail -4 "$OUT/run-$rev-$be.log"
+        grep -v DBG522 "$OUT/run-$rev-$be.log" | tail -4
+        # The trace build's lines, per layer: rows, gates below -52.13,
+        # the lowest gate, non-finite values after the activation.
+        grep DBG522 "$OUT/run-$rev-$be.log" | awk '{r[$3]++; b[$3]+=$9; n[$3]+=$11; if (!($3 in m) || $7 < m[$3]) m[$3]=$7}
+            END {for (l in r) printf "  trace layer %2d: %d expert rows with a gate below -52.13 (%d gates, lowest %.2f), %d non-finite after the activation\n", l, r[l], b[l], m[l], n[l]}' | sort -k3n
     done
 done
 python3 - "$OUT" << 'PY'

@@ -428,8 +428,30 @@ static bool moe_act(const struct moe_job *j,
                 g[i] += gb[i];
             for (size_t i = lo; ub != nullptr && i < hi; i++)
                 u[i] += ub[i];
-        } else
+        } else {
+            /* #522 trace (probe branch only). */
+            float  dbg_min = 0.0f;
+            size_t dbg_n = 0, dbg_nan = 0;
+            for (size_t i = lo; i < hi; i++) {
+                const float gv = g[i] + (gb != nullptr ? gb[i] : 0.0f);
+                if (gv < dbg_min)
+                    dbg_min = gv;
+                if (gv < -52.13f)
+                    dbg_n++;
+            }
             moe_act_cols(j->act, lo, hi, gb, ub, g, u);
+            for (size_t i = lo; i < hi; i++)
+                dbg_nan += !finite_bits(g[i]);
+            if (dbg_n > 0 || dbg_nan > 0)
+                fprintf(stderr,
+                        "DBG522 layer %zu row %zu min_gate %.3f below_52.13 %zu "
+                        "nonfinite_after_act %zu\n",
+                        (size_t) j->layer,
+                        row + r,
+                        (double) dbg_min,
+                        dbg_n,
+                        dbg_nan);
+        }
     }
     return !on_be || moe_silu_mul_be(j, row, m, lo, hi);
 }
