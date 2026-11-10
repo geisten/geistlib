@@ -23,6 +23,7 @@
 
 #include "kernel_q6k_gemv.h"
 #include "linear_util.h" /* hsum_epi32 */
+#include "q8_kx4.h"      /* quantize_q8_K_superblock */
 
 #include "quant.h" /* fp16_to_fp32 */
 #include "quant_blocks.h"
@@ -42,27 +43,17 @@ struct q8k_act {
     int16_t bsums[16];
 };
 
-/* Quantize one fp32 activation super-block group to q8_K: the operations of
- * quantize_q8_Kx4 (q8_kx4.c) per row, max-abs, scale amax / 127, codes
- * lrintf(x / scale), bsums summed per 16. A token gets the codes and the
- * scale here (GEMV, raw GEMM) that it gets in a Q8_Kx4 group (the tiled
- * GEMM). */
+/* Quantize one fp32 activation super-block group to q8_K through
+ * quantize_q8_K_superblock, the quantizer of the Q8_Kx4 groups the tiled
+ * GEMM reads, and sum the codes per 16: a token gets the same codes and
+ * scale here (GEMV, raw GEMM) as in the tiled GEMM (#527). */
 static void quantize_q8k_act(size_t n_super, const float *x, struct q8k_act *out) {
     for (size_t s = 0; s < n_super; s++) {
-        const float *xs   = x + s * 256;
-        float        amax = 0.0f;
-        for (size_t k = 0; k < 256; k++) {
-            amax = fmaxf(amax, fabsf(xs[k]));
-        }
-        const float scale = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
-        const float inv   = 1.0f / scale;
-        out[s].d          = scale;
+        quantize_q8_K_superblock(x + s * 256, out[s].qs, &out[s].d);
         for (size_t g = 0; g < 16; g++) {
             int32_t sum = 0;
             for (size_t i = 0; i < 16; i++) {
-                const int v           = (int) lrintf(xs[g * 16 + i] * inv);
-                out[s].qs[g * 16 + i] = (int8_t) v;
-                sum += v;
+                sum += out[s].qs[g * 16 + i];
             }
             out[s].bsums[g] = (int16_t) sum;
         }
