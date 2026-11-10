@@ -66,7 +66,7 @@ jobs:
       CYC: ${{ inputs.cycles }}
       XENV: ${{ inputs.env }}
       TESTS: ${{ inputs.tests }}
-      MODE: ${{ inputs.mode }}
+      PROBE_MODE: ${{ inputs.mode }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -95,7 +95,7 @@ jobs:
           mkdir -p out
           git fetch origin
           for v in base new; do
-            if [ "$v" = base ]; then R=$BASE; [ "$MODE" = parity ] || continue; else R=$NEW; fi
+            if [ "$v" = base ]; then R=$BASE; [ "$PROBE_MODE" = parity ] || continue; else R=$NEW; fi
             git worktree add --detach "$RUNNER_TEMP/w-$v" "$R"
             git -C "$RUNNER_TEMP/w-$v" log --oneline -1 | tee -a out/heads.txt
             make -C "$RUNNER_TEMP/w-$v" TARGET=linux BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native -j16 bin > out/build-$v.log 2>&1 || { tail -60 out/build-$v.log; exit 1; }
