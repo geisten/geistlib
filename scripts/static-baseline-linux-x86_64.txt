@@ -11,7 +11,6 @@
 2	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'desc' results in a dereference of a null pointer (loaded from variable 'be')
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'split' results in a dereference of a null pointer (loaded from variable 'state')
 1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Access to field 'vtbl' results in a dereference of a null pointer (loaded from field 'desc')
-1	src/archs/transformer/arch_state.c	clang-analyzer-core.NullDereference	Dereference of null pointer
 1	src/archs/transformer/families/llama.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
 1	src/archs/transformer/families/llama4.c	bugprone-assignment-in-if-condition	an assignment within an 'if' condition is bug-prone
 2	src/archs/transformer/families/llama4.c	bugprone-narrowing-conversions	narrowing conversion from 'size_t' (aka 'unsigned long') to signed type 'int64_t' (aka 'long') is implementation-defined
