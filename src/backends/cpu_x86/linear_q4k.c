@@ -161,7 +161,29 @@ static void w4a8_repack_rows(void *ctx, size_t m0, size_t m1) {
     geist_weight_attach_aux(w, blob, blob_bytes, 0, 0, GEIST_W_RAW_COLD);
     w->linear_m1 = cpu_x86_linear_q4k_m1;
     w->linear_mN = cpu_x86_linear_q4k_mN;
+    if (uses_q4kx8(n_out)) {
+        w->linear_m1_rows       = cpu_x86_linear_q4k_m1_rows;
+        w->linear_m1_rows_align = 8;
+    }
     return GEIST_OK;
+}
+
+/* Rows [r0, r1) of the Q4_Kx8 decode: the repack keeps each octet of rows
+ * together (n_in / 256 blocks), so whole octets are a contiguous slice and
+ * q4kx8_gemv_m1 computes them exactly as in the full call (#374). */
+void cpu_x86_linear_q4k_m1_rows(size_t                     r0,
+                                size_t                     r1,
+                                const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y) {
+    (void) be;
+    const size_t n_in = (size_t) w->n_in;
+    q4kx8_gemv_m1(r1 - r0,
+                  n_in,
+                  x,
+                  (const struct block_q4_Kx8 *) w->aux_fp32 + r0 / 8 * (n_in / Q4_K_BLOCK_ELEMS),
+                  y);
 }
 
 void cpu_x86_linear_q4k_m1(const float               *x,
