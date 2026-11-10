@@ -134,6 +134,7 @@
 #include "shaders/matvec_mxfp4_sel_spv.h"
 #include "shaders/moe_glu_spv.h"
 #include "shaders/moe_wsum_spv.h"
+#include "shaders/moe_gate_up_q4k_sel_spv.h"
 #include "shaders/moe_map_spv.h"
 #include "shaders/moe_mm_q4k_cm_spv.h"
 #include "shaders/moe_mm_q5k_cm_spv.h"

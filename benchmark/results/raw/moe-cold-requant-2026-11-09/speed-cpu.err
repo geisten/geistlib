@@ -1,0 +1,36 @@
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)

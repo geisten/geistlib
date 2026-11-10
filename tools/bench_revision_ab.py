@@ -136,6 +136,8 @@ def build(sha: str, work: Path, make_args: list[str], jobs: int) -> Path:
 def run_variant(binary: Path, args: argparse.Namespace, env: dict[str, str]) -> list[dict]:
     command = perf_sweep_command(binary, args.gguf, args.seq_lens, args.decode_n,
                                  args.warmup, args.repeats)
+    if args.prompt_file is not None:
+        command += ["--prompt-file", str(args.prompt_file)]
     rows, _, _ = run_jsonl(command, env, binary.name)
     if [row.get("seq_len") for row in rows] != [int(s) for s in args.seq_lens.split(",")]:
         raise RuntimeError(f"{binary.name} emitted unexpected sequence rows")
@@ -230,6 +232,8 @@ def render_report(metadata: dict, rows: list[dict]) -> str:
         f"Protocol: {protocol['cycles']} cycles, order rotating; sequences {protocol['seq_lens']}, "
         f"decode {protocol['decode_n']}, repeats {protocol['repeats']} (median), "
         f"warmup {protocol['warmup']}; "
+        + (f"prompt `{Path(protocol['prompt_file']['path']).name}`; "
+           if protocol.get("prompt_file") else "")
         + " ".join(f"{name}={value}" for name, value in metadata["environment"].items()),
         f"Host: {metadata['system']['cpu']}, {metadata['system']['cores']} CPUs, "
         f"{metadata['system']['os']}, THP {metadata['system']['thp']}",
@@ -309,6 +313,9 @@ def main() -> int:
     parser.add_argument("--seq-lens", default="128,512")
     parser.add_argument("--decode-n", type=int, default=32)
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument("--prompt-file", type=Path,
+                        help="prompt tokens from this text instead of pseudo-random ones "
+                             "(an MoE model routes real text far less evenly)")
     parser.add_argument("--warmup", type=int, default=16)
     parser.add_argument("--cycles", type=int, default=10,
                         help="10 decide on 9 cycles one way, 12 on 10; 6 need all 6")
@@ -345,6 +352,10 @@ def main() -> int:
     if not gguf.is_file():
         parser.error(f"model not found: {gguf}")
     args.gguf = gguf
+    if args.prompt_file is not None:
+        args.prompt_file = args.prompt_file.expanduser().resolve()
+        if not args.prompt_file.is_file():
+            parser.error(f"prompt file not found: {args.prompt_file}")
     baseline = revs[0][0]
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%SZ")
@@ -383,7 +394,10 @@ def main() -> int:
         "model": {"file": gguf.name, "path": str(gguf), "sha256": sha256_file(gguf)},
         "protocol": {"cycles": args.cycles, "seq_lens": args.seq_lens,
                      "decode_n": args.decode_n, "repeats": args.repeats,
-                     "warmup": args.warmup, "make_args": args.make_arg},
+                     "warmup": args.warmup, "make_args": args.make_arg,
+                     "prompt_file": (None if args.prompt_file is None else
+                                     {"path": str(args.prompt_file),
+                                      "sha256": sha256_file(args.prompt_file)})},
         "environment": run_env,
         "system": system_info(),
         "cool_gate": (COOL_GATE if platform.system() == "Darwin" and not args.no_cool

@@ -1,0 +1,54 @@
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: metal
+[bench] prompt: 13183 tokens of /Users/germar/scratch-247/ho_en.txt
+[bench] warmup phase (discarded): 16-token prefill + 4 decode steps
+[bench] measuring 3 repeat(s) per seq_len; reporting the MEAN (with best/worst)
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128
+[bench] backend: cpu_neon
+session_create failed: transformer_session_alloc: m_max=512 outside supported range 1..128

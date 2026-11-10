@@ -1,0 +1,46 @@
+with-mac-lock: waiting (#1 in queue, batch) behind pid 23153 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 8m05s of 60 min; queue 1: batch/24839 0s
+cycle 1/4: geist
+  waiting for quiet host: load 1.83 (0.183/core), 89.2 % idle
+  cooldown 60s
+  repeat spread 23.9 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 4.08 (0.408/core), 88.7 % idle
+  cooldown 60s
+  repeat spread 22.9 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 2.94 (0.294/core), 86.7 % idle
+  cooldown 60s
+  repeat spread 15.3 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 3.19 (0.319/core), 91.5 % idle
+  cooldown 60s
+  repeat spread 22.4 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [23.91, 22.89, 15.35, 22.41]
+with-mac-lock: waiting (#1 in queue, batch) behind pid 38331 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 2m19s of 60 min; queue 1: batch/41115 0s
+cycle 1/4: geist
+  waiting for quiet host: load 1.90 (0.190/core), 93.1 % idle
+  cooldown 60s
+  repeat spread 29.2 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 5.94 (0.594/core), 88.2 % idle
+  waiting for quiet host: load 3.73 (0.373/core), 89.3 % idle
+  cooldown 60s
+  repeat spread 17.2 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 4.35 (0.435/core), 87.5 % idle
+  cooldown 60s
+  repeat spread 21.6 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 3.91 (0.391/core), 93.3 % idle
+  cooldown 60s
+  repeat spread 13.7 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [29.18, 17.2, 21.56, 13.7]
+with-mac-lock: waiting (#1 in queue, batch) behind pid 50584 'geist-lab-qwen-full-32k' [batch] /Users/germar/workspace/geist-lab/runs/qwen-math500-gsm8k-32k-2026-11-09-renderf, 2m21s of 60 min; queue 1: batch/56116 0s
+cycle 1/4: geist
+  waiting for quiet host: load 6.18 (0.618/core), 84.9 % idle
+  cooldown 60s
+  repeat spread 9.6 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 4.44 (0.444/core), 90.6 % idle
+  cooldown 60s
+  repeat spread 5.8 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 3.41 (0.341/core), 89.9 % idle
+  cooldown 60s
+  repeat spread 6.6 % > 5 %: host disturbed, measuring again
+  waiting for quiet host: load 3.46 (0.346/core), 86.7 % idle
+  cooldown 60s
+  repeat spread 12.2 % > 5 %: host disturbed, measuring again
+ERROR: repeat spread stayed above 5 %: [9.6, 5.76, 6.64, 12.23]

@@ -187,6 +187,8 @@ X(VK_PIPE_MATVEC_MXFP4_SEL,       matvec_mxfp4_sel_spv,        "matvec_mxfp4_sel
 /* #499: the experts' GLU with biases and the routed weighted sum (device route) */
 X(VK_PIPE_MOE_GLU,                moe_glu_spv,                 "moe_glu",                6, PLAIN)
 X(VK_PIPE_MOE_WSUM,               moe_wsum_spv,                "moe_wsum",               6, PLAIN)
+/* #505: a decode step's expert gate + up + GLU in one dispatch (fused->moe_ffn_ids) */
+X(VK_PIPE_MOE_GATE_UP_Q4K_SEL,    moe_gate_up_q4k_sel_spv,     "moe_gate_up_q4k_sel",    6, PLAIN)
 /* #499: a prefill chunk's slots bucketed by expert, then the grouped expert GEMMs */
 X(VK_PIPE_MOE_MAP,                moe_map_spv,                 "moe_map",                2, PLAIN)
 X(VK_PIPE_MOE_MM_Q4K_CM,          moe_mm_q4k_cm_spv,           "moe_mm_q4k_cm",          4, COOPMAT)

@@ -57,8 +57,8 @@ OMP_WAIT_POLICY=active make bench-detailed
 ```
 
 **Do not set `BENCH_THREADS` on Apple silicon.** Left unset, the backend sizes
-the OMP pool to the performance-core count (`hw.perflevel0.physicalcpu`, 8 on
-an M1 Max) — an explicit value always wins, and every other value is worse.
+the OMP pool to the performance-core count (every `hw.perflevelN` except the
+one named "Efficiency": 8 on an M1 Max, 2 "Super" + 4 "Performance" on an M6) — an explicit value always wins, and every other value is worse.
 OMP's own default is `num_procs`, which includes the two efficiency cores, and
 a static partition then waits on the E-core chunks; the sizing comment in
 `src/backends/cpu_neon/backend.c` records that one as pp512 91 tps on 10 cores
@@ -304,7 +304,8 @@ llama-bench -m model.gguf -ngl 0 -t 8 -p 512 -n 128
 **Key finding — thread-pool size dominates on heterogeneous cores.** On Apple
 Silicon the efficiency ("E") cores stall a static OpenMP partition: defaulting
 to `omp_get_num_procs()` (all 10 cores) gave pp512 ≈ 91 t/s, while limiting the
-pool to 8 threads gives ≈ 143. geist now reads `hw.perflevel0.physicalcpu` and
+pool to 8 threads gives ≈ 143. geist now counts every non-efficiency perf level
+(`hw.perflevelN.physicalcpu`; perflevel0 alone was 2 cores on the M6, #513) and
 uses that count for prefill and one fewer thread for decode (decode fires ~210
 tiny matmuls/token and contends when every core is saturated). This does not set
 CPU affinity. Override the counts with
