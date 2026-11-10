@@ -200,7 +200,9 @@ Ask in [Discussions](https://github.com/geisten/geistlib/discussions).
 
 ## Documentation
 
-All documents, with what each covers: [`docs/README.md`](docs/README.md).
+Start with the [documentation index](docs/README.md), organized by task.
+Project vocabulary lives in [GLOSSARY.md](GLOSSARY.md); lasting design
+trade-offs are recorded in [architecture decisions](docs/adr/README.md).
 
 ## Citation
 

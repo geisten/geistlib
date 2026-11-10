@@ -139,6 +139,3 @@ Tests:
   which needs the AGENT.md §6 disassembly and benchmark gate. With a smaller
   speedup, lower MTEB and a 336 MB F16 table, the 270M alone does not justify
   it.
-- **VibeASR.cpp** (`microsoft/VibeASR.cpp`, BitNet I2_S real-time ASR, July
-  2026) would reuse the Conformer arch, streaming PCM ingestion, the WER
-  harness and the I2_S kernels; it needs its own analysis.

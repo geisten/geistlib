@@ -104,8 +104,9 @@ In words:
   Ops reach compute through the backend vtbl. The one sanctioned shortcut is
   `src/backends/common/`: the shared compute library (GEMM facade, gemma4
   kernels, KIVI) that is always compiled and may be called directly from archs.
-- `src/backends/<name>/` uses `base`, `quant` and `backends/common` only; a
-  backend never uses another backend or an arch.
+- Backends use `base`, `quant` and `backends/common` and never use an arch.
+  The explicit exception for cross-backend use is `cpu_x86` falling back to
+  `cpu_scalar`, as listed in the table.
 - `src/formats/` and `src/io/` sit beside the backends: `base`, `quant`, and
   for `formats` the GGUF reader's types.
 
@@ -240,6 +241,8 @@ falls back to the sequential path shown above.
 
 ## Above the ABI: what the engine deliberately does not do
 
+The boundary is recorded in [ADR 0002](adr/0002-application-neutral-engine.md).
+
 A tool-use agent, a resident daemon and the constrained decoding that forces a
 well-formed call out of a model that cannot emit one are **not** in this
 repository. They belong above the ABI, built on top of the public API described
@@ -257,6 +260,8 @@ runtime links across a release boundary, and `make agent-contract-smoke`
 fails here — not in the consumer's build — if a signature moves.
 
 ## Zero-dispatch kernel binding
+
+The trade-off is recorded in [ADR 0003](adr/0003-bind-compute-paths-at-load.md).
 
 Generic engines walk a layer-dispatch loop every token, switching on dtype and
 op. geist instead resolves, **at model-load time**, a direct function pointer
@@ -457,24 +462,8 @@ Per directory, the file to open first:
 
 ## Why C?
 
-Not because it is the fastest (a systems language like Rust ties on raw
-performance) and certainly not because it is the safest (it is the opposite).
-The core reason is **reach, not speed**:
-
-> C is the substrate with maximal reach and minimal assumptions — the universal
-> ABI and the everywhere-available, transparent compiler that every platform and
-> every embedding language already speaks. We knowingly pay for that reach with
-> memory safety.
-
-This maps directly onto the first promise — *one file, runs anywhere, embeds
-anywhere*: the header **is** the ABI (any language FFIs in with no shim), every
-architecture/OS/accelerator toolchain speaks C first, and the source maps almost
-1:1 to the emitted instructions — which matters when you reason about NEON
-kernels by the cycle. Performance is table-stakes here, shared with the
-alternatives; what picks C is ubiquity + zero-ceremony interop + transparency.
-
-The honest counter-position: **if memory safety outweighed ubiquity and
-simplicity for you, Rust would be the better choice.** We deliberately weighed
-it the other way, and offset the safety cost with strict warnings
-(`-Werror -Wshadow -Wundef`), ASan/UBSan/TSan CI (`make MODE=asan`), bit-exact
-golden tests, and a small auditable core (the stable text path is ~70 lines).
+The runtime chooses C23 for its portable ABI, embedding reach and transparent
+mapping to machine code. This trades memory safety for interoperability and
+control; strict warnings, checked allocation and sanitizer suites address the
+cost. The rationale and alternative are recorded in
+[ADR 0001](adr/0001-c23-runtime-and-c-abi.md).

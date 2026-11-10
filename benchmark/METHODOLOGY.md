@@ -4,6 +4,28 @@ How to produce trustworthy numbers. See [results/APPLE.md](results/APPLE.md) for
 Apple M1 Max comparison + auto-recorded results and
 [results/PI5.md](results/PI5.md) for the Raspberry Pi 5 target.
 
+## Shared-host locks
+
+The M1 Max is shared by humans, agents and CI. Wrap every benchmark, every
+measurement whose timing you report and every heavy real-model run in the
+host lock, including the commands below:
+
+```sh
+LOCK_MAX=10 LOCK_NOTE=bench-small ~/bin/with-mac-lock make bench-small
+~/bin/with-mac-lock status -v
+```
+
+Declare `LOCK_MAX` in minutes for the time you expect to hold the lease;
+use `LOCK_PRIO=batch` for long campaigns and `WAIT=<seconds>` to bound the
+queue wait. Keep the lease short and release it before idle work. Builds
+and ordinary unit tests alone do not require a lease.
+
+On the Pi 5, run `~/bin/with-pi-lock <command...>` on the board. Before a
+measurement, check temperature below 60 °C and load below 0.5; the lease
+broker does not enforce thermal readiness. GPU-desktop campaigns use
+`~/bin/with-desktop-lock` on that host. Queue behavior and runner integration
+are documented in [Hardware CI](../docs/HARDWARE_CI.md#host-locks-the-lease-broker).
+
 ## Perf (reproducible, in-tree)
 
 ```sh

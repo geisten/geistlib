@@ -5,7 +5,7 @@ GPUs, down to a Raspberry Pi — and to see how far small, heavily quantized mod
 go when the *whole* stack is built around them. It began as one developer's way of
 understanding how these models work, and it's still an experiment: everything here
 is open to help. The mission in full is in the
-[README](README.md#where-this-is-going).
+[README](README.md#what-it-is).
 
 ## Tracks
 
