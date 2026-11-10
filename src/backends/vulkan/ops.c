@@ -2961,7 +2961,7 @@ static void *vk_map_marked(struct geist_backend *be, uint64_t mark, struct geist
 
 /* The routed experts' FFN on the device, as Metal's (#201, #471, #482):
  * moe_route above, linear_t_ids (the _sel matvecs for a decode step's few
- * rows, moe_map + the grouped tensor-core GEMM for a chunk), glu and
+ * rows, moe_map + the grouped GEMM for a chunk), glu and
  * moe_weighted_sum. */
 
 constexpr uint32_t VK_SEL_IDS = 0x80000000u; /* sel_n of a linear_t_ids table */
@@ -2969,28 +2969,36 @@ constexpr uint32_t VK_SEL_IDS = 0x80000000u; /* sel_n of a linear_t_ids table */
  * the grouped GEMM (as Metal's moe_mm, #482); below, a matvec per slot. */
 constexpr size_t VK_MOE_MM_MIN_M = 9;
 
-/* The grouped GEMM for an expert dtype, or VK_PIPE_COUNT: needs the tensor
- * cores at 32 lanes, as the dense tensor-core GEMMs. */
+/* The grouped GEMM for an expert dtype, or VK_PIPE_COUNT: on the tensor
+ * cores at 32 lanes, as the dense tensor-core GEMMs; else (#249: no
+ * cooperative matrices, or another subgroup size) the same tiles
+ * multiplied in registers. */
 static enum vk_pipe vk_moe_mm_pipe(const struct vk_state *st, uint16_t dtype) {
-    enum vk_pipe p = VK_PIPE_COUNT;
+    enum vk_pipe p = VK_PIPE_COUNT, ps = VK_PIPE_COUNT;
     switch ((enum geist_dtype) dtype) {
     case GEIST_DTYPE_Q4_K:
-        p = VK_PIPE_MOE_MM_Q4K_CM;
+        p  = VK_PIPE_MOE_MM_Q4K_CM;
+        ps = VK_PIPE_MOE_MM_Q4K;
         break;
     case GEIST_DTYPE_Q5_K:
-        p = VK_PIPE_MOE_MM_Q5K_CM;
+        p  = VK_PIPE_MOE_MM_Q5K_CM;
+        ps = VK_PIPE_MOE_MM_Q5K;
         break;
     case GEIST_DTYPE_Q6_K:
-        p = VK_PIPE_MOE_MM_Q6K_CM;
+        p  = VK_PIPE_MOE_MM_Q6K_CM;
+        ps = VK_PIPE_MOE_MM_Q6K;
         break;
     case GEIST_DTYPE_Q8_0:
-        p = VK_PIPE_MOE_MM_Q8_0_CM;
+        p  = VK_PIPE_MOE_MM_Q8_0_CM;
+        ps = VK_PIPE_MOE_MM_Q8_0;
         break;
     case GEIST_DTYPE_Q5_0:
-        p = VK_PIPE_MOE_MM_Q5_0_CM;
+        p  = VK_PIPE_MOE_MM_Q5_0_CM;
+        ps = VK_PIPE_MOE_MM_Q5_0;
         break;
     case GEIST_DTYPE_MXFP4:
-        p = VK_PIPE_MOE_MM_MXFP4_CM;
+        p  = VK_PIPE_MOE_MM_MXFP4_CM;
+        ps = VK_PIPE_MOE_MM_MXFP4;
         break;
     case GEIST_DTYPE_F32:
     case GEIST_DTYPE_F16:
@@ -3014,9 +3022,10 @@ static enum vk_pipe vk_moe_mm_pipe(const struct vk_state *st, uint16_t dtype) {
     case GEIST_DTYPE_COUNT:
         break;
     }
-    return p != VK_PIPE_COUNT && st->subgroup_size == 32u && st->pipes[p] != VK_NULL_HANDLE
-                   ? p
-                   : VK_PIPE_COUNT;
+    if (p != VK_PIPE_COUNT && st->subgroup_size == 32u && st->pipes[p] != VK_NULL_HANDLE) {
+        return p;
+    }
+    return ps != VK_PIPE_COUNT && st->pipes[ps] != VK_NULL_HANDLE ? ps : VK_PIPE_COUNT;
 }
 
 /* linear_t_ids reaches an expert weight of w's dtype on this device: an id
@@ -3077,7 +3086,7 @@ struct vk_push_moe_mm {
             mo, n, tb;
 };
 static_assert(sizeof(struct vk_push_moe_mm) == (size_t) 12 * sizeof(uint32_t),
-              "moe_mm_cm_body.glsl push block");
+              "moe_mm_body.glsl push block");
 
 /* A chunk's experts as grouped GEMMs (#499): moe_map buckets the mk slots,
  * then one dispatch multiplies every expert's tiles. */

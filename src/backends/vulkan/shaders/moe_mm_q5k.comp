@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q5_K grouped expert GEMM without cooperative matrices (#249). Body and
+ * notes: moe_mm_body.glsl. */
+#define DT_Q5K 1
+#include "moe_mm_body.glsl"

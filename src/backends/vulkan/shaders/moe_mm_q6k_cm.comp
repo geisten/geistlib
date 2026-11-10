@@ -2,6 +2,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 /* Q6_K grouped expert GEMM on the tensor cores (#499). Body and notes:
- * moe_mm_cm_body.glsl. */
+ * moe_mm_body.glsl. */
 #define DT_Q6K 1
-#include "moe_mm_cm_body.glsl"
+#define MOE_MM_CM 1
+#include "moe_mm_body.glsl"

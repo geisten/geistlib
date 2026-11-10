@@ -179,9 +179,11 @@ biases (SwiGLU, `swiglu_oai`) and Q4_K / Q5_K / Q6_K / Q8_0 / Q5_0 / MXFP4
 expert weights. A model whose experts all fit routes and runs them on the
 device (`fused->moe_route`, `linear_t_ids`, `glu`, `moe_weighted_sum`): a
 decode step through the id-indexed matvecs, a prefill chunk through one
-grouped tensor-core GEMM per projection (`moe_map` buckets the routed slots by
-expert once per layer, then 128 x 64 tiles of an expert's rows, llama.cpp's
-`mul_mm_id`; GPUs without cooperative matrices keep a matvec per slot). One
+grouped GEMM per projection (`moe_map` buckets the routed slots by expert
+once per layer, then 128 x 64 tiles of an expert's rows, llama.cpp's
+`mul_mm_id`: on the tensor cores, and since #249 on GPUs without cooperative
+matrices, or with another subgroup size, the same tiles multiplied in
+registers). One
 that does not fit keeps the hot/cold split ([OFFLOAD.md](OFFLOAD.md)), the
 hot experts on the GPU with any of these routers and GPT-OSS's routed on the
 device (#162). On the RTX 2080 Ti: OLMoE-1B-7B prefills 512 tokens in half
@@ -259,10 +261,11 @@ limit fails the load.
 | `GEIST_MOE_STAGE_MAX=<n>` | the most cold experts a prefill step copies (default 16, at most 64); their slots come out of the planner's VRAM headroom, past 256 MiB out of the hot experts |
 | `GEIST_MOE_STAGE_HOST=<MiB>` | host memory for the cold experts' copies on the GPU backend, which the staging copies from (default: 4 GiB, or a quarter of the host's memory if less; the profile's hottest cold experts first, the rest stay CPU-only) |
 | `GEIST_MOE_DEVICE=0` | a mixture of experts whose every expert is on the GPU keeps routing its decode steps on the host instead of on the device (#201: `fused->moe_route`, `linear_t_ids`, `moe_weighted_sum`; Metal, Vulkan since #499) |
-| `GEIST_MOE_DEVICE_PREFILL=0` | such a model routes its prefill chunks on the host and runs each expert's rows as GEMMs of their own, instead of on the device (#482: the decode route over the chunk's rows, `linear_t_ids` as grouped GEMMs from 9 rows -- since #486 `moe_ffn_ids`: one bucketing, gate and up with the GLU as one GEMM; Metal, default on; Vulkan since #499 where it has cooperative matrices: one bucketing per layer, a grouped GEMM per projection) |
+| `GEIST_MOE_DEVICE_PREFILL=0` | such a model routes its prefill chunks on the host and runs each expert's rows as GEMMs of their own, instead of on the device (#482: the decode route over the chunk's rows, `linear_t_ids` as grouped GEMMs from 9 rows -- since #486 `moe_ffn_ids`: one bucketing, gate and up with the GLU as one GEMM; Metal, default on; Vulkan since #499: one bucketing per layer, a grouped GEMM per projection, without cooperative matrices since #249) |
 | `GEIST_MOE_GPU_ROUTE=0` | a mixture of experts split between a discrete GPU and the CPU keeps routing its decode steps on the host instead of on the GPU (#162: the GPU ranks the router's experts as the host does, `fused->moe_route`, and starts the hot ones by id, `linear_t_sel`, while the host waits for the router alone, `submit_mark` / `map_marked`, and runs the cold ones; Vulkan; #499: GPT-OSS's router bias and softmax over the selected, and its experts' biases, too) |
 | `GEIST_VK_STREAM_ASYNC=0` | copy streamed weights in the compute batch instead of on the GPU's transfer-only queue (default: on where the device has one), see Memory |
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
+| `GEIST_VK_NO_COOPMAT=1` | run as a device without `VK_KHR_cooperative_matrix`: no tensor-core GEMM or attention pipelines, the paths RDNA2 and older GPUs take (#249; for measuring and testing them on a card that has them) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
 | `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |

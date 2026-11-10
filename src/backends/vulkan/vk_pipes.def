@@ -197,3 +197,10 @@ X(VK_PIPE_MOE_MM_Q6K_CM,          moe_mm_q6k_cm_spv,           "moe_mm_q6k_cm", 
 X(VK_PIPE_MOE_MM_Q8_0_CM,         moe_mm_q8_0_cm_spv,          "moe_mm_q8_0_cm",         4, COOPMAT)
 X(VK_PIPE_MOE_MM_Q5_0_CM,         moe_mm_q5_0_cm_spv,          "moe_mm_q5_0_cm",         4, COOPMAT)
 X(VK_PIPE_MOE_MM_MXFP4_CM,        moe_mm_mxfp4_cm_spv,         "moe_mm_mxfp4_cm",        4, COOPMAT)
+/* #249: the same tiles without cooperative matrices (RDNA2, older GPUs) */
+X(VK_PIPE_MOE_MM_Q4K,             moe_mm_q4k_spv,              "moe_mm_q4k",             4, PLAIN)
+X(VK_PIPE_MOE_MM_Q5K,             moe_mm_q5k_spv,              "moe_mm_q5k",             4, PLAIN)
+X(VK_PIPE_MOE_MM_Q6K,             moe_mm_q6k_spv,              "moe_mm_q6k",             4, PLAIN)
+X(VK_PIPE_MOE_MM_Q8_0,            moe_mm_q8_0_spv,             "moe_mm_q8_0",            4, PLAIN)
+X(VK_PIPE_MOE_MM_Q5_0,            moe_mm_q5_0_spv,             "moe_mm_q5_0",            4, PLAIN)
+X(VK_PIPE_MOE_MM_MXFP4,           moe_mm_mxfp4_spv,            "moe_mm_mxfp4",           4, PLAIN)

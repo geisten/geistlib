@@ -142,6 +142,12 @@
 #include "shaders/moe_mm_q8_0_cm_spv.h"
 #include "shaders/moe_mm_q5_0_cm_spv.h"
 #include "shaders/moe_mm_mxfp4_cm_spv.h"
+#include "shaders/moe_mm_q4k_spv.h"
+#include "shaders/moe_mm_q5k_spv.h"
+#include "shaders/moe_mm_q6k_spv.h"
+#include "shaders/moe_mm_q8_0_spv.h"
+#include "shaders/moe_mm_q5_0_spv.h"
+#include "shaders/moe_mm_mxfp4_spv.h"
 
 /* local_size_x of a compute module (OpExecutionMode LocalSize), 0 when the
  * module does not state a literal one. */
