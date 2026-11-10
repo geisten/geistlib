@@ -31,7 +31,8 @@
  * tiles of a row. (RESCALE_T = 0, an exact running max, costs ~20 % more on
  * Gemma 4 E2B. The stale max means the largest P of a row is not exactly
  * 1.0 in f16, so very peaked rows see about twice the old kernel's rounding
- * error, still < 1e-3 in test_backend_vulkan_ops_unit.)
+ * error, still < 1e-3 in test_backend_vulkan_ops_unit. An including .comp
+ * may set RESCALE_T_V; the 576 variant takes 0.0.)
  *
  * Out-of-range keys: a 16-key chunk that lies entirely outside every row's
  * window/causal range is skipped (its S entries are masked, its P is 0); a

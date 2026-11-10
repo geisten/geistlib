@@ -1,8 +1,0 @@
-#version 450
-#extension GL_GOOGLE_include_directive : enable
-
-/* SCRATCH: attention_f16_hd576_mw_cm with an exact running max. */
-#define HD 576
-#define GQA_FOLD 1
-#define RESCALE_T_V 0.0
-#include "attention_f16_mw_body.glsl"
