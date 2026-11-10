@@ -897,8 +897,6 @@ static void cpu_neon_w_q8_0_mN(size_t                     m,
  * weight plus a cblas call, tiled by output rows so the FP32 scratch stays
  * bounded (a 262144×1536 lm_head would otherwise need 1.5 GB). */
 constexpr int DEQ_TILE_ROWS_DEFAULT = 32;
-/* The M=1 trampoline's tile: 64 output rows per sgemv. */
-constexpr int DEQ_GEMV_TILE_ROWS = 64;
 
 /* Exactly the dequant family's signature: a call through an incompatible
  * function pointer type is undefined (AGENT.md §6). */
@@ -1006,7 +1004,6 @@ struct deq_tiles_job {
     const float               *x;
     const struct geist_weight *w;
     size_t                     m, n_in, n_out, tile_rows, n_tiles;
-    bool                       gemv;    /* the M=1 trampoline: sgemv */
     bool                       dynamic; /* tiles handed out one at a time */
     float                     *tiles;   /* geist_par_max_threads() slots */
     atomic_size_t              slot;    /* the next free slot */
@@ -1015,13 +1012,13 @@ struct deq_tiles_job {
 };
 
 /* Output-row tiles of a dequant trampoline, each dequantized into this
- * range's slot of the caller's workspace tiles, then an sgemv (the M=1
- * trampoline) or sgemm into its disjoint y columns: tiles [t0, t1), or,
+ * range's slot of the caller's workspace tiles, then an sgemm into its
+ * disjoint y columns: tiles [t0, t1), or,
  * when the job is dynamic, the next tile from a shared counter until none
  * is left (OpenMP's schedule(dynamic, 1)). The slots are the caller's, not
  * per worker thread, so a call either has every tile it needs or none and
  * takes the reference whole. BLAS runs one thread inside these bodies,
- * which avoids 4×4 = 16-way oversubscription: geist_sgemv pins it once per
+ * which avoids 4×4 = 16-way oversubscription: geist_sgemm pins it once per
  * process, before any thread reaches cblas. */
 static void deq_tiles(void *ctx, size_t t0, size_t t1) {
     struct deq_tiles_job      *job       = ctx;
@@ -1032,7 +1029,6 @@ static void deq_tiles(void *ctx, size_t t0, size_t t1) {
     const size_t               n_out     = job->n_out;
     const size_t               tile_rows = job->tile_rows;
     const size_t               n_tiles   = job->n_tiles;
-    const bool                 gemv      = job->gemv;
     const bool                 dynamic   = job->dynamic;
     float                     *y         = job->y;
     float *tile = job->tiles +
@@ -1049,33 +1045,19 @@ static void deq_tiles(void *ctx, size_t t0, size_t t1) {
         const size_t r0 = t * tile_rows;
         const size_t tr = (n_out - r0 < tile_rows) ? (n_out - r0) : tile_rows;
         dequant_tile(w, r0, tr, tile);
-        if (gemv) {
-            geist_sgemv(GEIST_OP_N,
-                        (int) tr,
-                        (int) n_in,
-                        1.0f,
-                        tile,
-                        (int) n_in,
-                        x,
-                        1,
-                        0.0f,
-                        y + r0,
-                        1);
-        } else {
-            geist_sgemm(GEIST_OP_N,
-                        GEIST_OP_T,
-                        (int) m,
-                        (int) tr,
-                        (int) n_in,
-                        1.0f,
-                        x,
-                        (int) n_in,
-                        tile,
-                        (int) n_in,
-                        0.0f,
-                        y + r0,
-                        (int) n_out);
-        }
+        geist_sgemm(GEIST_OP_N,
+                    GEIST_OP_T,
+                    (int) m,
+                    (int) tr,
+                    (int) n_in,
+                    1.0f,
+                    x,
+                    (int) n_in,
+                    tile,
+                    (int) n_in,
+                    0.0f,
+                    y + r0,
+                    (int) n_out);
         if (!dynamic) {
             t++;
         }
@@ -1088,7 +1070,6 @@ static void deq_tiles_run(const float               *x,
                           const struct geist_weight *w,
                           size_t                     m,
                           size_t                     tile_rows,
-                          bool                       gemv,
                           bool                       dynamic,
                           float                     *tiles,
                           float                     *y) {
@@ -1100,7 +1081,6 @@ static void deq_tiles_run(const float               *x,
                                   .n_out     = n_out,
                                   .tile_rows = tile_rows,
                                   .n_tiles   = (n_out + tile_rows - 1) / tile_rows,
-                                  .gemv      = gemv,
                                   .dynamic   = dynamic,
                                   .tiles     = tiles,
                                   .y         = y};
@@ -1110,43 +1090,41 @@ static void deq_tiles_run(const float               *x,
     geist_par_for(dynamic && job.n_tiles > threads ? threads : job.n_tiles, deq_tiles, &job);
 }
 
-/* The dequant trampolines' tiles: tile_rows × n_in floats per thread. */
-static bool
-cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws, size_t tile_rows, size_t n_in) {
+/* The dequant trampolines' workspace: tile_rows × n_in floats per thread
+ * for the tiles, and the two-row stage of a one-row call, 2 × (n_in +
+ * n_out) floats. Both are sized on every call, so the first call at a
+ * shape leaves every later one, of any row count, allocation-free. */
+static bool cpu_neon_dequant_w_workspace_prepare(struct cpu_neon_workspace *ws,
+                                                 size_t                     tile_rows,
+                                                 size_t                     n_in,
+                                                 size_t                     n_out) {
     /* One tile per thread of the call (deq_tiles claims them by slot). */
-    size_t need = 0;
-    if (ckd_mul(&need, tile_rows, n_in) || ckd_mul(&need, need, geist_par_max_threads())) {
+    size_t need = 0, two = 0;
+    if (ckd_mul(&need, tile_rows, n_in) || ckd_mul(&need, need, geist_par_max_threads()) ||
+        ckd_add(&two, n_in, n_out) || ckd_mul(&two, two, (size_t) 2)) {
         return false;
     }
-    if (ws->dequant_w_fp32_cap >= need)
-        return true;
-    safe_free((void **) &ws->dequant_w_fp32);
-    ws->dequant_w_fp32 = heap_alloc_array_aligned(float, need);
-    if (ws->dequant_w_fp32 == nullptr) {
-        ws->dequant_w_fp32_cap = 0;
-        return false;
+    if (ws->dequant_w_fp32_cap < need) {
+        safe_free((void **) &ws->dequant_w_fp32);
+        ws->dequant_w_fp32     = heap_alloc_array_aligned(float, need);
+        ws->dequant_w_fp32_cap = ws->dequant_w_fp32 != nullptr ? need : 0;
     }
-    ws->dequant_w_fp32_cap = need;
-    return true;
+    if (ws->dequant_two_rows_cap < two) {
+        safe_free((void **) &ws->dequant_two_rows);
+        ws->dequant_two_rows     = heap_alloc_array_aligned(float, two);
+        ws->dequant_two_rows_cap = ws->dequant_two_rows != nullptr ? two : 0;
+    }
+    return ws->dequant_w_fp32_cap >= need && ws->dequant_two_rows_cap >= two;
 }
 
-/* M=1: tile through output rows, dequant each tile + sgemv, the tiles
- * statically split. A tile (DEQ_GEMV_TILE_ROWS × n_in floats) per thread,
- * in the calling thread's workspace and kept across calls: ~384 KB each
- * for Gemma 4 d_model=1536; ~3 MB for FFN n_in=12288. Without it, the
- * reference. */
+/* M=1: the M>1 trampoline below with one row. */
+static void cpu_neon_w_dequant_trampoline_mN(
+        size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
 static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
                                              const struct geist_weight *w,
                                              struct geist_backend      *be,
                                              float                     *y) {
-    struct cpu_neon_state     *st = (be != nullptr) ? (struct cpu_neon_state *) be->state : nullptr;
-    struct cpu_neon_workspace *ws = st != nullptr ? cpu_neon_ws(st) : nullptr;
-    if (ws == nullptr ||
-        !cpu_neon_dequant_w_workspace_prepare(ws, DEQ_GEMV_TILE_ROWS, (size_t) w->n_in)) {
-        geist_linear_ref(1, x, w, y);
-        return;
-    }
-    deq_tiles_run(x, w, 1, DEQ_GEMV_TILE_ROWS, true, false, ws->dequant_w_fp32, y);
+    cpu_neon_w_dequant_trampoline_mN(1, x, w, be, y);
 }
 
 /* Fused F16 × A32 GEMV (M=1): one pass over the f16 weight, converted
@@ -1209,12 +1187,28 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
      * shapes. */
     struct cpu_neon_state     *st = (be != nullptr) ? (struct cpu_neon_state *) be->state : nullptr;
     struct cpu_neon_workspace *ws = st != nullptr ? cpu_neon_ws(st) : nullptr;
+    const size_t               n_in  = (size_t) w->n_in;
+    const size_t               n_out = (size_t) w->n_out;
     if (ws == nullptr ||
-        !cpu_neon_dequant_w_workspace_prepare(ws, DEQ_TILE_ROWS_DEFAULT, (size_t) w->n_in)) {
+        !cpu_neon_dequant_w_workspace_prepare(ws, DEQ_TILE_ROWS_DEFAULT, n_in, n_out)) {
         geist_linear_ref(m, x, w, y);
         return;
     }
-    deq_tiles_run(x, w, m, DEQ_TILE_ROWS_DEFAULT, false, true, ws->dequant_w_fp32, y);
+    if (m != 1) {
+        deq_tiles_run(x, w, m, DEQ_TILE_ROWS_DEFAULT, true, ws->dequant_w_fp32, y);
+        return;
+    }
+    /* A row's result must not depend on how many rows ride along: an MoE
+     * expert gets one row of a prefill chunk or many, depending on the
+     * chunk (#527). A BLAS routes a one-row product through its gemv, which
+     * sums in another order than its gemm (see linear_fp32), so one row
+     * runs as a two-row sgemm with a zero second row, staged in the
+     * workspace: [x | 0 | y y']. */
+    float *two = ws->dequant_two_rows;
+    memcpy(two, x, n_in * sizeof(float));
+    memset(two + n_in, 0, n_in * sizeof(float));
+    deq_tiles_run(two, w, 2, DEQ_TILE_ROWS_DEFAULT, true, ws->dequant_w_fp32, two + 2 * n_in);
+    memcpy(y, two + 2 * n_in, n_out * sizeof(float));
 }
 
 /* ---- Resolver -------------------------------------------------------- */

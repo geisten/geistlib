@@ -26,7 +26,6 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier — GEIST_FORCE_ISA clamp */
 
 #include <immintrin.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -46,26 +45,15 @@ struct q8k_row {
  * see q4kx8_gemv_m1 — so the bound is a tile size, not a limit on K. */
 constexpr size_t Q8K_SEG = 64;
 
-/* Q8_K of one row, the same operations as quantize_q8_Kx4 (q8_kx4.c) per
- * row: max-abs, scale amax / 127, codes lrintf(x / scale). A token
- * quantized here (the M=1 GEMV) gets the codes and the scale it gets in a
- * Q8_Kx4 group (the GEMMs), so its result does not depend on the path. */
+/* Q8_K of one row through quantize_q8_K_superblock, the quantizer of the
+ * Q8_Kx4 groups the GEMMs read: a token gets the same codes and scale on
+ * the M=1 GEMV as on the GEMMs, so its result does not depend on the path
+ * (#527). */
 [[maybe_unused]] static void quantize_q8k_row(size_t         n_super,
                                               const float    x[static n_super * 256],
                                               struct q8k_row out[static n_super]) {
-    /* One scale per super-block, as Q8_K has: a row-wide max-abs lets one
-     * outlier coarsen every other super-block of the row (#694). */
     for (size_t s = 0; s < n_super; s++) {
-        float amax = 0.0f;
-        for (size_t k = 0; k < 256; k++) {
-            amax = fmaxf(amax, fabsf(x[s * 256 + k]));
-        }
-        const float scale = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
-        const float inv   = 1.0f / scale;
-        out[s].d          = scale;
-        for (size_t k = 0; k < 256; k++) {
-            out[s].qs[k] = (int8_t) lrintf(x[s * 256 + k] * inv);
-        }
+        quantize_q8_K_superblock(x + s * 256, out[s].qs, &out[s].d);
         for (int g = 0; g < 16; g++) {
             int32_t s_acc = 0;
             for (int kk = 0; kk < 16; kk++) {
@@ -87,18 +75,15 @@ constexpr size_t Q8K_SEG = 64;
  * from this GEMV, the 4-row fallback GEMM and the tiled GEMM: the path an
  * MoE expert's rows take changes with how many rows the prefill chunk
  * routed to it. */
-[[gnu::target("avx2,avx,f16c,fma")]] static __m256
-q4kx8_gemv_one_row_tile(size_t                     n_super,
-                        const struct block_q4_Kx8 *W,
-                        const struct q8k_row      *X,
-                        __m256                     acc) {
+[[gnu::target("avx2,avx,f16c,fma")]] static __m256 q4kx8_gemv_one_row_tile(
+        size_t n_super, const struct block_q4_Kx8 *W, const struct q8k_row *X, __m256 acc) {
     static const uint32_t kmask1 = 0x3f3f3f3fu;
     static const uint32_t kmask2 = 0x0f0f0f0fu;
     static const uint32_t kmask3 = 0x03030303u;
 
     const __m256i finalpermutemask = _mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0);
-    const __m128i scalemask = _mm_set_epi8(7, 7, 3, 3, 6, 6, 2, 2, 5, 5, 1, 1, 4, 4, 0, 0);
-    const __m256i m4b       = _mm256_set1_epi8(0x0F);
+    const __m128i scalemask        = _mm_set_epi8(7, 7, 3, 3, 6, 6, 2, 2, 5, 5, 1, 1, 4, 4, 0, 0);
+    const __m256i m4b              = _mm256_set1_epi8(0x0F);
 
     for (size_t b = 0; b < n_super; b++) {
         const struct block_q4_Kx8 *bp = &W[b];

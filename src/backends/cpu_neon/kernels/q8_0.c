@@ -9,6 +9,8 @@
 #include "par.h"
 #include "quant.h"
 
+#include "kq_epilogue.h"
+
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -44,7 +46,7 @@ static void q8_0_decode_rows(void *ctx, size_t n0, size_t n1) {
             /* 32 int8 elements = two 16-byte chunks. */
             int_dot += dot16_i8(xb, vld1q_s8(blk->qs));
             int_dot += dot16_i8(xb + 16, vld1q_s8(blk->qs + 16));
-            acc += d * x_scales[b] * (float) int_dot;
+            acc = kq_epi_dsx(acc, d, x_scales[b], int_dot);
         }
         y[n] = acc;
     }
@@ -97,7 +99,7 @@ static void q8_0_prefill_rows(void *ctx, size_t n0, size_t n1) {
             for (size_t i = 0; i < m; i++) {
                 const int8_t *xb      = x_q8 + i * n_in + b * Q8_0_BLOCK_ELEMS;
                 int32_t       int_dot = dot16_i8(xb, qv0) + dot16_i8(xb + 16, qv1);
-                accs[i] += d * x_scales[i * nb_per_row + b] * (float) int_dot;
+                accs[i] = kq_epi_dsx(accs[i], d, x_scales[i * nb_per_row + b], int_dot);
             }
         }
         for (size_t i = 0; i < m; i++)

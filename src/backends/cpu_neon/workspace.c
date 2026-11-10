@@ -36,6 +36,7 @@ static void workspace_free(void *p) {
     safe_free((void **) &ws->qk_mN_sc);
     safe_free((void **) &ws->qk_mN_sum32);
     safe_free((void **) &ws->dequant_w_fp32);
+    safe_free((void **) &ws->dequant_two_rows);
     safe_free((void **) &ws->elt_f32);
     safe_free((void **) &ws->attn_part_out);
     safe_free((void **) &ws->attn_part_max);

@@ -14,6 +14,7 @@
 #include "quant.h"
 
 #include "decode_rows.h"
+#include "kq_epilogue.h"
 
 #include <stddef.h>
 #include <stdatomic.h>
@@ -524,10 +525,11 @@ static void q6k_x8_tiles(void *ctx, size_t t0, size_t t1) {
                 }
             }
 
-            acc_0     = vsubq_s32(acc_0, bias_0);
-            acc_1     = vsubq_s32(acc_1, bias_1);
-            acc_f32_0 = vaddq_f32(acc_f32_0, vmulq_f32(vcvtq_f32_s32(acc_0), sb_scale_0));
-            acc_f32_1 = vaddq_f32(acc_f32_1, vmulq_f32(vcvtq_f32_s32(acc_1), sb_scale_1));
+            acc_0 = vsubq_s32(acc_0, bias_0);
+            acc_1 = vsubq_s32(acc_1, bias_1);
+            /* kq_epi_dsx per lane: sb_scale is d * sx. */
+            acc_f32_0 = vfmaq_f32(acc_f32_0, sb_scale_0, vcvtq_f32_s32(acc_0));
+            acc_f32_1 = vfmaq_f32(acc_f32_1, sb_scale_1, vcvtq_f32_s32(acc_1));
         }
 
         float *dst = y + tile * 8;
@@ -681,7 +683,7 @@ static void q6k_decode_one_row(size_t n, const struct q6k_decode_ctx *c) {
 #if defined(GEIST_TARGET_PI5)
         const int32_t isum = vaddvq_s32(isumv);
 #endif
-        acc += d * x_scales[b] * (float) (isum - 32 * isum_mins);
+        acc = kq_epi_dsx(acc, d, x_scales[b], isum - 32 * isum_mins);
     }
     y[n] = acc;
 }
@@ -858,14 +860,14 @@ static void q6k_prefill_pre_pairs(void *ctx, size_t np0, size_t np1) {
                     a12                = vmlaq_n_s32(a12, vdotq_s32(vdupq_n_s32(0), q1, v2), s1);
                     a13                = vmlaq_n_s32(a13, vdotq_s32(vdupq_n_s32(0), q1, v3), s1);
                 }
-                accs0[i + 0] += d0 * xsb[i + 0] * (float) vaddvq_s32(a00);
-                accs0[i + 1] += d0 * xsb[i + 1] * (float) vaddvq_s32(a01);
-                accs0[i + 2] += d0 * xsb[i + 2] * (float) vaddvq_s32(a02);
-                accs0[i + 3] += d0 * xsb[i + 3] * (float) vaddvq_s32(a03);
-                accs1[i + 0] += d1 * xsb[i + 0] * (float) vaddvq_s32(a10);
-                accs1[i + 1] += d1 * xsb[i + 1] * (float) vaddvq_s32(a11);
-                accs1[i + 2] += d1 * xsb[i + 2] * (float) vaddvq_s32(a12);
-                accs1[i + 3] += d1 * xsb[i + 3] * (float) vaddvq_s32(a13);
+                accs0[i + 0] = kq_epi_dsx(accs0[i + 0], d0, xsb[i + 0], vaddvq_s32(a00));
+                accs0[i + 1] = kq_epi_dsx(accs0[i + 1], d0, xsb[i + 1], vaddvq_s32(a01));
+                accs0[i + 2] = kq_epi_dsx(accs0[i + 2], d0, xsb[i + 2], vaddvq_s32(a02));
+                accs0[i + 3] = kq_epi_dsx(accs0[i + 3], d0, xsb[i + 3], vaddvq_s32(a03));
+                accs1[i + 0] = kq_epi_dsx(accs1[i + 0], d1, xsb[i + 0], vaddvq_s32(a10));
+                accs1[i + 1] = kq_epi_dsx(accs1[i + 1], d1, xsb[i + 1], vaddvq_s32(a11));
+                accs1[i + 2] = kq_epi_dsx(accs1[i + 2], d1, xsb[i + 2], vaddvq_s32(a12));
+                accs1[i + 3] = kq_epi_dsx(accs1[i + 3], d1, xsb[i + 3], vaddvq_s32(a13));
             }
             for (; i < m; i++) { /* token remainder */
                 int32x4_t acc0 = vdupq_n_s32(0), acc1 = vdupq_n_s32(0);
@@ -874,8 +876,8 @@ static void q6k_prefill_pre_pairs(void *ctx, size_t np0, size_t np1) {
                     acc0 = vmlaq_n_s32(acc0, vdotq_s32(vdupq_n_s32(0), qreg0[g], v), sreg0[g]);
                     acc1 = vmlaq_n_s32(acc1, vdotq_s32(vdupq_n_s32(0), qreg1[g], v), sreg1[g]);
                 }
-                accs0[i] += d0 * xsb[i] * (float) vaddvq_s32(acc0);
-                accs1[i] += d1 * xsb[i] * (float) vaddvq_s32(acc1);
+                accs0[i] = kq_epi_dsx(accs0[i], d0, xsb[i], vaddvq_s32(acc0));
+                accs1[i] = kq_epi_dsx(accs1[i], d1, xsb[i], vaddvq_s32(acc1));
             }
         }
         for (size_t i = 0; i < m; i++) {
@@ -998,7 +1000,7 @@ void linear_q6k_w6a8_prefill_pre(size_t        m,
                     acc              = vmlaq_n_s32(
                             acc, vdotq_s32(vdupq_n_s32(0), qreg[g], vld1q_s8(xb)), sreg[g]);
                 }
-                accs[i] += d * xsb[i] * (float) vaddvq_s32(acc);
+                accs[i] = kq_epi_dsx(accs[i], d, xsb[i], vaddvq_s32(acc));
             }
         }
         for (size_t i = 0; i < m; i++)
@@ -1075,14 +1077,14 @@ static void q6k_ntile4_tiles(void *ctx, size_t nt0, size_t nt1) {
                     a30 = vmlaq_n_s32(a30, vdotq_s32(vdupq_n_s32(0), q3, x0), s3);
                     a31 = vmlaq_n_s32(a31, vdotq_s32(vdupq_n_s32(0), q3, x1), s3);
                 }
-                r0[0] += blks[0].d * sx0[b] * (float) vaddvq_s32(a00);
-                r1[0] += blks[0].d * sx1[b] * (float) vaddvq_s32(a01);
-                r0[1] += blks[1].d * sx0[b] * (float) vaddvq_s32(a10);
-                r1[1] += blks[1].d * sx1[b] * (float) vaddvq_s32(a11);
-                r0[2] += blks[2].d * sx0[b] * (float) vaddvq_s32(a20);
-                r1[2] += blks[2].d * sx1[b] * (float) vaddvq_s32(a21);
-                r0[3] += blks[3].d * sx0[b] * (float) vaddvq_s32(a30);
-                r1[3] += blks[3].d * sx1[b] * (float) vaddvq_s32(a31);
+                r0[0] = kq_epi_dsx(r0[0], blks[0].d, sx0[b], vaddvq_s32(a00));
+                r1[0] = kq_epi_dsx(r1[0], blks[0].d, sx1[b], vaddvq_s32(a01));
+                r0[1] = kq_epi_dsx(r0[1], blks[1].d, sx0[b], vaddvq_s32(a10));
+                r1[1] = kq_epi_dsx(r1[1], blks[1].d, sx1[b], vaddvq_s32(a11));
+                r0[2] = kq_epi_dsx(r0[2], blks[2].d, sx0[b], vaddvq_s32(a20));
+                r1[2] = kq_epi_dsx(r1[2], blks[2].d, sx1[b], vaddvq_s32(a21));
+                r0[3] = kq_epi_dsx(r0[3], blks[3].d, sx0[b], vaddvq_s32(a30));
+                r1[3] = kq_epi_dsx(r1[3], blks[3].d, sx1[b], vaddvq_s32(a31));
             }
 
             float *y0 = y + (mt + 0) * n_out + nt * 4;
@@ -1106,7 +1108,8 @@ static void q6k_ntile4_tiles(void *ctx, size_t nt0, size_t nt1) {
                         a                  = vmlaq_n_s32(
                                 a, vdotq_s32(vdupq_n_s32(0), qv, xb), (int32_t) blk->scales[is]);
                     }
-                    acc += x_scales[mt * n_blocks_per_row + b] * blk->d * (float) vaddvq_s32(a);
+                    acc = kq_epi_dsx(
+                            acc, blk->d, x_scales[mt * n_blocks_per_row + b], vaddvq_s32(a));
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
