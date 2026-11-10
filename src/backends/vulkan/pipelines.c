@@ -113,6 +113,8 @@
 #include "shaders/qgate_split_f32_spv.h"
 #include "shaders/qkv_prep_f16_spv.h"
 #include "shaders/qkv_prep_f32_spv.h"
+#include "shaders/rope_append_f16_spv.h"
+#include "shaders/rope_append_f32_spv.h"
 #include "shaders/relu2_f32_spv.h"
 #include "shaders/rmsnorm_add_f32_spv.h"
 #include "shaders/rmsnorm_f32_spv.h"

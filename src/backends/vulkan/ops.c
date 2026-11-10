@@ -3952,6 +3952,136 @@ static bool vk_ffn_gate_up_geometry_ok(bool             with_norm,
                                3);
 }
 
+/* q [rows, heads, hd] (or k / v with kv_heads) as a dense F32 3D view on the
+ * device: its element offset and the shape it was checked against. */
+static bool vk_rope_append_3d(const struct geist_tensor *t,
+                              size_t                     rows,
+                              size_t                     heads,
+                              size_t                     hd,
+                              VkDescriptorBufferInfo    *bi,
+                              uint32_t                  *off) {
+    return t != nullptr && t->ndim == 3 && vk_t_n(t) != 0 && (size_t) t->shape[0] == rows &&
+           (size_t) t->shape[1] == heads && (size_t) t->shape[2] == hd && t->stride[2] == 1 &&
+           (size_t) t->stride[1] == hd && (size_t) t->stride[0] == heads * hd &&
+           vk_tensor_gpu(t, bi, off);
+}
+
+/* The KV caches of attn_rope_append: dense 3D [>= qp + rows, kvh, hd], both
+ * F16 or both F32. */
+static bool vk_rope_append_cache(const struct geist_tensor *t,
+                                 bool                       f16,
+                                 size_t                     min_rows,
+                                 size_t                     kvh,
+                                 size_t                     hd,
+                                 VkDescriptorBufferInfo    *bi,
+                                 uint32_t                  *off) {
+    const size_t n = f16 ? vk_t_n16(t) : vk_t_n(t);
+    return n != 0 && t->ndim == 3 && (size_t) t->shape[0] >= min_rows &&
+           (size_t) t->shape[1] == kvh && (size_t) t->shape[2] == hd && t->stride[2] == 1 &&
+           (size_t) t->stride[1] == hd && (size_t) t->stride[0] == kvh * hd &&
+           (f16 ? vk_tensor_gpu_f16(t, bi, off) : vk_tensor_gpu(t, bi, off));
+}
+
+/* Fused Llama / Qwen3 attention prep (fused->attn_rope_append, #514): the
+ * q / k norms, both RoPEs, the q scale and the KV append in one dispatch
+ * (rope_append_body.glsl), where they were up to seven. Plan-bound
+ * (GEIST_FUSED_ATTN_ROPE_APPEND): a geometry the probe admits must run. */
+[[nodiscard]] static enum geist_status vk_attn_rope_append(struct geist_backend      *be,
+                                                           struct geist_tensor       *q,
+                                                           struct geist_tensor       *k,
+                                                           const struct geist_tensor *v,
+                                                           const struct geist_tensor *q_norm_w,
+                                                           const struct geist_tensor *k_norm_w,
+                                                           const struct geist_tensor *cos,
+                                                           const struct geist_tensor *sin,
+                                                           float                      eps,
+                                                           float                      q_scale,
+                                                           size_t                     q_position,
+                                                           struct geist_tensor       *k_cache,
+                                                           struct geist_tensor       *v_cache) {
+    if (q == nullptr || k == nullptr || v == nullptr || cos == nullptr || sin == nullptr ||
+        k_cache == nullptr || v_cache == nullptr || q->ndim != 3 || k->ndim != 3 ||
+        cos->ndim != 2 || sin->ndim != 2) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t           rows = (size_t) q->shape[0], qh = (size_t) q->shape[1];
+    const size_t           hd = (size_t) q->shape[2], kvh = (size_t) k->shape[1];
+    const size_t           nrot = (size_t) cos->shape[1];
+    const bool             f16  = k_cache->dtype == GEIST_DTYPE_F16;
+    VkDescriptorBufferInfo bi[9];
+    uint32_t               qo, ko, vo, qwo = 0, kwo = 0, co, so, kco, vco;
+    size_t                 last_row;
+    if (rows == 0 || qh == 0 || kvh == 0 || hd == 0 || hd > VK_ATTN_MAX_HEAD_DIM || nrot == 0 ||
+        nrot % 2 != 0 || nrot > hd || ckd_add(&last_row, q_position, rows) ||
+        !vk_rope_append_3d(q, rows, qh, hd, &bi[0], &qo) ||
+        !vk_rope_append_3d(k, rows, kvh, hd, &bi[1], &ko) ||
+        !vk_rope_append_3d(v, rows, kvh, hd, &bi[2], &vo) || (size_t) cos->shape[0] != rows ||
+        (size_t) sin->shape[0] != rows || (size_t) sin->shape[1] != nrot ||
+        (size_t) cos->stride[0] != nrot || (size_t) sin->stride[0] != nrot || cos->stride[1] != 1 ||
+        sin->stride[1] != 1 || vk_t_n(cos) == 0 || vk_t_n(sin) == 0 ||
+        !vk_tensor_gpu(cos, &bi[5], &co) || !vk_tensor_gpu(sin, &bi[6], &so) ||
+        (q_norm_w != nullptr &&
+         (vk_t_n(q_norm_w) != hd || !vk_tensor_gpu(q_norm_w, &bi[3], &qwo))) ||
+        (k_norm_w != nullptr &&
+         (vk_t_n(k_norm_w) != hd || !vk_tensor_gpu(k_norm_w, &bi[4], &kwo))) ||
+        v_cache->dtype != k_cache->dtype ||
+        !vk_rope_append_cache(k_cache, f16, last_row, kvh, hd, &bi[7], &kco) ||
+        !vk_rope_append_cache(v_cache, f16, last_row, kvh, hd, &bi[8], &vco)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (q_norm_w == nullptr) {
+        bi[3] = bi[0]; /* qn = 0: the shader does not read it */
+    }
+    if (k_norm_w == nullptr) {
+        bi[4] = bi[0];
+    }
+    struct {
+        uint32_t rows, qh, kvh, hd, nrot, qo, ko, vo, qwo, kwo, co, so, kco, vco, qp, qn, kn, qsc;
+        float    eps, qs;
+    } push = {.qo  = qo,
+              .ko  = ko,
+              .vo  = vo,
+              .qwo = qwo,
+              .kwo = kwo,
+              .co  = co,
+              .so  = so,
+              .kco = kco,
+              .vco = vco,
+              .qn  = q_norm_w != nullptr ? 1u : 0u,
+              .kn  = k_norm_w != nullptr ? 1u : 0u,
+              .qsc = q_scale != 1.0f ? 1u : 0u,
+              .eps = eps,
+              .qs  = q_scale};
+    static_assert(sizeof push == (size_t) 20 * sizeof(uint32_t),
+                  "rope_append_body.glsl push block");
+    uint32_t cache_elems, groups_y; /* the shaders' uint32 indices must reach both */
+    if (vk_ckd_u32(rows, &push.rows) || vk_ckd_u32(qh, &push.qh) || vk_ckd_u32(kvh, &push.kvh) ||
+        vk_ckd_u32(hd, &push.hd) || vk_ckd_u32(nrot, &push.nrot) ||
+        vk_ckd_u32(q_position, &push.qp) || vk_ckd_u32(last_row * kvh * hd, &cache_elems) ||
+        vk_ckd_u32(qh + kvh, &groups_y)) {
+        return vk_too_wide(be, "attn_rope_append");
+    }
+    const struct vk_access acc[9] = {
+            vk_acc_tensor(q, true),
+            vk_acc_tensor(k, true),
+            vk_acc_tensor(v, false),
+            q_norm_w != nullptr ? vk_acc_tensor(q_norm_w, false) : vk_acc(0, 0, false),
+            k_norm_w != nullptr ? vk_acc_tensor(k_norm_w, false) : vk_acc(0, 0, false),
+            vk_acc_tensor(cos, false),
+            vk_acc_tensor(sin, false),
+            f16 ? vk_acc_tensor16(k_cache, true) : vk_acc_tensor(k_cache, true),
+            f16 ? vk_acc_tensor16(v_cache, true) : vk_acc_tensor(v_cache, true)};
+    return vk_seq_dispatch_acc(be,
+                               f16 ? VK_PIPE_ROPE_APPEND_F16 : VK_PIPE_ROPE_APPEND,
+                               bi,
+                               acc,
+                               &push,
+                               sizeof push,
+                               push.rows,
+                               groups_y,
+                               1);
+}
+
 /* F32 -> F16 converting KV append (enables the F16 cache: GEIST_KV_AUTO
  * upgrades when this slot exists). */
 [[nodiscard]] static enum geist_status vk_kv_append_f16(struct geist_backend      *be,
@@ -4456,12 +4586,15 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         const struct vk_dtype *ed = vk_dtype_of((enum geist_dtype) q->table_dtype);
         return ed != nullptr && ed->embed_code >= 0;
     }
+    case GEIST_FUSED_ATTN_ROPE_APPEND:
+        /* vk_attn_rope_append: a head in one workgroup, its pairs by lane */
+        return q->head_dim > 0 && q->head_dim % 2u == 0 && q->head_dim <= VK_ATTN_MAX_HEAD_DIM &&
+               q->n_q_heads > 0 && q->n_kv_heads > 0;
     case GEIST_FUSED_GELU_TANH_MUL_SCALED:
     case GEIST_FUSED_ATTN_KV_INT8:
     case GEIST_FUSED_ATTN_KV_INT4:
     case GEIST_FUSED_RMSNORM_ADD_NORM:
     case GEIST_FUSED_FFN_GATE_UP_SILU:
-    case GEIST_FUSED_ATTN_ROPE_APPEND:
         break;
     case GEIST_FUSED_MOE_DEVICE:
         return vk_moe_device_ok(st, q);
@@ -4557,6 +4690,7 @@ static const struct geist_backend_fused vk_fused = {
         .ffn_norm_gate_up        = vk_ffn_norm_gate_up,
         .ple_block               = vk_ple_block,
         .attn_qkv_prep           = vk_attn_qkv_prep,
+        .attn_rope_append        = vk_attn_rope_append,
         .kv_append_f16           = vk_fb_kv_append_f16,
         .deltanet_mix            = vk_deltanet_mix,
         .deltanet_mix_states     = vk_deltanet_mix_states,

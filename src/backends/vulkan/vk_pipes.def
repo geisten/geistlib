@@ -200,6 +200,9 @@ X(VK_PIPE_MOE_MM_Q6K_CM,          moe_mm_q6k_cm_spv,           "moe_mm_q6k_cm", 
 X(VK_PIPE_MOE_MM_Q8_0_CM,         moe_mm_q8_0_cm_spv,          "moe_mm_q8_0_cm",         4, COOPMAT)
 X(VK_PIPE_MOE_MM_Q5_0_CM,         moe_mm_q5_0_cm_spv,          "moe_mm_q5_0_cm",         4, COOPMAT)
 X(VK_PIPE_MOE_MM_MXFP4_CM,        moe_mm_mxfp4_cm_spv,         "moe_mm_mxfp4_cm",        4, COOPMAT)
+/* #514: q/k norms + RoPE + q scale + KV append (fused->attn_rope_append) */
+X(VK_PIPE_ROPE_APPEND,            rope_append_f32_spv,         "rope_append",            9, PLAIN)
+X(VK_PIPE_ROPE_APPEND_F16,        rope_append_f16_spv,         "rope_append_f16",        9, PLAIN)
 /* #249: the same tiles without cooperative matrices (RDNA2, older GPUs) */
 X(VK_PIPE_MOE_MM_Q4K,             moe_mm_q4k_spv,              "moe_mm_q4k",             4, PLAIN)
 X(VK_PIPE_MOE_MM_Q5K,             moe_mm_q5k_spv,              "moe_mm_q5k",             4, PLAIN)
