@@ -34,6 +34,15 @@ void cpu_x86_linear_q6k_m1(const float               *x,
                            struct geist_backend      *be,
                            float                     *y);
 
+/* Rows [r0, r1) of cpu_x86_linear_q6k_m1's output into y[0, r1 - r0)
+ * (w->linear_m1_rows): the same bits as the full call. */
+void cpu_x86_linear_q6k_m1_rows(size_t                     r0,
+                                size_t                     r1,
+                                const float               *x,
+                                const struct geist_weight *w,
+                                struct geist_backend      *be,
+                                float                     *y);
+
 /* M>1 (prefill) kernel installed by the resolver. Tiled W8A8 GEMM. */
 void cpu_x86_linear_q6k_mN(
         size_t m, const float *x, const struct geist_weight *w, struct geist_backend *be, float *y);
