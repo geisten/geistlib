@@ -83,7 +83,10 @@ const uint  OCOLS     = uint(HD) / NSG;      /* O columns per subgroup */
 const uint  OT        = OCOLS / 16u;         /* O accumulators per subgroup */
 const uint  TPR       = NSG * 32u / BR;      /* softmax lanes per row */
 const uint  PPT       = BC / 2u / TPR;       /* column pairs per lane */
-const float RESCALE_T = 8.0;
+#ifndef RESCALE_T_V
+#define RESCALE_T_V 8.0
+#endif
+const float RESCALE_T = RESCALE_T_V;
 
 shared uvec4 Qsh[BR * QSTR];
 shared float Ssh[BR * SSTR];

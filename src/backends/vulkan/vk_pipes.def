@@ -138,6 +138,7 @@ X(VK_PIPE_ATTENTION_F16_HD512_MW_CM, attention_f16_hd512_mw_cm_spv, "attention_f
 /* the same at head_dim 576 with a KV head's q heads folded into the tile
  * rows (absorbed MLA, #504) */
 X(VK_PIPE_ATTENTION_F16_HD576_MW_CM, attention_f16_hd576_mw_cm_spv, "attention_f16_hd576_mw_cm", 4, COOPMAT)
+X(VK_PIPE_ATTENTION_F16_HD576_MWX_CM, attention_f16_hd576_mwx_cm_spv, "attention_f16_hd576_mwx_cm", 4, COOPMAT)
 /* Q8_0 tensor-core GEMM, 64 x 64 tile */
 X(VK_PIPE_MM_Q8_0_CM,             matmul_q8_0_cm_spv,          "mm_q8_0_cm",             3, COOPMAT)
 /* Q4_0 tensor-core GEMM, 64 x 64 tile */

@@ -73,21 +73,22 @@ for mode in "$@"; do
     arg=${mode#*=}
     case $mode in
     unit)
-        for lab in base new; do
+        for lab in base new newx; do
+            l=${lab%x}; x=0; [ "$lab" = newx ] && x=1
             for t in test_backend_vulkan_ops_unit test_deepseek2_unit; do
                 echo "=== $lab $t"
-                "$(B "$lab" "tests/$t")" 2>&1 | tee "$OUT/unit_${lab}_$t.txt" | grep -i "MLA\|x576\|x520\|FAIL\|PASS\|SKIP"
-                echo "exit $?"
+                GEIST_VK_MLA_EXACT=$x "$(B "$l" "tests/$t")" 2>&1 | tee "$OUT/unit_${lab}_$t.txt" | grep -i "MLA\|x576\|x520\|FAIL\|PASS\|SKIP"
             done
         done
         ;;
     prof)
         for f in "$GIGA" "$V2_S"; do
-            for lab in base new; do
+            for lab in base new newx; do
+                l=${lab%x}; x=0; [ "$lab" = newx ] && x=1
                 quiet_gate "prof $lab $(basename "$f")"
                 echo "### prof $lab $(basename "$f") prefill 512" | tee -a "$OUT/summary.md"
-                GEIST_VK_PROFILE=1 GEIST_BENCH_BACKEND=vulkan "$(B "$lab" tests/bench_perf_sweep)" --gguf "$f" \
-                    --seq-lens 512 --decode-n 1 --warmup 1 --repeats 1 >"$OUT/p.jsonl" 2>"$OUT/p_${lab}.txt"
+                GEIST_VK_MLA_EXACT=$x GEIST_VK_PROFILE=1 GEIST_BENCH_BACKEND=vulkan "$(B "$l" tests/bench_perf_sweep)" --gguf "$f" \
+                    --seq-lens 512,2048 --decode-n 1 --warmup 1 --repeats 1 >"$OUT/p.jsonl" 2>"$OUT/p_${lab}.txt"
                 { echo '```'; grep -v "^geist vulkan: device memory" "$OUT/p_${lab}.txt" | head -40; echo '```'; } | tee -a "$OUT/summary.md"
             done
         done

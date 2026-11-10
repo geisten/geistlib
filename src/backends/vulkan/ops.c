@@ -1821,8 +1821,11 @@ attn_generic:;
             if (kv16 && n_q > 1 && hd == 576 && stt->subgroup_size == 32u &&
                 fold_tiles <= 65535u /* x limit Vulkan guarantees */ &&
                 stt->pipes[VK_PIPE_ATTENTION_F16_HD576_MW_CM] != VK_NULL_HANDLE) {
+                const char *xs = getenv("GEIST_VK_MLA_EXACT"); /* SCRATCH */
                 return vk_seq_dispatch_acc(be,
-                                           VK_PIPE_ATTENTION_F16_HD576_MW_CM,
+                                           xs != nullptr && xs[0] == '1'
+                                                   ? VK_PIPE_ATTENTION_F16_HD576_MWX_CM
+                                                   : VK_PIPE_ATTENTION_F16_HD576_MW_CM,
                                            bi,
                                            acc,
                                            push,
