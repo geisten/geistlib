@@ -26,6 +26,7 @@
 #include "kernel_w4a8.h" /* w4a8_dispatcher_tier — GEIST_FORCE_ISA clamp */
 
 #include <immintrin.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -45,6 +46,10 @@ struct q8k_row {
  * see q4kx8_gemv_m1 — so the bound is a tile size, not a limit on K. */
 constexpr size_t Q8K_SEG = 64;
 
+/* Q8_K of one row, the same operations as quantize_q8_Kx4 (q8_kx4.c) per
+ * row: max-abs, scale amax / 127, codes lrintf(x / scale). A token
+ * quantized here (the M=1 GEMV) gets the codes and the scale it gets in a
+ * Q8_Kx4 group (the GEMMs), so its result does not depend on the path. */
 [[maybe_unused]] static void quantize_q8k_row(size_t         n_super,
                                               const float    x[static n_super * 256],
                                               struct q8k_row out[static n_super]) {
@@ -53,19 +58,13 @@ constexpr size_t Q8K_SEG = 64;
     for (size_t s = 0; s < n_super; s++) {
         float amax = 0.0f;
         for (size_t k = 0; k < 256; k++) {
-            const float a  = x[s * 256 + k];
-            const float ax = a < 0.0f ? -a : a;
-            if (ax > amax) {
-                amax = ax;
-            }
+            amax = fmaxf(amax, fabsf(x[s * 256 + k]));
         }
         const float scale = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
         const float inv   = 1.0f / scale;
         out[s].d          = scale;
         for (size_t k = 0; k < 256; k++) {
-            const float v = x[s * 256 + k] * inv;
-            const int   q = (int) (v < 0.0f ? v - 0.5f : v + 0.5f);
-            out[s].qs[k]  = (int8_t) (q < -128 ? -128 : (q > 127 ? 127 : q));
+            out[s].qs[k] = (int8_t) lrintf(x[s * 256 + k] * inv);
         }
         for (int g = 0; g < 16; g++) {
             int32_t s_acc = 0;
@@ -79,37 +78,35 @@ constexpr size_t Q8K_SEG = 64;
 
 /* ---- AVX2 GEMV: one m-row × 8-cell tile ---- */
 
-[[gnu::target("avx2,avx,f16c,fma")]] static __m256
-q4kx8_gemv_one_row_tile(size_t                     n_super,
-                        const struct block_q4_Kx8 *W,
-                        const struct q8k_row      *X,
-                        __m256                    *acc_min_rows_out) {
+/* acc (the 8 cells in order) plus one activation row against an 8-cell
+ * tile over n_super super-blocks. Per super-block the integer sums are
+ * exact, and the float epilogue is the tiled GEMM's
+ * (kernel_q4k_tiled_avx512_vnni.c, micro_8x16):
+ *   acc = fma(s1 * d - dmin * s2, a_d, acc)
+ * with the same operations in the same order, so a row gets the same bits
+ * from this GEMV, the 4-row fallback GEMM and the tiled GEMM: the path an
+ * MoE expert's rows take changes with how many rows the prefill chunk
+ * routed to it. */
+[[gnu::target("avx2,avx,f16c,fma")]] static __m256 q4kx8_gemv_one_row_tile(
+        size_t n_super, const struct block_q4_Kx8 *W, const struct q8k_row *X, __m256 acc) {
     static const uint32_t kmask1 = 0x3f3f3f3fu;
     static const uint32_t kmask2 = 0x0f0f0f0fu;
     static const uint32_t kmask3 = 0x03030303u;
 
     const __m256i finalpermutemask = _mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0);
-    const __m128i deltamask = _mm_set_epi8(15, 14, 7, 6, 13, 12, 5, 4, 11, 10, 3, 2, 9, 8, 1, 0);
-    const __m128i scalemask = _mm_set_epi8(7, 7, 3, 3, 6, 6, 2, 2, 5, 5, 1, 1, 4, 4, 0, 0);
-    const __m256i m4b       = _mm256_set1_epi8(0x0F);
-
-    __m256 acc_row      = _mm256_setzero_ps();
-    __m256 acc_min_rows = _mm256_setzero_ps();
+    const __m128i scalemask        = _mm_set_epi8(7, 7, 3, 3, 6, 6, 2, 2, 5, 5, 1, 1, 4, 4, 0, 0);
+    const __m256i m4b              = _mm256_set1_epi8(0x0F);
 
     for (size_t b = 0; b < n_super; b++) {
         const struct block_q4_Kx8 *bp = &W[b];
         const struct q8k_row      *ap = &X[b];
 
-        const __m256 row_scale_f32 = _mm256_set1_ps(ap->d);
-
         /* Aligned stack copies because the source struct is packed. */
         uint16_t d_buf[8], dmin_buf[8];
         memcpy(d_buf, bp->d, sizeof(d_buf));
         memcpy(dmin_buf, bp->dmin, sizeof(dmin_buf));
-        const __m128i d_raw         = _mm_loadu_si128((const __m128i *) d_buf);
-        const __m128i dmin_raw      = _mm_loadu_si128((const __m128i *) dmin_buf);
-        const __m256  col_scale_f32 = _mm256_cvtph_ps(_mm_shuffle_epi8(d_raw, deltamask));
-        const __m256  col_dmin_f32  = _mm256_cvtph_ps(dmin_raw);
+        const __m256 col_d_f32    = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) d_buf));
+        const __m256 col_dmin_f32 = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) dmin_buf));
 
         __m256i iacc_b     = _mm256_setzero_si256();
         __m256i iacc_min_b = _mm256_setzero_si256();
@@ -294,16 +291,14 @@ q4kx8_gemv_one_row_tile(size_t                     n_super,
             iacc_min_b = _mm256_add_epi32(iacc_min_b, iacc_min_sb);
         }
 
-        acc_row = _mm256_fmadd_ps(
-                _mm256_cvtepi32_ps(iacc_b), _mm256_mul_ps(col_scale_f32, row_scale_f32), acc_row);
-        acc_min_rows = _mm256_fmadd_ps(_mm256_cvtepi32_ps(iacc_min_b),
-                                       _mm256_mul_ps(col_dmin_f32, row_scale_f32),
-                                       acc_min_rows);
+        /* iacc_b holds the cells in the order {0,4,1,5,2,6,3,7}; iacc_min_b
+         * in order. */
+        const __m256i s1 = _mm256_permutevar8x32_epi32(iacc_b, finalpermutemask);
+        __m256        r  = _mm256_mul_ps(_mm256_cvtepi32_ps(s1), col_d_f32);
+        r                = _mm256_fnmadd_ps(col_dmin_f32, _mm256_cvtepi32_ps(iacc_min_b), r);
+        acc              = _mm256_fmadd_ps(r, _mm256_set1_ps(ap->d), acc);
     }
-
-    acc_row           = _mm256_permutevar8x32_ps(acc_row, finalpermutemask);
-    *acc_min_rows_out = acc_min_rows;
-    return acc_row;
+    return acc;
 }
 
 /* One GEMV or fallback-GEMM call for geist_par_for. */
@@ -331,9 +326,8 @@ static void fallback_rows(void *ctx, size_t m0, size_t m1) {
         const size_t i  = m % 4;
 
         /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one segment
-         * up to K = 16384, accumulated segments beyond it. The activations
-         * arrive already quantized per super-block, so segmenting changes
-         * only the order of the fp32 sum across segments. */
+         * up to K = 16384, beyond it each segment continues the previous
+         * one's accumulator, so the sum runs as in one pass. */
         struct q8k_row a[Q8K_SEG];
         for (size_t s0 = 0; s0 < n_super_k; s0 += Q8K_SEG) {
             const size_t ns = n_super_k - s0 < Q8K_SEG ? n_super_k - s0 : Q8K_SEG;
@@ -352,14 +346,10 @@ static void fallback_rows(void *ctx, size_t m0, size_t m1) {
             }
 
             for (size_t nt = 0; nt < N_tiles; nt++) {
-                __m256       acc_min;
-                const __m256 acc_row =
-                        q4kx8_gemv_one_row_tile(ns, &W[nt * n_super_k + s0], a, &acc_min);
-                __m256 r = _mm256_sub_ps(acc_row, acc_min);
-                if (s0 != 0) {
-                    r = _mm256_add_ps(r, _mm256_loadu_ps(Y + m * N + nt * 8));
-                }
-                _mm256_storeu_ps(Y + m * N + nt * 8, r);
+                const __m256 acc =
+                        s0 == 0 ? _mm256_setzero_ps() : _mm256_loadu_ps(Y + m * N + nt * 8);
+                _mm256_storeu_ps(Y + m * N + nt * 8,
+                                 q4kx8_gemv_one_row_tile(ns, &W[nt * n_super_k + s0], a, acc));
             }
         }
     }
@@ -393,14 +383,9 @@ static void q4kx8_gemv_avx2_fallback(size_t                     M,
 static void gemv_tiles(void *ctx, size_t t0, size_t t1) {
     const struct x8_call c = *(const struct x8_call *) ctx;
     for (size_t nt = t0; nt < t1; nt++) {
-        __m256       acc_min;
-        const __m256 acc_row =
-                q4kx8_gemv_one_row_tile(c.ns, &c.W[nt * c.n_super + c.s0], c.a, &acc_min);
-        __m256 r = _mm256_sub_ps(acc_row, acc_min);
-        if (!c.first) {
-            r = _mm256_add_ps(r, _mm256_loadu_ps(c.y + nt * 8));
-        }
-        _mm256_storeu_ps(c.y + nt * 8, r);
+        const __m256 acc = c.first ? _mm256_setzero_ps() : _mm256_loadu_ps(c.y + nt * 8);
+        _mm256_storeu_ps(c.y + nt * 8,
+                         q4kx8_gemv_one_row_tile(c.ns, &c.W[nt * c.n_super + c.s0], c.a, acc));
     }
 }
 
@@ -414,8 +399,9 @@ static void gemv_tiles(void *ctx, size_t t0, size_t t1) {
  *
  * The quantized activation lives on the stack, Q8K_SEG super-blocks at a
  * time. K up to Q8K_SEG * 256 = 16384 is one segment. A longer row
- * (ffn_down of any model wider than 16384) runs in segments added into y;
- * every super-block carries its own activation scale either way. */
+ * (ffn_down of any model wider than 16384) runs in segments, each starting
+ * from the accumulator the previous one left in y; every super-block
+ * carries its own activation scale either way. */
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]) {
     const size_t n_super = K / 256;
