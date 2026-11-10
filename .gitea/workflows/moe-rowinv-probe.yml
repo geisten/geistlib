@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "survey | logits | ab"
+        description: "survey | unit | logits | ab"
         type: string
         default: survey
       ref:
@@ -27,7 +27,7 @@ on:
         type: string
         default: "-;SURVEY_MN1=1;SURVEY_INLINE=1;SURVEY_NOPAIR=1;GEIST_Q4K_RAW=1"
       models:
-        description: "logits/ab: qwen3moe;deepseek;gptoss"
+        description: "logits/ab: qwen3moe;deepseek;gptoss;llama3b"
         type: string
         default: "qwen3moe;deepseek"
       base:
@@ -70,6 +70,7 @@ jobs:
           set -eo pipefail
           echo "GPTOSS=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf --sha256 27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901)" >> "$GITHUB_ENV"
           echo "DEEPSEEK=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/mradermacher/DeepSeek-V2-Lite-GGUF/resolve/0f37fdf276e8094747457f0ae4d40f2e8d2521f9/DeepSeek-V2-Lite.Q4_K_M.gguf --sha256 70985c39ba3e51a53e6ad6ae25ce29a3efc92b4802f61645760e1bc1eb89ad1a)" >> "$GITHUB_ENV"
+          echo "LLAMA3B=$(python3 tools/fetch_bench_model.py --model llama32-3b-q4km)" >> "$GITHUB_ENV"
           echo "QWEN3MOE=$(python3 tools/fetch_bench_model.py --url https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/e4d4bafdfb96a411a163846265362aceb0b9c63a/Qwen3-30B-A3B-Q4_K_M.gguf --sha256 0d003f6662faee786ed5da3e31b29c978de5ae5d275c8794c606a7f3c01aa8f5)" >> "$GITHUB_ENV"
       - name: Build ref
         if: inputs.mode != 'ab'
@@ -96,6 +97,13 @@ jobs:
             if [ "$v" = "-" ]; then e=""; else e="$v"; fi
             env $e GEIST_ROWINV_REPORT=1 "$T" 2>&1 | tee -a out/report.txt || true
           done
+      - name: Unit tests
+        if: inputs.mode == 'unit'
+        env:
+          LOCK_NOTE: "moe row invariance: unit tests (run ${{ github.run_id }})"
+        run: |
+          set -o pipefail
+          LOCK_PRIO=batch LOCK_MAX=30 ~/bin/with-desktop-lock make -C "$RUNNER_TEMP/ri" $MAKEARGS BACKENDS="cpu_x86 cpu_scalar" -j16 test-unit 2>&1 | tail -80 | tee -a out/report.txt
       - name: Logits, 64- vs 128-row chunks
         if: inputs.mode == 'logits'
         env:
@@ -104,7 +112,7 @@ jobs:
           set -o pipefail
           L=""
           for m in $(echo "$MODELS" | tr ';' ' '); do
-            case $m in gptoss) L="$L $GPTOSS" ;; deepseek) L="$L $DEEPSEEK" ;; qwen3moe) L="$L $QWEN3MOE" ;; esac
+            case $m in llama3b) L="$L $LLAMA3B" ;; gptoss) L="$L $GPTOSS" ;; deepseek) L="$L $DEEPSEEK" ;; qwen3moe) L="$L $QWEN3MOE" ;; esac
           done
           LOCK_PRIO=batch LOCK_MAX=60 ~/bin/with-desktop-lock sh tools/probes/rowinv_logits.sh \
             "$RUNNER_TEMP/ri/bin/linux/release" cpu_x86 "$PWD/out/logits" $L 2>&1 | tee -a out/report.txt
@@ -124,7 +132,7 @@ jobs:
           cat > "$RUNNER_TEMP/ab.sh" <<'SH'
           set -u
           for m in $(echo "$MODELS" | tr ';' ' '); do
-            case $m in gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
+            case $m in llama3b) F=$LLAMA3B ;; gptoss) F=$GPTOSS ;; deepseek) F=$DEEPSEEK ;; qwen3moe) F=$QWEN3MOE ;; esac
             echo "== $m"
             QUIET_LOG="$PWD/out/quiet.log" python3 tools/bench_revision_ab.py \
               --rev "base=$BASE" --rev "new=$NEW" --gguf "$F" --seq-lens "$SEQ" \
