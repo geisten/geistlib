@@ -193,14 +193,17 @@ every expert on the CPU (708 / 75 tok/s; llama.cpp Vulkan with three layers'
 experts on the CPU: 1132 / 90). DeepSeek-type latent attention runs on the
 device too (#504, `caps.mla_device`): the absorbed layout of DeepSeek-V3 and
 GigaChat3 (one 576-dim KV head, V read from the K cache; tensor-core prefill
-in column thirds, split-KV decode) and DeepSeek-V2-Lite's decompressed one
+with the q heads folded into each tile so a K chunk serves 16 of them,
+split-KV decode) and DeepSeek-V2-Lite's decompressed one
 (192-dim heads), with rmsnorm and `scale_f32` on row views and k_b / v_b per
 head through `linear_t_ids`. On the RTX 2080 Ti the decompressed files
 prefill 512 tokens 34x (V2-Lite) and 130x (GigaChat3) faster than with the
 latent attention assembled on the host and decode 2.7x / 4.5x faster;
 perplexity stays within 0.4 % of llama.cpp Vulkan in both layouts. Against
 llama.cpp Vulkan the absorbed files decode at 0.84-0.92x (V2-Lite at 2048
-tokens of context 1.6x) and prefill at 0.26-0.44x.
+tokens of context 1.6x); GigaChat3 prefills at 0.74x (512 tokens) and 1.88x
+(2048), DeepSeek-V2-Lite's split file at 0.29x / 0.44x, held back by its F32
+k_b / v_b (a matvec per token and head) and its host-resident experts.
 
 **Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
 Weights go to VRAM until one would leave less than a reserve for the KV cache

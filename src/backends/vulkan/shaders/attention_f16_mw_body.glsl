@@ -31,7 +31,8 @@
  * tiles of a row. (RESCALE_T = 0, an exact running max, costs ~20 % more on
  * Gemma 4 E2B. The stale max means the largest P of a row is not exactly
  * 1.0 in f16, so very peaked rows see about twice the old kernel's rounding
- * error, still < 1e-3 in test_backend_vulkan_ops_unit.)
+ * error, still < 1e-3 in test_backend_vulkan_ops_unit. An including .comp
+ * may set RESCALE_T_V; the 576 variant takes 0.0.)
  *
  * Out-of-range keys: a 16-key chunk that lies entirely outside every row's
  * window/causal range is skipped (its S entries are masked, its P is 0); a
@@ -41,10 +42,17 @@
  *
  * Dispatch: gx = ceil(n_q / 16), gy = n_q_heads, gz = 1. Workgroup x walks
  * the query blocks from the last (longest causal range) to the first so the
- * heavy blocks start first. */
+ * heavy blocks start first.
+ *
+ * GQA_FOLD (absorbed MLA, HD 576, #504): the 16 rows of a workgroup are 16
+ * consecutive (token, head) pairs of one KV head's group, head fastest, so
+ * with MLA's one latent KV head and 16 or more q heads a tile is one token's
+ * heads: every K / V chunk a workgroup reads serves 16 heads and all rows
+ * share one causal range. Dispatch: gx = ceil(n_q * group / 16), gy =
+ * n_kv_heads. HD 576 gives each subgroup 144 output columns (OT = 9). */
 
 const uint NSG = 4u;
-#define OT_MAX (HD / 64) /* == OT, for the named accumulators */
+#define OT_MAX (HD / 64) /* == OT, for the named accumulators (9 at 576) */
 layout(local_size_x = 128) in; /* NSG * 32 */
 
 layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
@@ -76,7 +84,10 @@ const uint  OCOLS     = uint(HD) / NSG;      /* O columns per subgroup */
 const uint  OT        = OCOLS / 16u;         /* O accumulators per subgroup */
 const uint  TPR       = NSG * 32u / BR;      /* softmax lanes per row */
 const uint  PPT       = BC / 2u / TPR;       /* column pairs per lane */
-const float RESCALE_T = 8.0;
+#ifndef RESCALE_T_V
+#define RESCALE_T_V 8.0
+#endif
+const float RESCALE_T = RESCALE_T_V;
 
 shared uvec4 Qsh[BR * QSTR];
 shared float Ssh[BR * SSTR];
@@ -107,6 +118,18 @@ void main() {
     uint tid     = gl_LocalInvocationID.x;
     uint sg      = gl_SubgroupID;
     uint lane    = gl_SubgroupInvocationID;
+#ifdef GQA_FOLD
+    /* rows f = token * group + head-in-group, 16 from row_block on */
+    uint kv_group  = pc.n_q_heads / pc.n_kv_heads;
+    uint n_rows    = pc.n_q * kv_group;
+    uint row_block = (gl_NumWorkGroups.x - 1u - gl_WorkGroupID.x) * BR;
+    uint kv_head   = gl_WorkGroupID.y;
+    if (row_block >= n_rows || kv_head >= pc.n_kv_heads || pc.n_kv == 0u) {
+        return;
+    }
+    uint q_block  = row_block / kv_group;                       /* first token */
+    uint last_tok = min(row_block + BR - 1u, n_rows - 1u) / kv_group;
+#else
     uint q_block = (gl_NumWorkGroups.x - 1u - gl_WorkGroupID.x) * BR;
     uint q_head  = gl_WorkGroupID.y;
     if (q_block >= pc.n_q || q_head >= pc.n_q_heads || pc.n_kv == 0u) {
@@ -114,6 +137,7 @@ void main() {
     }
     uint kv_group = pc.n_q_heads / pc.n_kv_heads;
     uint kv_head  = q_head / kv_group;
+#endif
     uint hd4      = pc.head_dim >> 2u; /* vec4s per row */
     uint kv_row4  = pc.n_kv_heads * hd4;
     uint kbase    = (pc.k_offset >> 2u) + kv_head * hd4;
@@ -123,8 +147,14 @@ void main() {
     for (uint idx = tid; idx < BR * HD_U4; idx += NSG * 32u) {
         uint r    = idx / HD_U4;
         uint j    = idx % HD_U4;
+#ifdef GQA_FOLD
+        uint f    = min(row_block + r, n_rows - 1u);
+        uint qrow = (f / kv_group) * pc.n_q_heads + kv_head * kv_group + f % kv_group;
+        uint base = (pc.q_offset >> 2u) + qrow * hd4 + j * 2u;
+#else
         uint qpos = min(q_block + r, pc.n_q - 1u);
         uint base = (pc.q_offset >> 2u) + (qpos * pc.n_q_heads + q_head) * hd4 + j * 2u;
+#endif
         Qsh[r * QSTR + j] = pack_f32x8(q4[base], q4[base + 1u]);
     }
     if (tid == 0u) {
@@ -136,14 +166,22 @@ void main() {
     uint slo0   = pc.sliding_window > 0u && qabs0 + 1u > pc.sliding_window
                           ? qabs0 + 1u - pc.sliding_window
                           : 0u;
+#ifdef GQA_FOLD
+    uint hi_all = min(pc.q_offset_abs + last_tok, pc.n_kv - 1u); /* last key any row sees */
+#else
     uint hi_all = min(qabs0 + BR - 1u, pc.n_kv - 1u); /* last key any row sees */
+#endif
     uint first_kb = slo0 / BC;
     uint last_kb  = hi_all / BC;
 
     /* softmax role: row `row`, lanes `part` of TPR (same subgroup) */
     uint  row  = tid / TPR;
     uint  part = tid % TPR;
+#ifdef GQA_FOLD
+    uint  qabs = pc.q_offset_abs + min(row_block + row, n_rows - 1u) / kv_group;
+#else
     uint  qabs = qabs0 + row;
+#endif
     uint  shi  = min(qabs, pc.n_kv - 1u);
     uint  slo  = pc.sliding_window > 0u && qabs + 1u > pc.sliding_window
                          ? qabs + 1u - pc.sliding_window
@@ -165,6 +203,9 @@ void main() {
     GEIST_ATTN_MW_DECLO(5)
     GEIST_ATTN_MW_DECLO(6)
     GEIST_ATTN_MW_DECLO(7)
+#endif
+#if OT_MAX > 8
+    GEIST_ATTN_MW_DECLO(8)
 #endif
 #undef GEIST_ATTN_MW_DECLO
 
@@ -275,6 +316,9 @@ void main() {
             GEIST_ATTN_MW_RESCALE(6)
             GEIST_ATTN_MW_RESCALE(7)
 #endif
+#if OT_MAX > 8
+            GEIST_ATTN_MW_RESCALE(8)
+#endif
 #undef GEIST_ATTN_MW_RESCALE
         }
 
@@ -304,6 +348,9 @@ void main() {
                 GEIST_ATTN_MW_PV(6)
                 GEIST_ATTN_MW_PV(7)
 #endif
+#if OT_MAX > 8
+                GEIST_ATTN_MW_PV(8)
+#endif
 #undef GEIST_ATTN_MW_PV
             } else {
                 uint kpos = min(kcc + (lane >> 1u), pc.n_kv - 1u);
@@ -326,6 +373,9 @@ void main() {
                 GEIST_ATTN_MW_PVT(6)
                 GEIST_ATTN_MW_PVT(7)
 #endif
+#if OT_MAX > 8
+                GEIST_ATTN_MW_PVT(8)
+#endif
 #undef GEIST_ATTN_MW_PVT
             }
         }
@@ -338,6 +388,22 @@ void main() {
     barrier();
 
     /* O / l, one 16x16 tile at a time through this subgroup's staging */
+#ifdef GQA_FOLD
+#define GEIST_ATTN_MW_FINISH(N)                                                       \
+    coopMatStore(O##N, Osc, sg * 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);      \
+    sg_sync();                                                                        \
+    for (uint e = lane; e < 256u; e += 32u) {                                         \
+        uint f = row_block + e / 16u;                                                 \
+        if (f < n_rows) {                                                             \
+            float lr   = l_sh[e / 16u];                                               \
+            uint  d    = sg * OCOLS + (N) * 16u + e % 16u;                            \
+            uint  orow = (f / kv_group) * pc.n_q_heads + kv_head * kv_group + f % kv_group; \
+            out_v[pc.out_offset + orow * pc.head_dim + d] =                           \
+                    lr > 0.0 ? Osc[sg * 256u + e] / lr : 0.0;                         \
+        }                                                                             \
+    }                                                                                 \
+    sg_sync();
+#else
 #define GEIST_ATTN_MW_FINISH(N)                                                       \
     coopMatStore(O##N, Osc, sg * 256u, 16u, gl_CooperativeMatrixLayoutRowMajor);      \
     sg_sync();                                                                        \
@@ -352,6 +418,7 @@ void main() {
         }                                                                             \
     }                                                                                 \
     sg_sync();
+#endif
     GEIST_ATTN_MW_FINISH(0)
     GEIST_ATTN_MW_FINISH(1)
 #if OT_MAX > 2
@@ -363,6 +430,9 @@ void main() {
     GEIST_ATTN_MW_FINISH(5)
     GEIST_ATTN_MW_FINISH(6)
     GEIST_ATTN_MW_FINISH(7)
+#endif
+#if OT_MAX > 8
+    GEIST_ATTN_MW_FINISH(8)
 #endif
 #undef GEIST_ATTN_MW_FINISH
 }

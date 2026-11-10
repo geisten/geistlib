@@ -714,9 +714,12 @@ int main(void) {
     /* MLA heads (#504). 192: DeepSeek-V2-Lite's decompressed heads (16 x
      * 192, MHA), prefill on the tensor-core kernel. 576: the absorbed form's
      * one KV head, V = K's buffer, 32 (GigaChat3) or 16 (V2-Lite) q heads:
-     * prefill on the tensor-core kernel in thirds, decode on the split-KV
-     * _mla kernels, from an F16 and from the F32 cache; the generic kernels
-     * at 576 (short decode, F32 exact). */
+     * prefill on the multi-subgroup kernel with the q heads folded into the
+     * tile rows (F16 cache) or the one-subgroup kernel in thirds (F32
+     * cache), decode on the split-KV _mla kernels, from an F16 and from the
+     * F32 cache; the generic kernels at 576 (short decode, F32 exact). The
+     * last four prefill cases walk the folded tiles: several 64-key steps,
+     * a second KV head, a group of 3 (a tile spans tokens) and a window. */
     test_attention_f16(37, 37, 0, 16, 16, 192, 0, 0.6f, "prefill 37 MHA x192");
     test_attention_f16(300, 340, 40, 16, 16, 192, 0, 3.0f, "300 q_off=40 x192 large");
     g_v_is_k = true;
@@ -733,6 +736,10 @@ int main(void) {
         test_attention_f16(1, 1000, 999, 16, 1, 576, 0, 0.6f, "MLA decode 1000 x16");
         test_attention_f16(1, 600, 599, 16, 1, 520, 0, 0.6f, "MLA decode 600 x520");
         test_attention_f16(9, 9, 0, 16, 1, 520, 0, 0.6f, "MLA prefill 9 x520");
+        test_attention_f16(300, 300, 0, 16, 1, 576, 0, 3.0f, "MLA prefill 300 large");
+        test_attention_f16(40, 90, 50, 32, 2, 576, 0, 0.6f, "MLA 40 after 50, 2 KV heads");
+        test_attention_f16(33, 50, 17, 6, 2, 576, 0, 0.6f, "x576 group 3, 33 after 17");
+        test_attention_f16(70, 100, 30, 16, 1, 576, 20, 0.6f, "MLA 70 q_off=30 window 20");
     }
     g_kv32   = false;
     g_v_is_k = false;
