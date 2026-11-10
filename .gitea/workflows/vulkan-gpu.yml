@@ -78,6 +78,8 @@ jobs:
                    test_backend_vulkan_weight_index_unit \
                    test_backend_vulkan_linear_grouped_unit \
                    test_backend_vulkan_stage_unit \
+                   test_moe_device_unit \
+                   test_moe_grouped_unit \
                    test_qwen3moe_unit \
                    test_qwen35moe_unit \
                    test_session_snapshot_unit \
