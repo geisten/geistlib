@@ -30,7 +30,8 @@
  * v_b and the assembly run on the host, per head on the backend's kernels.
  *
  * On a GPU (#376: a backend with prims->scale_f32 that takes row views
- * and fused->linear_t_ids, and caps.mla_device: Metal) both forms run on the device, no host
+ * and fused->linear_t_ids, and caps.mla_device: Metal, Vulkan since #504)
+ * both forms run on the device, no host
  * round trip per layer: the latent's RMSNorm on its row view, K and V
  * assembled by strided copies (scale_f32 times 1), and absorbed, k_b / v_b
  * of every head as one linear_t_ids whose "experts" are the heads. A GPU

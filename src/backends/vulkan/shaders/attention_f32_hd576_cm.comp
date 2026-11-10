@@ -1,0 +1,8 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* attention_f16_hd576_cm.comp on the FP32 cache heads past 512 get by
+ * default (#375, #504). Body and notes: attention_f16_cm_body.glsl. */
+#define HD 576
+#define KV_F32 1
+#include "attention_f16_cm_body.glsl"

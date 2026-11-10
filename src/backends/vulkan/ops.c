@@ -1361,24 +1361,49 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
             be, VK_PIPE_QGATE_SPLIT, bi, acc, push, sizeof(push), vk_groups(n), 1, 1);
 }
 
+/* An F32 operand as rows of `feat`: contiguous (n / feat rows, stride feat)
+ * or a [rows, feat] row view of a wider tensor (stride[0] > feat: #504,
+ * deepseek2's latent on its kv_a row). */
+static bool vk_feat_rows(const struct geist_tensor *t, size_t feat, size_t *rows, size_t *stride) {
+    size_t r, c, rs;
+    if (feat == 0 || !vk_t_geom(t, &r, &c, &rs)) {
+        return false;
+    }
+    if (r == 1 && c % feat == 0) {
+        *rows   = c / feat;
+        *stride = feat;
+        return true;
+    }
+    *rows   = r;
+    *stride = rs;
+    return c == feat;
+}
+
 [[nodiscard]] static enum geist_status vk_rmsnorm(struct geist_backend      *be,
                                                   const struct geist_tensor *x,
                                                   const struct geist_tensor *w,
                                                   float                      eps,
                                                   struct geist_tensor       *y) {
+    const size_t n    = vk_t_n(x);
+    const size_t feat = n != 0 ? (size_t) x->shape[x->ndim - 1] : 0;
+    size_t       rows = 0, xs = 0, yrows = 0, ys = 0;
+    if (!vk_feat_rows(x, feat, &rows, &xs) || !vk_feat_rows(y, feat, &yrows, &ys) ||
+        yrows != rows || vk_t_n(w) != feat) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan rmsnorm: feature mismatch");
+        return GEIST_E_INVALID_ARG;
+    }
     {
-        const size_t           n    = vk_t_n(x);
-        const size_t           feat = n != 0 ? (size_t) x->shape[x->ndim - 1] : 0;
         VkDescriptorBufferInfo bi[3];
         uint32_t               off[3];
-        if (feat != 0 && n % feat == 0 && vk_t_n(w) == feat && vk_t_n(y) == n &&
-            vk_tensor_gpu(x, &bi[0], &off[0]) && vk_tensor_gpu(w, &bi[1], &off[1]) &&
+        if (vk_tensor_gpu(x, &bi[0], &off[0]) && vk_tensor_gpu(w, &bi[1], &off[1]) &&
             vk_tensor_gpu(y, &bi[2], &off[2])) {
             struct {
                 uint32_t rows, feat, x, w, y;
                 float    eps;
-            } push = {0, 0, off[0], off[1], off[2], eps};
-            if (vk_ckd_u32(n / feat, &push.rows) || vk_ckd_u32(feat, &push.feat)) {
+                uint32_t xs, ys;
+            } push = {0, 0, off[0], off[1], off[2], eps, 0, 0};
+            if (vk_ckd_u32(rows, &push.rows) || vk_ckd_u32(feat, &push.feat) ||
+                vk_ckd_u32(xs, &push.xs) || vk_ckd_u32(ys, &push.ys)) {
                 return vk_too_wide(be, "rmsnorm");
             }
             const struct vk_access acc[3] = {
@@ -1391,19 +1416,13 @@ vk_silu(struct geist_backend *be, const struct geist_tensor *x, struct geist_ten
     const float *xp = vk_tensor_host(x, &nx);
     const float *wp = vk_tensor_host(w, &nw);
     float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || wp == nullptr || yp == nullptr || nx != ny) {
+    if (xp == nullptr || wp == nullptr || yp == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan rmsnorm: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    const size_t feat = (size_t) x->shape[x->ndim - 1];
-    if (feat == 0 || nw != feat || nx % feat != 0) {
-        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan rmsnorm: feature mismatch");
-        return GEIST_E_INVALID_ARG;
-    }
-    const size_t n_rows = nx / feat;
-    for (size_t r = 0; r < n_rows; r++) {
-        const float *row_x = xp + r * feat;
-        float       *row_y = yp + r * feat;
+    for (size_t r = 0; r < rows; r++) {
+        const float *row_x = xp + r * xs;
+        float       *row_y = yp + r * ys;
         double       sumsq = 0.0;
         for (size_t i = 0; i < feat; i++) {
             sumsq += (double) row_x[i] * (double) row_x[i];
@@ -1607,7 +1626,7 @@ vk_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_
     VkDescriptorBufferInfo bi[5];
     uint32_t               off[5];
     if (stt->pipes[pipe] == VK_NULL_HANDLE || a->q->ndim != 3 || a->k->ndim != 3 ||
-        a->q->shape[2] > VK_ATTN_MAX_HEAD_DIM || vk_t_n(a->q) == 0 || vk_t_n(a->out) == 0 ||
+        a->q->shape[2] > VK_ATTN_SINKS_MAX_HEAD_DIM || vk_t_n(a->q) == 0 || vk_t_n(a->out) == 0 ||
         vk_t_n(a->sinks) == 0 || a->sinks->dtype != GEIST_DTYPE_F32 ||
         a->sinks->shape[0] != a->q->shape[1] || a->k->shape[1] <= 0 ||
         a->q->shape[1] % a->k->shape[1] != 0 ||
@@ -1647,14 +1666,22 @@ vk_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_
                                                     struct geist_tensor       *out) {
     /* Flash-decoding: n_q == 1 with f16 KV and enough context to make the
      * one-workgroup-per-head direct kernel starve the GPU. Partials go into
-     * the device x-ring; a combine pass reduces per head. */
+     * the device x-ring; a combine pass reduces per head. Heads past 512
+     * (absorbed MLA's 576, #504) take the _mla variants, from an F16 or the
+     * FP32 cache they get by default (#375). */
     struct vk_state *stt = be->state;
-    if (q != nullptr && k != nullptr && v != nullptr && out != nullptr && q->ndim == 3 &&
-        q->shape[0] == 1 && k->dtype == GEIST_DTYPE_F16 && (size_t) k->shape[0] > 192 &&
-        q->shape[2] <= VK_ATTN_MAX_HEAD_DIM && q->shape[2] % 4 == 0 && k->shape[1] > 0 &&
-        q->shape[1] % k->shape[1] == 0 && vk_t_n(q) != 0 && vk_t_n16(k) != 0 &&
-        stt->pipes[VK_PIPE_ATTN_PART_F16] != VK_NULL_HANDLE &&
-        stt->pipes[VK_PIPE_ATTN_PART_G2_F16] != VK_NULL_HANDLE) {
+    const bool dec   = q != nullptr && k != nullptr && v != nullptr && out != nullptr &&
+                       q->ndim == 3 && q->shape[0] == 1 && (size_t) k->shape[0] > 192 &&
+                       q->shape[2] % 4 == 0 && k->shape[1] > 0 && q->shape[1] % k->shape[1] == 0 &&
+                       vk_t_n(q) != 0;
+    const bool kv16d = dec && k->dtype == GEIST_DTYPE_F16 && vk_t_n16(k) != 0;
+    const bool mla   = dec && q->shape[2] > VK_ATTN_PART_MAX_HEAD_DIM &&
+                       q->shape[2] <= VK_ATTN_MAX_HEAD_DIM && (kv16d || vk_t_n(k) != 0);
+    const enum vk_pipe mla_pipe = kv16d ? VK_PIPE_ATTN_PART_MLA_F16 : VK_PIPE_ATTN_PART_MLA_F32;
+    if (mla ? stt->pipes[mla_pipe] != VK_NULL_HANDLE
+            : kv16d && q->shape[2] <= VK_ATTN_PART_MAX_HEAD_DIM &&
+                        stt->pipes[VK_PIPE_ATTN_PART_F16] != VK_NULL_HANDLE &&
+                        stt->pipes[VK_PIPE_ATTN_PART_G2_F16] != VK_NULL_HANDLE) {
         uint32_t qh, hd, n_kv, kvh, qpos, win;
         if (vk_ckd_u32((size_t) q->shape[1], &qh) || vk_ckd_u32((size_t) q->shape[2], &hd) ||
             vk_ckd_u32((size_t) k->shape[0], &n_kv) || vk_ckd_u32((size_t) k->shape[1], &kvh) ||
@@ -1669,7 +1696,9 @@ vk_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_
         const uint32_t grp  = qh / kvh;
         const uint32_t n_zb = grp / VK_ATTN_PART_MAX_GROUP + (grp % VK_ATTN_PART_MAX_GROUP != 0u);
         const uint32_t gb   = grp / n_zb + (grp % n_zb != 0u);
-        const enum vk_pipe part_pipe = gb <= 2u ? VK_PIPE_ATTN_PART_G2_F16 : VK_PIPE_ATTN_PART_F16;
+        const enum vk_pipe part_pipe = mla        ? mla_pipe
+                                       : gb <= 2u ? VK_PIPE_ATTN_PART_G2_F16
+                                                  : VK_PIPE_ATTN_PART_F16;
         uint32_t           tile, n_tiles, n_chunks;
         vk_attn_part_geometry(
                 s_lo < s_end ? s_end - s_lo : 0u, kvh * n_zb, &tile, &n_tiles, &n_chunks);
@@ -1686,7 +1715,9 @@ vk_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_
             vk_seq_flush(stt);
         }
         if (part_bytes > stt->xring->bytes || !vk_tensor_gpu(q, &bq, &qo) ||
-            !vk_tensor_gpu_f16(k, &bk, &ko) || !vk_tensor_gpu_f16(v, &bv, &vo) ||
+            !(kv16d ? vk_tensor_gpu_f16(k, &bk, &ko) && vk_tensor_gpu_f16(v, &bv, &vo)
+                    : v->dtype == GEIST_DTYPE_F32 && vk_t_n(v) != 0 && vk_tensor_gpu(k, &bk, &ko) &&
+                              vk_tensor_gpu(v, &bv, &vo)) ||
             !vk_tensor_gpu(out, &bo, &oo) ||
             ((qo | ko | vo) & 3u) != 0u /* 4-wide K/V/Q streams */) {
             goto attn_generic;
@@ -1699,10 +1730,11 @@ vk_attention_sinks(struct geist_backend *be, const struct geist_attention_sinks_
                 qh, kvh, hd, s_lo, s_end, tile, n_tiles, gb, qo, ko, vo, po, n_chunks};
         VkDescriptorBufferInfo bi1[4] = {
                 bq, bk, bv, {.buffer = stt->xring->buf, .range = VK_WHOLE_SIZE}};
-        const struct vk_access acc1[4] = {vk_acc_tensor(q, false),
-                                          vk_acc_tensor16(k, false),
-                                          vk_acc_tensor16(v, false),
-                                          vk_acc(stt->xring_used, part_bytes, true)};
+        const struct vk_access acc1[4] = {
+                vk_acc_tensor(q, false),
+                kv16d ? vk_acc_tensor16(k, false) : vk_acc_tensor(k, false),
+                kv16d ? vk_acc_tensor16(v, false) : vk_acc_tensor(v, false),
+                vk_acc(stt->xring_used, part_bytes, true)};
         if (vk_seq_dispatch_acc(
                     be, part_pipe, bi1, acc1, &push1, sizeof(push1), n_chunks, kvh, n_zb) !=
             GEIST_OK) {
@@ -1755,15 +1787,23 @@ attn_generic:;
                     vk_acc_tensor(out, true)};
             /* Tensor-core kernel: prefill only (n_q > 1; decode has the
              * attn_part_f16/attn_comb path above), one variant per head_dim
-             * (96: BitNet b1.58-large; 128: Qwen3; 256: qwen35/Bonsai, Gemma's local layers; 512:
-             * Gemma 4's global layers, two column halves in z). Same push
+             * (96: BitNet b1.58-large; 128: Qwen3; 192: DeepSeek-V2-Lite's
+             * decompressed MLA; 256: qwen35/Bonsai, Gemma's local layers; 512:
+             * Gemma 4's global layers, two column halves in z; 576: absorbed
+             * MLA, thirds in z, also from the FP32 cache, #504). Same push
              * layout and bindings as VK_PIPE_ATTENTION_F16, sliding window
              * included, just a 16-row dispatch. */
-            const enum vk_pipe cm_pipe = hd == 96    ? VK_PIPE_ATTENTION_F16_HD96_CM
-                                         : hd == 128 ? VK_PIPE_ATTENTION_F16_HD128_CM
-                                         : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
-                                         : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
-                                                     : VK_PIPE_COUNT;
+            const enum vk_pipe cm_pipe =
+                    !kv16       ? (hd == 576 && ((off[0] | off[1] | off[2]) & 3u) == 0u
+                                           ? VK_PIPE_ATTENTION_F32_HD576_CM
+                                           : VK_PIPE_COUNT)
+                    : hd == 96  ? VK_PIPE_ATTENTION_F16_HD96_CM
+                    : hd == 128 ? VK_PIPE_ATTENTION_F16_HD128_CM
+                    : hd == 192 ? VK_PIPE_ATTENTION_F16_HD192_CM
+                    : hd == 256 ? VK_PIPE_ATTENTION_F16_CM
+                    : hd == 512 ? VK_PIPE_ATTENTION_F16_HD512_CM
+                    : hd == 576 ? VK_PIPE_ATTENTION_F16_HD576_CM
+                                : VK_PIPE_COUNT;
             /* Four subgroups per workgroup sharing 64-key steps, one online-
              * softmax pass (#475): written for 32-lane subgroups (it maps
              * subgroup ids and softmax lanes onto that), so other widths keep
@@ -1784,8 +1824,7 @@ attn_generic:;
                                            qh,
                                            1);
             }
-            if (kv16 && n_q > 1 && cm_pipe != VK_PIPE_COUNT &&
-                stt->pipes[cm_pipe] != VK_NULL_HANDLE) {
+            if (n_q > 1 && cm_pipe != VK_PIPE_COUNT && stt->pipes[cm_pipe] != VK_NULL_HANDLE) {
                 return vk_seq_dispatch_acc(be,
                                            cm_pipe,
                                            bi,
@@ -1794,7 +1833,9 @@ attn_generic:;
                                            sizeof(push),
                                            n_q / 16u + (n_q % 16u != 0u ? 1u : 0u),
                                            qh,
-                                           hd == 512 ? 2u : 1u);
+                                           hd == 512   ? 2u
+                                           : hd == 576 ? 3u
+                                                       : 1u);
             }
             return vk_seq_dispatch_acc(be,
                                        kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
@@ -1893,17 +1934,37 @@ attn_generic:;
                                                     const struct geist_tensor *x,
                                                     float                      scale,
                                                     struct geist_tensor       *y) {
-    const size_t n = vk_t_n(x);
+    /* Contiguous, or two row views of the same rows x cols (#504: deepseek2
+     * assembles K, V and q by strided copies, scale 1, and zeros, scale 0). */
+    size_t rows = 0, cols = 0, xs = 0, yr = 0, yc = 0, ys = 0;
+    if (!vk_t_geom(x, &rows, &cols, &xs) || !vk_t_geom(y, &yr, &yc, &ys) ||
+        (yr != rows && !(yr == 1 && rows * cols == yc) && !(rows == 1 && yr * yc == cols))) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan scale_f32: bad inputs");
+        return GEIST_E_INVALID_ARG;
+    }
+    /* One side contiguous: its rows follow the other side's. */
+    if (rows == 1 && yr > 1) {
+        rows = yr;
+        cols = yc;
+        xs   = yc;
+    } else if (yr == 1 && rows > 1) {
+        ys = cols;
+    } else if (yc != cols) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan scale_f32: bad inputs");
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t n = rows * cols;
     {
         VkDescriptorBufferInfo bi[2];
         uint32_t               off[2];
-        if (n != 0 && n == vk_t_n(y) && vk_tensor_gpu(x, &bi[0], &off[0]) &&
-            vk_tensor_gpu(y, &bi[1], &off[1])) {
+        if (vk_tensor_gpu(x, &bi[0], &off[0]) && vk_tensor_gpu(y, &bi[1], &off[1])) {
             struct {
                 uint32_t n, x, y;
                 float    scale;
-            } push = {0, off[0], off[1], scale};
-            if (vk_ckd_u32(n, &push.n)) {
+                uint32_t cols, xs, ys;
+            } push = {0, off[0], off[1], scale, 0, 0, 0};
+            if (vk_ckd_u32(n, &push.n) || vk_ckd_u32(cols, &push.cols) ||
+                vk_ckd_u32(xs, &push.xs) || vk_ckd_u32(ys, &push.ys)) {
                 return vk_too_wide(be, "scale_f32");
             }
             const struct vk_access acc[2] = {vk_acc_tensor(x, false), vk_acc_tensor(y, true)};
@@ -1911,15 +1972,16 @@ attn_generic:;
                     be, VK_PIPE_SCALE, bi, acc, &push, sizeof(push), vk_groups(push.n), 1, 1);
         }
     }
-    size_t       nx = 0, ny = 0;
-    const float *xp = vk_tensor_host(x, &nx);
-    float       *yp = vk_tensor_host(y, &ny);
-    if (xp == nullptr || yp == nullptr || nx != ny) {
+    const float *xp = vk_tensor_host(x, nullptr);
+    float       *yp = vk_tensor_host(y, nullptr);
+    if (xp == nullptr || yp == nullptr) {
         geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan scale_f32: bad inputs");
         return GEIST_E_INVALID_ARG;
     }
-    for (size_t i = 0; i < nx; i++) {
-        yp[i] = xp[i] * scale;
+    for (size_t r = 0; r < rows; r++) {
+        for (size_t c = 0; c < cols; c++) {
+            yp[r * ys + c] = xp[r * xs + c] * scale;
+        }
     }
     return GEIST_OK;
 }
@@ -3153,28 +3215,43 @@ static_assert(sizeof(struct vk_push_moe_mm) == (size_t) 12 * sizeof(uint32_t),
         g.xs % 4u == 0) {
         return vk_ids_grouped(be, mm, n, mk, x_rows, x_div, tab_at, ids, &g, bi);
     }
-    if (mk32 > 65535u) {
-        return GEIST_E_UNSUPPORTED; /* the slots are the dispatch's y */
-    }
+    /* The slots are the dispatch's y, at most 65535 each: more (absorbed
+     * MLA's heads x a prefill chunk, #504) go in runs of a multiple of k,
+     * so a run's first slot starts an x row. */
     bi[2] = (VkDescriptorBufferInfo) {.buffer = st->seltab->buf, .range = VK_WHOLE_SIZE};
     bi[3] = (VkDescriptorBufferInfo) {.buffer = ids->buf, .range = VK_WHOLE_SIZE};
-    const struct vk_push_sel push   = {.n_in           = g.n_in,
-                                       .n_out          = g.n_out,
-                                       .blocks_per_row = g.blocks_per_row,
-                                       .x_div          = x_div,
-                                       .x_offset       = g.xo,
-                                       .y_offset       = g.yo,
-                                       .x_stride       = g.xs,
-                                       .y_stride       = g.ys,
-                                       .ids_off        = io,
-                                       .tab_off        = tab_at / 8u};
-    const struct vk_access   acc[4] = {
-            vk_acc((uint64_t) g.xo * 4u, ((uint64_t) (x_rows - 1u) * g.xs + g.n_in) * 4u, false),
-            vk_acc((uint64_t) g.yo * 4u, ((uint64_t) (mk32 - 1u) * g.ys + g.n_out) * 4u, true),
-            vk_acc((uint64_t) tab_at, (uint64_t) n * 8u, false),
-            vk_acc((uint64_t) io * 4u, (uint64_t) mk32 * 4u, false)};
-    return vk_seq_dispatch_acc(
-            be, vk_grouped_pipe(w0->dtype, true), bi, acc, &push, sizeof push, g.gx, mk32, 1);
+    const uint32_t     run = 65535u - 65535u % k32;
+    const enum vk_pipe p   = vk_grouped_pipe(w0->dtype, true);
+    for (uint32_t s0 = 0; s0 < mk32; s0 += run) {
+        const uint32_t cnt  = mk32 - s0 < run ? mk32 - s0 : run;
+        const uint64_t xo   = (uint64_t) g.xo + (uint64_t) (s0 / x_div) * g.xs;
+        const uint64_t yo   = (uint64_t) g.yo + (uint64_t) s0 * g.ys;
+        const uint32_t rows = (cnt - 1u) / x_div + 1u; /* x rows the run reads */
+        if (xo > UINT32_MAX || yo > UINT32_MAX || io > UINT32_MAX - s0) {
+            return vk_too_wide(be, "linear_t_ids");
+        }
+        const struct vk_push_sel push   = {.n_in           = g.n_in,
+                                           .n_out          = g.n_out,
+                                           .blocks_per_row = g.blocks_per_row,
+                                           .x_div          = x_div,
+                                           .x_offset       = (uint32_t) xo,
+                                           .y_offset       = (uint32_t) yo,
+                                           .x_stride       = g.xs,
+                                           .y_stride       = g.ys,
+                                           .ids_off        = io + s0,
+                                           .tab_off        = tab_at / 8u};
+        const struct vk_access   acc[4] = {
+                vk_acc(xo * 4u, ((uint64_t) (rows - 1u) * g.xs + g.n_in) * 4u, false),
+                vk_acc(yo * 4u, ((uint64_t) (cnt - 1u) * g.ys + g.n_out) * 4u, true),
+                vk_acc((uint64_t) tab_at, (uint64_t) n * 8u, false),
+                vk_acc((uint64_t) (io + s0) * 4u, (uint64_t) cnt * 4u, false)};
+        const enum geist_status s =
+                vk_seq_dispatch_acc(be, p, bi, acc, &push, sizeof push, g.gx, cnt, 1);
+        if (s != GEIST_OK) {
+            return s;
+        }
+    }
+    return GEIST_OK;
 }
 
 /* An F32 operand of rows x cols on a device buffer: its element offset and
@@ -4476,11 +4553,15 @@ const struct geist_backend_descriptor geist_backend_vulkan = GEIST_BACKEND_DESCR
                         .batched_submit             = true,
                         .weights_need_backend_arena = true,
                         .weights_device_copy        = true,
-                        .max_m                      = VK_MAX_M,
-                        /* the DeltaNet mixer is sequential over tokens: its cost does not
-                         * grow with the chunk, so GEIST_M_MAX above 64 is not capped for
-                         * qwen35 hybrids. The default chunk stays 64: 128 makes the
-                         * scratch pool spill out of a 256 MB BAR heap (#488) */
+                        /* deepseek2's latent attention (#504): rmsnorm and
+                         * scale_f32 on row views, linear_t_ids per head,
+                         * attention at 192 and 576 */
+                 .mla_device = true,
+                 .max_m      = VK_MAX_M,
+                 /* the DeltaNet mixer is sequential over tokens: its cost does not
+                  * grow with the chunk, so GEIST_M_MAX above 64 is not capped for
+                  * qwen35 hybrids. The default chunk stays 64: 128 makes the
+                  * scratch pool spill out of a 256 MB BAR heap (#488) */
                  /* 128 where the scratch pool fits the BAR window (the PQ2_0
                   * tensor-core tile is 128 tokens wide); the arch lowers it to
                   * 64 when it does not (vtbl->fast_host_bytes) */

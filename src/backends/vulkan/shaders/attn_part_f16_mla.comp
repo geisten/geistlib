@@ -1,0 +1,13 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+/* Flash-decoding partial pass for absorbed MLA's one KV head of 576 dims
+ * (DeepSeek-V3, GigaChat3; #504), F16 cache: its 144 dim slices need more
+ * than VK_ATTN_PART_WG lanes, so this variant runs VK_ATTN_PART_MLA_WG and
+ * serves only heads past 512 (one position group). Body and notes:
+ * attn_part_f16_body.glsl. */
+#define GROUP 4u
+#define PART_WG VK_ATTN_PART_MLA_WG
+#define PART_MAX_HD VK_ATTN_MAX_HEAD_DIM
+#define PART_MLA 1
+#include "attn_part_f16_body.glsl"

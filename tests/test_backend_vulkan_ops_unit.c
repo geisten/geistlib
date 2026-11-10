@@ -4,7 +4,14 @@
  *   - rope_apply with a rotated prefix narrower than head_dim (partial
  *     rotary, 64 of 256) and with full rotation (regression);
  *   - silu, fused silu_mul (SwiGLU epilogue, in place), sigmoid_mul (the
- *     attention output gate, in place) and attn_qgate_split.
+ *     attention output gate, in place) and attn_qgate_split;
+ *   - rmsnorm and scale_f32 on row views of wider rows, in place and into
+ *     another view or a contiguous tensor, the bytes between the rows left
+ *     alone (#504: deepseek2's latent norm and strided K/V/q assembly);
+ *   - attention at the MLA heads (#504): 192 (DeepSeek-V2-Lite
+ *     decompressed) and 576 (absorbed: 16 or 32 q heads on one KV head whose
+ *     V is K), prefill on the tensor-core kernels and decode on the split-KV
+ *     kernels, from F16 and from F32 caches.
  *
  * Every operand lives in a KV_CACHE-role buffer, which this backend keeps in
  * VRAM without a host mapping: an op that silently fell back to a host loop
@@ -365,6 +372,92 @@ static void test_rmsnorm(size_t rows, size_t feat) {
     free(ref);
 }
 
+/* rmsnorm and scale_f32 on [rows, cols] views at float `off` of rows
+ * `stride` wide (#504): in place and into a second view; scale into a
+ * contiguous tensor, and by 0. Everything outside the views must keep its
+ * bytes: a kernel that read the view as contiguous rows writes there. */
+static void test_row_views(size_t rows, size_t cols, size_t off, size_t stride) {
+    const size_t n           = rows * stride;
+    float       *x           = geist_test_fill(n, 0.11f, 0.2f, 3.0f, 0.1f),
+          *w                 = geist_test_fill(cols, 0.05f, 0.3f, 1.5f, 0.0f);
+    float               *got = malloc(n * sizeof(float)), *ref = malloc(n * sizeof(float));
+    float               *cont = malloc(rows * cols * sizeof(float));
+    const float          eps  = 1e-6f;
+    struct geist_buffer *bx = dev_buf(x, n), *by = dev_buf(x, n), *bw = dev_buf(w, cols),
+                        *bc = dev_buf(nullptr, rows * cols);
+    check(bx && by && bw && bc, "row view buffers");
+    const struct geist_tensor view = {.buffer = bx,
+                                      .offset = (int64_t) (off * sizeof(float)),
+                                      .dtype  = GEIST_DTYPE_F32,
+                                      .layout = GEIST_LAYOUT_DENSE,
+                                      .ndim   = 2,
+                                      .shape  = {(int64_t) rows, (int64_t) cols},
+                                      .stride = {(int64_t) stride, 1}};
+    struct geist_tensor       tx = view, ty = view, tc;
+    ty.buffer              = by;
+    ty.offset              = 0; /* y's rows from float 0 of the same stride */
+    tc                     = geist_test_tensor_f32(bc, 2, (int64_t) rows, (int64_t) cols, 0);
+    struct geist_tensor tw = geist_test_tensor_f32(bw, 1, (int64_t) cols, 0, 0);
+
+    /* rmsnorm in place on the view */
+    memcpy(ref, x, n * sizeof(float));
+    for (size_t r = 0; r < rows; r++) {
+        const float *xr = x + r * stride + off;
+        double       ss = 0.0;
+        for (size_t i = 0; i < cols; i++)
+            ss += (double) xr[i] * xr[i];
+        const double inv = 1.0 / sqrt(ss / (double) cols + (double) eps);
+        for (size_t i = 0; i < cols; i++)
+            ref[r * stride + off + i] = (float) ((double) xr[i] * inv * (double) w[i]);
+    }
+    check(g_be->desc->prims->rmsnorm(g_be, &tx, &tw, eps, &tx) == GEIST_OK,
+          "rmsnorm on a row view");
+    check(download(bx, got, n), "rmsnorm view download");
+    double e = geist_test_max_abs(n, got, ref);
+    printf("  rmsnorm view %zux%zu @%zu/%zu  max_abs %.2e\n", rows, cols, off, stride, e);
+    check(e < 1e-5, "rmsnorm on a row view, the gaps untouched");
+
+    /* scale: the normed view (the device's bytes) into y's view (offset 0),
+     * then y's view into a contiguous tensor, then zeros into y's view */
+    float *yref = malloc(n * sizeof(float));
+    memcpy(yref, x, n * sizeof(float));
+    for (size_t r = 0; r < rows; r++)
+        for (size_t i = 0; i < cols; i++)
+            yref[r * stride + i] = got[r * stride + off + i] * 0.5f;
+    check(g_be->desc->prims->scale_f32(g_be, &tx, 0.5f, &ty) == GEIST_OK, "scale view -> view");
+    check(download(by, got, n), "scale download");
+    e = geist_test_max_abs(n, got, yref);
+    printf("  scale view -> view            max_abs %.2e\n", e);
+    check(e == 0.0, "scale_f32 between row views is exact, the gaps untouched");
+    for (size_t r = 0; r < rows; r++)
+        for (size_t i = 0; i < cols; i++)
+            cont[r * cols + i] = yref[r * stride + i] * 2.0f;
+    check(g_be->desc->prims->scale_f32(g_be, &ty, 2.0f, &tc) == GEIST_OK,
+          "scale view -> contiguous");
+    check(download(bc, got, rows * cols), "scale contiguous download");
+    e = geist_test_max_abs(rows * cols, got, cont);
+    printf("  scale view -> contiguous      max_abs %.2e\n", e);
+    check(e == 0.0, "scale_f32 from a row view into contiguous rows is exact");
+    check(g_be->desc->prims->scale_f32(g_be, &tc, 0.0f, &ty) == GEIST_OK, "scale by 0");
+    check(download(by, got, n), "scale by 0 download");
+    for (size_t r = 0; r < rows; r++)
+        for (size_t i = 0; i < cols; i++)
+            yref[r * stride + i] = 0.0f;
+    e = geist_test_max_abs(n, got, yref);
+    check(e == 0.0, "scale_f32 by 0 writes zeros into the view only");
+
+    g_be->desc->vtbl->buffer_destroy(g_be, bx);
+    g_be->desc->vtbl->buffer_destroy(g_be, by);
+    g_be->desc->vtbl->buffer_destroy(g_be, bw);
+    g_be->desc->vtbl->buffer_destroy(g_be, bc);
+    free(x);
+    free(w);
+    free(got);
+    free(ref);
+    free(yref);
+    free(cont);
+}
+
 static void test_qgate(size_t rows, size_t heads, size_t hd) {
     const size_t q_out = heads * hd;
     float       *joint = geist_test_fill(rows * 2 * q_out, 0.07f, 0.3f, 2.0f, 0.0f);
@@ -406,6 +499,10 @@ static void test_qgate(size_t rows, size_t heads, size_t hd) {
 /* prims->attention against the host reference attention_mqa_causal_kv, F32
  * KV. Shapes mirror the transformer families that use the generic (non
  * gemma) attention path. */
+/* Absorbed MLA (#504): the K cache serves as V (kv_store_attention), so
+ * the tests pass one buffer for both. */
+static bool g_v_is_k = false;
+
 static void test_attention(size_t      n_q,
                            size_t      n_kv,
                            size_t      q_off,
@@ -414,9 +511,11 @@ static void test_attention(size_t      n_q,
                            size_t      hd,
                            size_t      sliding,
                            const char *name) {
-    float *q   = geist_test_fill(n_q * qh * hd, 0.031f, 0.3f, 0.6f, 0.0f),
-          *k   = geist_test_fill(n_kv * kvh * hd, 0.023f, 0.3f, 0.6f, 0.0f);
-    float *v   = geist_test_fill(n_kv * kvh * hd, 0.017f, 0.3f, 1.0f, 0.0f);
+    float *q = geist_test_fill(n_q * qh * hd, 0.031f, 0.3f, 0.6f, 0.0f),
+          *k = geist_test_fill(n_kv * kvh * hd, 0.023f, 0.3f, 0.6f, 0.0f);
+    float *v = geist_test_fill(n_kv * kvh * hd, 0.017f, 0.3f, 1.0f, 0.0f);
+    if (g_v_is_k)
+        memcpy(v, k, n_kv * kvh * hd * sizeof(float));
     float *ref = malloc(n_q * qh * hd * sizeof(float)),
           *got = malloc(n_q * qh * hd * sizeof(float));
     attention_mqa_causal_kv(n_q, n_kv, q_off, qh, kvh, hd, sliding, q, k, v, ref);
@@ -427,8 +526,8 @@ static void test_attention(size_t      n_q,
             geist_test_tensor_f32(bq, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
     struct geist_tensor tk =
             geist_test_tensor_f32(bk, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
-    struct geist_tensor tv =
-            geist_test_tensor_f32(bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
+    struct geist_tensor tv = geist_test_tensor_f32(
+            g_v_is_k ? bk : bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
     struct geist_tensor to =
             geist_test_tensor_f32(bo, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
     check(g_be->desc->prims->attention(g_be, &tq, &tk, &tv, q_off, sliding, &to) == GEIST_OK,
@@ -449,9 +548,14 @@ static void test_attention(size_t      n_q,
 }
 
 /* The same with F16 K/V, the KV-cache dtype the GPU path uses, so prefill
- * (n_q > 1) takes the tensor-core kernel for head_dim 96 / 128 / 256 / 512 and
- * sliding windows (#475). The reference sees the f16-rounded Q/K/V; the
- * kernel also rounds P to f16, hence the looser bound. */
+ * (n_q > 1) takes the tensor-core kernel for head_dim 96 / 128 / 192 / 256 /
+ * 512 / 576 and sliding windows (#475). The reference sees the f16-rounded
+ * Q/K/V; the kernel also rounds P to f16, hence the looser bound. With
+ * g_kv32 the cache is F32 holding the same f16-representable values (the
+ * 576 tensor-core kernel rounds an F32 cache to half in its tiles, #504),
+ * with g_v_is_k V is K's buffer. */
+static bool g_kv32 = false;
+
 static void test_attention_f16(size_t      n_q,
                                size_t      n_kv,
                                size_t      q_off,
@@ -472,7 +576,7 @@ static void test_attention_f16(size_t      n_q,
     }
     for (size_t i = 0; i < nk; i++) {
         k16[i] = (_Float16) k[i];
-        v16[i] = (_Float16) v[i];
+        v16[i] = g_v_is_k ? k16[i] : (_Float16) v[i];
         k[i]   = (float) k16[i];
         v[i]   = (float) v16[i];
     }
@@ -480,13 +584,18 @@ static void test_attention_f16(size_t      n_q,
     const struct geist_backend_vtbl *vt = g_be->desc->vtbl;
     struct geist_buffer             *bq = dev_buf(q, nq), *bo = dev_buf(nullptr, nq), *bk = nullptr,
                         *bv = nullptr;
+    const size_t es         = g_kv32 ? sizeof(float) : sizeof(_Float16);
     check(bq && bo &&
-                  vt->buffer_create(g_be, nk * 2, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &bk) ==
+                  vt->buffer_create(g_be, nk * es, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &bk) ==
                           GEIST_OK &&
-                  vt->buffer_create(g_be, nk * 2, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &bv) ==
+                  vt->buffer_create(g_be, nk * es, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &bv) ==
                           GEIST_OK &&
-                  vt->buffer_upload(bk, nk * 2, (const uint8_t *) k16) == GEIST_OK &&
-                  vt->buffer_upload(bv, nk * 2, (const uint8_t *) v16) == GEIST_OK,
+                  vt->buffer_upload(
+                          bk, nk * es, g_kv32 ? (const uint8_t *) k : (const uint8_t *) k16) ==
+                          GEIST_OK &&
+                  vt->buffer_upload(
+                          bv, nk * es, g_kv32 ? (const uint8_t *) v : (const uint8_t *) v16) ==
+                          GEIST_OK,
           "attention f16 buffers");
     struct geist_tensor tq =
             geist_test_tensor_f32(bq, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
@@ -496,13 +605,15 @@ static void test_attention_f16(size_t      n_q,
             geist_test_tensor_f32(bv, 3, (int64_t) n_kv, (int64_t) kvh, (int64_t) hd);
     struct geist_tensor to =
             geist_test_tensor_f32(bo, 3, (int64_t) n_q, (int64_t) qh, (int64_t) hd);
-    tk.dtype = GEIST_DTYPE_F16;
-    tv.dtype = GEIST_DTYPE_F16;
+    tk.dtype = g_kv32 ? GEIST_DTYPE_F32 : GEIST_DTYPE_F16;
+    tv.dtype = tk.dtype;
+    if (g_v_is_k)
+        tv.buffer = bk;
     check(g_be->desc->prims->attention(g_be, &tq, &tk, &tv, q_off, sliding, &to) == GEIST_OK,
           "attention f16 dispatch");
     check(download(bo, got, nq), "attention f16 download");
     const double e = geist_test_max_abs(nq, got, ref);
-    printf("  attention f16 %-24s max_abs %.2e\n", name, e);
+    printf("  attention %s %-24s max_abs %.2e\n", g_kv32 ? "f32" : "f16", name, e);
     check(e < 1e-3, name);
     vt->buffer_destroy(g_be, bq);
     vt->buffer_destroy(g_be, bk);
@@ -546,6 +657,9 @@ int main(void) {
     test_elementwise(7, 129);
     test_rmsnorm(3, 2048);
     test_rmsnorm(1, 1000);
+    test_row_views(7, 512, 64, 576);  /* the latent of kv_a / K rows (#504) */
+    test_row_views(33, 128, 64, 192); /* q_nope of V2-Lite's q heads */
+    test_row_views(1, 100, 4, 300);
     test_elementwise(1, 4096);
     test_qgate(5, 4, 64);
     test_qgate(1, 24, 256);
@@ -597,6 +711,31 @@ int main(void) {
     test_attention_f16(1, 333, 332, 16, 4, 256, 17, 0.6f, "decode 333 GQA4 w17");
     test_attention_f16(1, 400, 250, 8, 2, 128, 0, 0.6f, "decode kv=400 q_off=250");
     test_attention_f16(1, 3072, 3071, 16, 8, 128, 0, 6.0f, "decode 3072 GQA2 large");
+    /* MLA heads (#504). 192: DeepSeek-V2-Lite's decompressed heads (16 x
+     * 192, MHA), prefill on the tensor-core kernel. 576: the absorbed form's
+     * one KV head, V = K's buffer, 32 (GigaChat3) or 16 (V2-Lite) q heads:
+     * prefill on the tensor-core kernel in thirds, decode on the split-KV
+     * _mla kernels, from an F16 and from the F32 cache; the generic kernels
+     * at 576 (short decode, F32 exact). */
+    test_attention_f16(37, 37, 0, 16, 16, 192, 0, 0.6f, "prefill 37 MHA x192");
+    test_attention_f16(300, 340, 40, 16, 16, 192, 0, 3.0f, "300 q_off=40 x192 large");
+    g_v_is_k = true;
+    test_attention(1, 100, 99, 32, 1, 576, 0, "MLA decode kv=100 x576");
+    test_attention(1, 700, 699, 32, 1, 576, 0, "MLA decode kv=700 x576 (split)");
+    test_attention(3, 3, 0, 16, 1, 520, 0, "MLA prefill 3 x520");
+    for (int f32 = 0; f32 < 2; f32++) {
+        g_kv32 = f32 != 0;
+        test_attention_f16(37, 37, 0, 32, 1, 576, 0, 0.6f, "MLA prefill 37 x576");
+        test_attention_f16(131, 131, 0, 32, 1, 576, 0, 3.0f, "MLA prefill 131 large");
+        test_attention_f16(77, 477, 400, 16, 1, 576, 0, 0.6f, "MLA chunk 77 after 400");
+        test_attention_f16(1, 300, 299, 32, 1, 576, 0, 0.6f, "MLA decode kv=300");
+        test_attention_f16(1, 2049, 2048, 32, 1, 576, 0, 3.0f, "MLA decode 2049 large");
+        test_attention_f16(1, 1000, 999, 16, 1, 576, 0, 0.6f, "MLA decode 1000 x16");
+        test_attention_f16(1, 600, 599, 16, 1, 520, 0, 0.6f, "MLA decode 600 x520");
+        test_attention_f16(9, 9, 0, 16, 1, 520, 0, 0.6f, "MLA prefill 9 x520");
+    }
+    g_kv32   = false;
+    g_v_is_k = false;
     geist_backend_destroy(g_be);
     for (size_t i = 0; i < sizeof tables / sizeof tables[0]; i++) {
         free(tables[i]);
@@ -604,7 +743,7 @@ int main(void) {
     if (g_fail == 0) {
         printf("PASS: Vulkan qwen35 ops (partial and interleaved rope, hadamard, PQ2_0 embed, "
                "relu2, "
-               "act_quant, rmsnorm, rmsnorm_add, silu, "
+               "act_quant, rmsnorm, rmsnorm_add, row views, MLA attention, silu, "
                "silu_mul, "
                "sigmoid_mul, "
                "qgate_split)\n");

@@ -6,7 +6,8 @@
  *   - 256 threads compute 256 QK dots in parallel (q cached in shared),
  *   - chunk max/sum via shared tree reduce, running (m, l) rescale,
  *   - V accumulated per-thread along head_dim (coalesced column reads).
- * Two passes over K/V total; no serial per-position loop. head_dim <= 512.
+ * Two passes over K/V total; no serial per-position loop. head_dim <=
+ * VK_ATTN_MAX_HEAD_DIM (576: three dims per thread).
  * No score scale: Gemma encodes 1/sqrt(d) in the Q/K norms. */
 
 layout(local_size_x = 256) in;
@@ -77,6 +78,7 @@ void main() {
     float l_run = 0.0;
     float acc0 = 0.0; /* dim lid        */
     float acc1 = 0.0; /* dim lid + 256  */
+    float acc2 = 0.0; /* dim lid + 512  */
     uint kv_row = pc.n_kv_heads * hd;
 
     for (uint base = s_lo; base <= s_hi; base += 256) {
@@ -124,6 +126,7 @@ void main() {
         uint chunk_n = min(255u, s_hi - base) + 1u;
         float a0 = 0.0;
         float a1 = 0.0;
+        float a2 = 0.0;
         for (uint j = 0; j < chunk_n; j++) {
             uint v_base = pc.v_offset + (base + j) * kv_row + kv_head * hd;
             float wj = w_sh[j];
@@ -133,9 +136,13 @@ void main() {
             if (lid + 256 < hd) {
                 a1 += wj * v[v_base + lid + 256];
             }
+            if (lid + 512 < hd) {
+                a2 += wj * v[v_base + lid + 512];
+            }
         }
         acc0 = acc0 * r + a0;
         acc1 = acc1 * r + a1;
+        acc2 = acc2 * r + a2;
         barrier(); /* w_sh reused next chunk */
     }
 
@@ -145,5 +152,8 @@ void main() {
     }
     if (lid + 256 < hd) {
         out_v[out_base + lid + 256] = acc1 * inv_l;
+    }
+    if (lid + 512 < hd) {
+        out_v[out_base + lid + 512] = acc2 * inv_l;
     }
 }

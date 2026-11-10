@@ -17,7 +17,7 @@
    "what": "function-like #define"
   },
   "define_object": {
-   "max": 65,
+   "max": 68,
    "what": "object-like #define with a replacement"
   },
   "enum_anonymous": {
