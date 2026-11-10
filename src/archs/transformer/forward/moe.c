@@ -315,6 +315,7 @@ struct moe_job {
     size_t            n_res; /* hot[0, n_res) resident, the rest staged (#239) */
     size_t            layer;
     bool              decode_rows; /* a batched decode's rows (#245): each row its own matvec */
+    bool              prefill;     /* a prefill chunk: every expert on the M>1 kernels (#527) */
     pthread_t         caller;      /* the only thread that runs the GPU's batch */
     _Atomic bool      gpu_taken;
     _Atomic size_t    next;
@@ -322,15 +323,22 @@ struct moe_job {
     enum geist_status gpu_status;
 };
 
+/* One projection of m rows: the M=1 kernel for a decode step's row, the
+ * M>1 kernel otherwise. In a prefill chunk an expert's m is how many of
+ * the chunk's tokens chose it, so it changes with the chunking; there one
+ * row takes the M>1 kernel too, which gives a row the same bits for every
+ * m, where a backend's M=1 decode GEMV may sum in another order (#527). */
 static void moe_linear(size_t                     m,
+                       bool                       prefill,
                        const float               *x,
                        const struct geist_weight *w,
                        struct geist_backend      *be,
                        float                     *y,
                        bool                      *ok) {
-    if (m == 1 && w->linear_m1 != nullptr)
+    const bool m1 = m == 1 && (!prefill || w->linear_mN == nullptr);
+    if (m1 && w->linear_m1 != nullptr)
         w->linear_m1(x, w, be, y);
-    else if (m > 1 && w->linear_mN != nullptr)
+    else if (!m1 && w->linear_mN != nullptr)
         w->linear_mN(m, x, w, be, y);
     else
         *ok = false;
@@ -443,18 +451,20 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     const struct geist_weight       *wg = &j->L->moe_gate_w[e], *wu = &j->L->moe_up_w[e];
     bool                             ok = true;
 
-    /* gate and up read the same x: one pair kernel where the backend has it. */
+    /* gate and up read the same x: one pair kernel where the backend has
+     * it, on the M=1 side only for a decode step's row (moe_linear). */
+    const bool m1 = m == 1 && !j->prefill;
     const bool pair =
             wg->n_in == wu->n_in &&
-            (m == 1 ? wg->linear_pair_m1 != nullptr && wg->linear_pair_m1 == wu->linear_pair_m1
-                    : wg->linear_pair_mN != nullptr && wg->linear_pair_mN == wu->linear_pair_mN);
-    if (pair && m == 1)
+            (m1 ? wg->linear_pair_m1 != nullptr && wg->linear_pair_m1 == wu->linear_pair_m1
+                : wg->linear_pair_mN != nullptr && wg->linear_pair_mN == wu->linear_pair_mN);
+    if (pair && m1)
         wg->linear_pair_m1(x, wg, wu, j->be, g, u);
     else if (pair)
         wg->linear_pair_mN(m, x, wg, wu, j->be, g, u);
     else {
-        moe_linear(m, x, wg, j->be, g, &ok);
-        moe_linear(m, x, wu, j->be, u, &ok);
+        moe_linear(m, j->prefill, x, wg, j->be, g, &ok);
+        moe_linear(m, j->prefill, x, wu, j->be, u, &ok);
     }
     if (!ok)
         return false;
@@ -464,7 +474,7 @@ static bool moe_expert_rows(const struct moe_job *j, size_t e, size_t row0, size
     const float *db    = moe_bias(j, j->L->moe_down_b, e, j->d);
     ok                 = moe_act(j, row0, m, 0, inter, gb, ub);
     if (ok)
-        moe_linear(m, g, &j->L->moe_down_w[e], j->be, y, &ok);
+        moe_linear(m, j->prefill, g, &j->L->moe_down_w[e], j->be, y, &ok);
     for (size_t r = 0; ok && db != nullptr && r < m; r++)
         for (size_t c = 0; c < j->d; c++)
             y[r * j->d + c] += db[c];
@@ -532,8 +542,8 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
             if (ok && a.linear_pair_m1 != nullptr && a.linear_pair_m1 == b.linear_pair_m1)
                 a.linear_pair_m1(x, &a, &b, j->be, g + lo, u + lo);
             else if (ok) {
-                moe_linear(1, x, &a, j->be, g + lo, &ok);
-                moe_linear(1, x, &b, j->be, u + lo, &ok);
+                moe_linear(1, false, x, &a, j->be, g + lo, &ok);
+                moe_linear(1, false, x, &b, j->be, u + lo, &ok);
             }
             if (ok)
                 ok = moe_act(j,
@@ -549,7 +559,7 @@ static void moe_split_worker(void *ctx, size_t begin, size_t end) {
             const float *db = moe_bias(j, j->L->moe_down_b, e, j->d);
             ok              = weight_rows(&j->L->moe_down_w[e], lo, hi, &a);
             if (ok)
-                moe_linear(1, g, &a, j->be, y + lo, &ok);
+                moe_linear(1, false, g, &a, j->be, y + lo, &ok);
             for (size_t c = lo; ok && db != nullptr && c < hi; c++)
                 y[c] += db[c];
         }
@@ -876,6 +886,7 @@ enum geist_status blk_moe_ffn(struct transformer_layer_forward_ctx *ctx) {
     j->n_hot            = 0;
     j->layer            = (size_t) ctx->layer_idx;
     j->decode_rows      = ctx->decode_rows;
+    j->prefill          = seq > 1 && !ctx->decode_rows;
     j->gpu_status       = GEIST_OK;
     size_t rows_gpu     = 0;
     /* #239: a prefill step on the model's GPU copies the cold experts with

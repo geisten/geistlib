@@ -121,8 +121,8 @@ static bool q6k_tiled_on(void) {
 }
 
 /* Prefill from the GGUF bytes: whole Q8_Kx4 groups of rows through the
- * tiled GEMM, the m % 4 tail through the M=1 GEMV; below TILED_MIN_ROWS,
- * or when a workspace is missing, the raw Q6_K GEMM. */
+ * tiled GEMM, the m % 4 tail through the raw Q6_K GEMM; below
+ * TILED_MIN_ROWS, or when a workspace is missing, the raw GEMM for all. */
 static void cpu_x86_linear_q6k_tiled_mN(size_t                     m,
                                         const float               *x,
                                         const struct geist_weight *w,
@@ -152,8 +152,10 @@ static void cpu_x86_linear_q6k_tiled_mN(size_t                     m,
                                     (struct cpu_x86_state *) be->state)) {
         cpu_x86_linear_q6k_raw_mN(m4, x, w, be, y);
     }
-    for (size_t row = m4; row < m; row++) {
-        cpu_x86_linear_q6k_m1(x + row * n_in, w, be, y + row * n_out);
+    /* The m % 4 tail on the raw GEMM, whose rows have the tiled GEMM's bits
+     * (the M=1 decode GEMV sums in another order, #527). */
+    if (m4 < m) {
+        cpu_x86_linear_q6k_raw_mN(m - m4, x + m4 * n_in, w, be, y + m4 * n_out);
     }
 }
 

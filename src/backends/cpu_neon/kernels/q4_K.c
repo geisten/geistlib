@@ -25,6 +25,7 @@
 #include <arm_neon.h>
 
 #include "decode_rows.h"
+#include "kq_epilogue.h"
 
 struct q4k_predecode_header {
     uint32_t magic;
@@ -598,7 +599,7 @@ static void q4k_prefill_panels(void *ctx, size_t p0, size_t p1) {
                         for (int j = 0; j < 8; j++)
                             mc += (int32_t) mins[j] * sp[j];
                         btile[ii * (size_t) NC + r] =
-                                d_blk * (float) vaddvq_s32(acc[t]) - dmin_blk * (float) mc;
+                                q4k_epi_t(d_blk, dmin_blk, vaddvq_s32(acc[t]), mc);
                     }
                 }
                 for (; i < m; i++) {
@@ -634,8 +635,7 @@ static void q4k_prefill_panels(void *ctx, size_t p0, size_t p1) {
                     int32_t        mc = 0;
                     for (int j = 0; j < 8; j++)
                         mc += (int32_t) mins[j] * sp[j];
-                    btile[i * (size_t) NC + r] =
-                            d_blk * (float) vaddvq_s32(acc) - dmin_blk * (float) mc;
+                    btile[i * (size_t) NC + r] = q4k_epi_t(d_blk, dmin_blk, vaddvq_s32(acc), mc);
                 }
             }
             /* Fused multiply-add as before, so the sums are bit-identical to
@@ -777,8 +777,12 @@ static void q4k_prefill_predecoded_rows(void *ctx, size_t n0, size_t n1) {
             }
 
             for (size_t i = 0; i < m; i++) {
-                accs[i] += x_scales[i * n_blocks_per_row + b] *
-                           (blk->d * (float) sumi[i] - blk->dmin * (float) mins_corr[i]);
+                accs[i] = q4k_epi(accs[i],
+                                  x_scales[i * n_blocks_per_row + b],
+                                  blk->d,
+                                  blk->dmin,
+                                  sumi[i],
+                                  mins_corr[i]);
             }
         }
         for (size_t i = 0; i < m; i++)
@@ -880,10 +884,10 @@ static void q4k_prefill_predecoded_mtile4_rows(void *ctx, size_t n0, size_t n1) 
 
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                acc0 += sx0[b] * (d * (float) sumi0 - dmin * (float) min0);
-                acc1 += sx1[b] * (d * (float) sumi1 - dmin * (float) min1);
-                acc2 += sx2[b] * (d * (float) sumi2 - dmin * (float) min2);
-                acc3 += sx3[b] * (d * (float) sumi3 - dmin * (float) min3);
+                acc0             = q4k_epi(acc0, sx0[b], d, dmin, sumi0, min0);
+                acc1             = q4k_epi(acc1, sx1[b], d, dmin, sumi1, min1);
+                acc2             = q4k_epi(acc2, sx2[b], d, dmin, sumi2, min2);
+                acc3             = q4k_epi(acc3, sx3[b], d, dmin, sumi3, min3);
             }
 
             y[(mt + 0) * n_out + n] = acc0;
@@ -910,7 +914,7 @@ static void q4k_prefill_predecoded_mtile4_rows(void *ctx, size_t n0, size_t n1) 
                     sumi += (int32_t) blk->scales[is] * dot;
                     mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                 }
-                acc += sx[b] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                acc = q4k_epi(acc, sx[b], blk->d, blk->dmin, sumi, mins_corr);
             }
             y[mt * n_out + n] = acc;
         }
@@ -1027,14 +1031,14 @@ static void q4k_prefill_predecoded_mtile8_rows(void *ctx, size_t n0, size_t n1) 
 
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                acc0 += sx0[b] * (d * (float) sumi0 - dmin * (float) min0);
-                acc1 += sx1[b] * (d * (float) sumi1 - dmin * (float) min1);
-                acc2 += sx2[b] * (d * (float) sumi2 - dmin * (float) min2);
-                acc3 += sx3[b] * (d * (float) sumi3 - dmin * (float) min3);
-                acc4 += sx4[b] * (d * (float) sumi4 - dmin * (float) min4);
-                acc5 += sx5[b] * (d * (float) sumi5 - dmin * (float) min5);
-                acc6 += sx6[b] * (d * (float) sumi6 - dmin * (float) min6);
-                acc7 += sx7[b] * (d * (float) sumi7 - dmin * (float) min7);
+                acc0             = q4k_epi(acc0, sx0[b], d, dmin, sumi0, min0);
+                acc1             = q4k_epi(acc1, sx1[b], d, dmin, sumi1, min1);
+                acc2             = q4k_epi(acc2, sx2[b], d, dmin, sumi2, min2);
+                acc3             = q4k_epi(acc3, sx3[b], d, dmin, sumi3, min3);
+                acc4             = q4k_epi(acc4, sx4[b], d, dmin, sumi4, min4);
+                acc5             = q4k_epi(acc5, sx5[b], d, dmin, sumi5, min5);
+                acc6             = q4k_epi(acc6, sx6[b], d, dmin, sumi6, min6);
+                acc7             = q4k_epi(acc7, sx7[b], d, dmin, sumi7, min7);
             }
 
             y[(mt + 0) * n_out + n] = acc0;
@@ -1082,10 +1086,10 @@ static void q4k_prefill_predecoded_mtile8_rows(void *ctx, size_t n0, size_t n1) 
                 }
                 const float d    = blk->d;
                 const float dmin = blk->dmin;
-                acc0 += sx0[b] * (d * (float) sumi0 - dmin * (float) min0);
-                acc1 += sx1[b] * (d * (float) sumi1 - dmin * (float) min1);
-                acc2 += sx2[b] * (d * (float) sumi2 - dmin * (float) min2);
-                acc3 += sx3[b] * (d * (float) sumi3 - dmin * (float) min3);
+                acc0             = q4k_epi(acc0, sx0[b], d, dmin, sumi0, min0);
+                acc1             = q4k_epi(acc1, sx1[b], d, dmin, sumi1, min1);
+                acc2             = q4k_epi(acc2, sx2[b], d, dmin, sumi2, min2);
+                acc3             = q4k_epi(acc3, sx3[b], d, dmin, sumi3, min3);
             }
             y[(mt + 0) * n_out + n] = acc0;
             y[(mt + 1) * n_out + n] = acc1;
@@ -1112,7 +1116,7 @@ static void q4k_prefill_predecoded_mtile8_rows(void *ctx, size_t n0, size_t n1) 
                     sumi += (int32_t) blk->scales[is] * dot;
                     mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                 }
-                acc += sx[b] * (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                acc = q4k_epi(acc, sx[b], blk->d, blk->dmin, sumi, mins_corr);
             }
             y[mt * n_out + n] = acc;
         }
@@ -1216,17 +1220,17 @@ static void q4k_prefill_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t 
                 }
 
 /* A macro, not a function (#348): it adds into the caller's named accumulators. */
-#define Q4K_ACC_ROW_PACKED(NR, A0, A1, A2, A3)                                           \
-    do {                                                                                 \
-        if ((NR) < valid_nr) {                                                           \
-            const struct q4k_predecode_block *blk  = blks + (NR);                        \
-            const float                       d    = blk->d;                             \
-            const float                       dmin = blk->dmin;                          \
-            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-        }                                                                                \
+#define Q4K_ACC_ROW_PACKED(NR, A0, A1, A2, A3)                                   \
+    do {                                                                         \
+        if ((NR) < valid_nr) {                                                   \
+            const struct q4k_predecode_block *blk  = blks + (NR);                \
+            const float                       d    = blk->d;                     \
+            const float                       dmin = blk->dmin;                  \
+            (A0) = q4k_epi((A0), sx0[b], d, dmin, sumi[(NR)][0], minc[(NR)][0]); \
+            (A1) = q4k_epi((A1), sx1[b], d, dmin, sumi[(NR)][1], minc[(NR)][1]); \
+            (A2) = q4k_epi((A2), sx2[b], d, dmin, sumi[(NR)][2], minc[(NR)][2]); \
+            (A3) = q4k_epi((A3), sx3[b], d, dmin, sumi[(NR)][3], minc[(NR)][3]); \
+        }                                                                        \
     } while (0)
                 Q4K_ACC_ROW_PACKED(0, a00, a10, a20, a30);
                 Q4K_ACC_ROW_PACKED(1, a01, a11, a21, a31);
@@ -1283,8 +1287,12 @@ static void q4k_prefill_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t 
                         sumi += (int32_t) blk->scales[is] * dot;
                         mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                     }
-                    acc += x_scales[mt * n_blocks_per_row + b] *
-                           (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                    acc = q4k_epi(acc,
+                                  x_scales[mt * n_blocks_per_row + b],
+                                  blk->d,
+                                  blk->dmin,
+                                  sumi,
+                                  mins_corr);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
@@ -1403,21 +1411,21 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
                 }
 
 /* A macro, not a function (#348): it adds into the caller's named accumulators. */
-#define Q4K_ACC_8(NR, A0, A1, A2, A3, A4, A5, A6, A7)                                    \
-    do {                                                                                 \
-        if ((NR) < valid_nr) {                                                           \
-            const struct q4k_predecode_block *blk  = blks + (NR);                        \
-            const float                       d    = blk->d;                             \
-            const float                       dmin = blk->dmin;                          \
-            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-            (A4) += sx4[b] * (d * (float) sumi[(NR)][4] - dmin * (float) minc[(NR)][4]); \
-            (A5) += sx5[b] * (d * (float) sumi[(NR)][5] - dmin * (float) minc[(NR)][5]); \
-            (A6) += sx6[b] * (d * (float) sumi[(NR)][6] - dmin * (float) minc[(NR)][6]); \
-            (A7) += sx7[b] * (d * (float) sumi[(NR)][7] - dmin * (float) minc[(NR)][7]); \
-        }                                                                                \
+#define Q4K_ACC_8(NR, A0, A1, A2, A3, A4, A5, A6, A7)                            \
+    do {                                                                         \
+        if ((NR) < valid_nr) {                                                   \
+            const struct q4k_predecode_block *blk  = blks + (NR);                \
+            const float                       d    = blk->d;                     \
+            const float                       dmin = blk->dmin;                  \
+            (A0) = q4k_epi((A0), sx0[b], d, dmin, sumi[(NR)][0], minc[(NR)][0]); \
+            (A1) = q4k_epi((A1), sx1[b], d, dmin, sumi[(NR)][1], minc[(NR)][1]); \
+            (A2) = q4k_epi((A2), sx2[b], d, dmin, sumi[(NR)][2], minc[(NR)][2]); \
+            (A3) = q4k_epi((A3), sx3[b], d, dmin, sumi[(NR)][3], minc[(NR)][3]); \
+            (A4) = q4k_epi((A4), sx4[b], d, dmin, sumi[(NR)][4], minc[(NR)][4]); \
+            (A5) = q4k_epi((A5), sx5[b], d, dmin, sumi[(NR)][5], minc[(NR)][5]); \
+            (A6) = q4k_epi((A6), sx6[b], d, dmin, sumi[(NR)][6], minc[(NR)][6]); \
+            (A7) = q4k_epi((A7), sx7[b], d, dmin, sumi[(NR)][7], minc[(NR)][7]); \
+        }                                                                        \
     } while (0)
                 Q4K_ACC_8(0, a00, a10, a20, a30, a40, a50, a60, a70);
                 Q4K_ACC_8(1, a01, a11, a21, a31, a41, a51, a61, a71);
@@ -1513,17 +1521,17 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
                     }
                 }
 /* A macro, not a function (#348): it adds into the caller's named accumulators. */
-#define Q4K_ACC_4(NR, A0, A1, A2, A3)                                                    \
-    do {                                                                                 \
-        if ((NR) < valid_nr) {                                                           \
-            const struct q4k_predecode_block *blk  = blks + (NR);                        \
-            const float                       d    = blk->d;                             \
-            const float                       dmin = blk->dmin;                          \
-            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-        }                                                                                \
+#define Q4K_ACC_4(NR, A0, A1, A2, A3)                                            \
+    do {                                                                         \
+        if ((NR) < valid_nr) {                                                   \
+            const struct q4k_predecode_block *blk  = blks + (NR);                \
+            const float                       d    = blk->d;                     \
+            const float                       dmin = blk->dmin;                  \
+            (A0) = q4k_epi((A0), sx0[b], d, dmin, sumi[(NR)][0], minc[(NR)][0]); \
+            (A1) = q4k_epi((A1), sx1[b], d, dmin, sumi[(NR)][1], minc[(NR)][1]); \
+            (A2) = q4k_epi((A2), sx2[b], d, dmin, sumi[(NR)][2], minc[(NR)][2]); \
+            (A3) = q4k_epi((A3), sx3[b], d, dmin, sumi[(NR)][3], minc[(NR)][3]); \
+        }                                                                        \
     } while (0)
                 Q4K_ACC_4(0, a00, a10, a20, a30);
                 Q4K_ACC_4(1, a01, a11, a21, a31);
@@ -1579,8 +1587,12 @@ static void q4k_prefill_predecoded_mtile8_ntile4_packed_tiles(void *ctx, size_t 
                         sumi += (int32_t) blk->scales[is] * dot;
                         mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                     }
-                    acc += x_scales[mt * n_blocks_per_row + b] *
-                           (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                    acc = q4k_epi(acc,
+                                  x_scales[mt * n_blocks_per_row + b],
+                                  blk->d,
+                                  blk->dmin,
+                                  sumi,
+                                  mins_corr);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }
@@ -1703,9 +1715,8 @@ static void q4k_sdot_tile4x8(const struct q4k_prefill_job *job,
             for (int is = 1; is < 8; is++) {
                 s2 = vmlaq_n_s32(s2, wbb->mn[is], sm[is]);
             }
-            const float32x4_t v = vsubq_f32(vmulq_f32(dv, vcvtq_f32_s32(s1[t])),
-                                            vmulq_f32(dmv, vcvtq_f32_s32(s2)));
-            yacc[t] = vmlaq_n_f32(yacc[t], v, job->x_scales[(mt + (size_t) t) * nb + b]);
+            const float32x4_t v = q4k_epi_t4(dv, dmv, s1[t], s2);
+            yacc[t] = vfmaq_n_f32(yacc[t], v, job->x_scales[(mt + (size_t) t) * nb + b]);
         }
     }
     for (int t = 0; t < 8; t++) {
@@ -1873,17 +1884,17 @@ q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t tt0, si
                 }
 
 /* A macro, not a function (#348): it adds into the caller's named accumulators. */
-#define Q4K_PAIR_ACC_ROW(NR, A0, A1, A2, A3)                                             \
-    do {                                                                                 \
-        if ((NR) < valid_nr) {                                                           \
-            const struct q4k_predecode_block *blk  = blks + (NR);                        \
-            const float                       d    = blk->d;                             \
-            const float                       dmin = blk->dmin;                          \
-            (A0) += sx0[b] * (d * (float) sumi[(NR)][0] - dmin * (float) minc[(NR)][0]); \
-            (A1) += sx1[b] * (d * (float) sumi[(NR)][1] - dmin * (float) minc[(NR)][1]); \
-            (A2) += sx2[b] * (d * (float) sumi[(NR)][2] - dmin * (float) minc[(NR)][2]); \
-            (A3) += sx3[b] * (d * (float) sumi[(NR)][3] - dmin * (float) minc[(NR)][3]); \
-        }                                                                                \
+#define Q4K_PAIR_ACC_ROW(NR, A0, A1, A2, A3)                                     \
+    do {                                                                         \
+        if ((NR) < valid_nr) {                                                   \
+            const struct q4k_predecode_block *blk  = blks + (NR);                \
+            const float                       d    = blk->d;                     \
+            const float                       dmin = blk->dmin;                  \
+            (A0) = q4k_epi((A0), sx0[b], d, dmin, sumi[(NR)][0], minc[(NR)][0]); \
+            (A1) = q4k_epi((A1), sx1[b], d, dmin, sumi[(NR)][1], minc[(NR)][1]); \
+            (A2) = q4k_epi((A2), sx2[b], d, dmin, sumi[(NR)][2], minc[(NR)][2]); \
+            (A3) = q4k_epi((A3), sx3[b], d, dmin, sumi[(NR)][3], minc[(NR)][3]); \
+        }                                                                        \
     } while (0)
                 Q4K_PAIR_ACC_ROW(0, a00, a10, a20, a30);
                 Q4K_PAIR_ACC_ROW(1, a01, a11, a21, a31);
@@ -1940,8 +1951,12 @@ q4k_prefill_pair_predecoded_mtile4_ntile4_packed_tiles(void *ctx, size_t tt0, si
                         sumi += (int32_t) blk->scales[is] * dot;
                         mins_corr += (int32_t) blk->mins[is] * sum32[mt * n_chunks + sum_idx];
                     }
-                    acc += x_scales[mt * n_blocks_per_row + b] *
-                           (blk->d * (float) sumi - blk->dmin * (float) mins_corr);
+                    acc = q4k_epi(acc,
+                                  x_scales[mt * n_blocks_per_row + b],
+                                  blk->d,
+                                  blk->dmin,
+                                  sumi,
+                                  mins_corr);
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;
             }

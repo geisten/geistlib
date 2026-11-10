@@ -74,4 +74,13 @@ void q4kx8_gemm16x16_avx512_bulk(size_t                     M,
 void q4kx8_gemv_m1(
         size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]);
 
+/* One prefill row over the Q4_Kx8 layout, same shape contract as
+ * q4kx8_gemv_m1, with the tiled GEMM's float epilogue and quantize_q8_Kx4's
+ * quantizer: its output is that row's bits in any q4kx8_gemm_avx512 call or
+ * tiled GEMM (q4k_tiled_gemm_avx512_vnni) on an AVX-512 VNNI host. The
+ * prefill entry (cpu_x86_linear_q4k_mN) runs its m % 4 tail rows here, so
+ * a token's output does not depend on how many rows the call has (#527). */
+void q4kx8_gemv_row_tiled(
+        size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]);
+
 #endif /* GEIST_INTERNAL_BACKEND_CPU_X86_KERNEL_Q4KX8_GEMM_H */

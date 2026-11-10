@@ -45,9 +45,10 @@ struct q8k_row {
  * see q4kx8_gemv_m1 — so the bound is a tile size, not a limit on K. */
 constexpr size_t Q8K_SEG = 64;
 
-[[maybe_unused]] static void quantize_q8k_row(size_t         n_super,
-                                              const float    x[static n_super * 256],
-                                              struct q8k_row out[static n_super]) {
+/* Decode's Q8_K of one row (round half away from zero). */
+[[maybe_unused]] static void quantize_q8k_row_decode(size_t         n_super,
+                                                     const float    x[static n_super * 256],
+                                                     struct q8k_row out[static n_super]) {
     /* One scale per super-block, as Q8_K has: a row-wide max-abs lets one
      * outlier coarsen every other super-block of the row (#694). */
     for (size_t s = 0; s < n_super; s++) {
@@ -77,21 +78,232 @@ constexpr size_t Q8K_SEG = 64;
     }
 }
 
+/* Prefill's Q8_K of one row through quantize_q8_K_superblock, the
+ * quantizer of the Q8_Kx4 groups the GEMMs read: a tail row gets the codes
+ * and scale it gets in a group, so its result does not depend on the path
+ * (#527). */
+[[maybe_unused]] static void quantize_q8k_row(size_t         n_super,
+                                              const float    x[static n_super * 256],
+                                              struct q8k_row out[static n_super]) {
+    for (size_t s = 0; s < n_super; s++) {
+        quantize_q8_K_superblock(x + s * 256, out[s].qs, &out[s].d);
+        for (int g = 0; g < 16; g++) {
+            int32_t s_acc = 0;
+            for (int kk = 0; kk < 16; kk++) {
+                s_acc += out[s].qs[g * 16 + kk];
+            }
+            out[s].bsums[g] = (int16_t) s_acc;
+        }
+    }
+}
+
 /* ---- AVX2 GEMV: one m-row × 8-cell tile ---- */
 
+/* The exact integer sums of one Q4_Kx8 super-block (8 cells) against one
+ * activation super-block: *s1 = sum of scale x dot per cell, in the cell
+ * order {0,4,1,5,2,6,3,7}; *s2 = sum of min x the activation's 16-sums per
+ * cell, in order. Both GEMV tiles below take them; only their float
+ * epilogues differ. */
+[[gnu::target("avx2,avx,f16c,fma")]] [[gnu::always_inline]] static inline void
+q4kx8_sb_sums(const struct block_q4_Kx8 *bp, const struct q8k_row *ap, __m256i *s1, __m256i *s2) {
+    static const uint32_t kmask1 = 0x3f3f3f3fu;
+    static const uint32_t kmask2 = 0x0f0f0f0fu;
+    static const uint32_t kmask3 = 0x03030303u;
+
+    const __m128i scalemask = _mm_set_epi8(7, 7, 3, 3, 6, 6, 2, 2, 5, 5, 1, 1, 4, 4, 0, 0);
+    const __m256i m4b       = _mm256_set1_epi8(0x0F);
+
+    __m256i iacc_b     = _mm256_setzero_si256();
+    __m256i iacc_min_b = _mm256_setzero_si256();
+
+    const __m256i q8sums = _mm256_loadu_si256((const __m256i *) ap->bsums);
+    __m256i       q8s    = _mm256_castsi128_si256(
+            _mm_hadd_epi16(_mm256_castsi256_si128(q8sums), _mm256_extracti128_si256(q8sums, 1)));
+    q8s = _mm256_permute2f128_si256(q8s, q8s, 0);
+
+    for (int sb = 0; sb < 4; sb++) {
+        const uint8_t *qbase   = bp->qs + sb * 256;
+        const __m256i  r0123_0 = _mm256_loadu_si256((const __m256i *) (qbase + 0));
+        const __m256i  r4567_0 = _mm256_loadu_si256((const __m256i *) (qbase + 32));
+        const __m256i  r0123_1 = _mm256_loadu_si256((const __m256i *) (qbase + 64));
+        const __m256i  r4567_1 = _mm256_loadu_si256((const __m256i *) (qbase + 96));
+        const __m256i  r0123_2 = _mm256_loadu_si256((const __m256i *) (qbase + 128));
+        const __m256i  r4567_2 = _mm256_loadu_si256((const __m256i *) (qbase + 160));
+        const __m256i  r0123_3 = _mm256_loadu_si256((const __m256i *) (qbase + 192));
+        const __m256i  r4567_3 = _mm256_loadu_si256((const __m256i *) (qbase + 224));
+
+        const __m256i r0123_00 = _mm256_and_si256(r0123_0, m4b);
+        const __m256i r4567_00 = _mm256_and_si256(r4567_0, m4b);
+        const __m256i r0123_01 = _mm256_and_si256(r0123_1, m4b);
+        const __m256i r4567_01 = _mm256_and_si256(r4567_1, m4b);
+        const __m256i r0123_02 = _mm256_and_si256(r0123_2, m4b);
+        const __m256i r4567_02 = _mm256_and_si256(r4567_2, m4b);
+        const __m256i r0123_03 = _mm256_and_si256(r0123_3, m4b);
+        const __m256i r4567_03 = _mm256_and_si256(r4567_3, m4b);
+
+        const __m256i r0123_10 = _mm256_and_si256(_mm256_srli_epi16(r0123_0, 4), m4b);
+        const __m256i r4567_10 = _mm256_and_si256(_mm256_srli_epi16(r4567_0, 4), m4b);
+        const __m256i r0123_11 = _mm256_and_si256(_mm256_srli_epi16(r0123_1, 4), m4b);
+        const __m256i r4567_11 = _mm256_and_si256(_mm256_srli_epi16(r4567_1, 4), m4b);
+        const __m256i r0123_12 = _mm256_and_si256(_mm256_srli_epi16(r0123_2, 4), m4b);
+        const __m256i r4567_12 = _mm256_and_si256(_mm256_srli_epi16(r4567_2, 4), m4b);
+        const __m256i r0123_13 = _mm256_and_si256(_mm256_srli_epi16(r0123_3, 4), m4b);
+        const __m256i r4567_13 = _mm256_and_si256(_mm256_srli_epi16(r4567_3, 4), m4b);
+
+        /* Decode scales descriptor. */
+        uint32_t utmp_0[4], utmp_1[4];
+        memcpy(utmp_0, bp->scales + 24 * sb, 12);
+        utmp_0[3]             = ((utmp_0[2] >> 4) & kmask2) | (((utmp_0[1] >> 6) & kmask3) << 4);
+        const uint32_t uaux_0 = utmp_0[1] & kmask1;
+        utmp_0[1]             = (utmp_0[2] & kmask2) | (((utmp_0[0] >> 6) & kmask3) << 4);
+        utmp_0[2]             = uaux_0;
+        utmp_0[0] &= kmask1;
+
+        memcpy(utmp_1, bp->scales + 12 + sb * 24, 12);
+        utmp_1[3]             = ((utmp_1[2] >> 4) & kmask2) | (((utmp_1[1] >> 6) & kmask3) << 4);
+        const uint32_t uaux_1 = utmp_1[1] & kmask1;
+        utmp_1[1]             = (utmp_1[2] & kmask2) | (((utmp_1[0] >> 6) & kmask3) << 4);
+        utmp_1[2]             = uaux_1;
+        utmp_1[0] &= kmask1;
+
+        /* mins_and_scales as __m128i — 16 bytes: [s0..s7, m0..m7]. */
+        const __m128i mins_and_scales_0 = _mm_set_epi32(utmp_0[3], utmp_0[2], utmp_0[1], utmp_0[0]);
+        const __m128i mins_and_scales_1 = _mm_set_epi32(utmp_1[3], utmp_1[2], utmp_1[1], utmp_1[0]);
+
+        /* scales_0 / scales_1: scalemask-rearranged so per-cell scale is
+         * duplicated to match iacc_0/iacc_1's [s_c, s_c] pair-pattern. */
+        const __m128i scales_rearrange_0 = _mm_shuffle_epi8(mins_and_scales_0, scalemask);
+        const __m128i scales_rearrange_1 = _mm_shuffle_epi8(mins_and_scales_1, scalemask);
+        const __m256i scales_0           = _mm256_cvtepu8_epi16(scales_rearrange_0);
+        const __m256i scales_1           = _mm256_cvtepu8_epi16(scales_rearrange_1);
+
+        /* mins_01: cell c's mins for sub-blocks 2*sb and 2*sb+1 paired
+         * at lanes (2c, 2c+1). */
+        const __m256i mins_01 =
+                _mm256_cvtepu8_epi16(_mm_unpacklo_epi8(_mm_shuffle_epi32(mins_and_scales_0, 78),
+                                                       _mm_shuffle_epi32(mins_and_scales_1, 78)));
+
+        const int8_t *a_base = ap->qs + sb * 64;
+        __m256i lhs_00 = _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 0)));
+        __m256i lhs_01 = _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 16)));
+        __m256i lhs_10 = _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 32)));
+        __m256i lhs_11 = _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 48)));
+        lhs_00         = _mm256_permute2f128_si256(lhs_00, lhs_00, 0);
+        lhs_01         = _mm256_permute2f128_si256(lhs_01, lhs_01, 0);
+        lhs_10         = _mm256_permute2f128_si256(lhs_10, lhs_10, 0);
+        lhs_11         = _mm256_permute2f128_si256(lhs_11, lhs_11, 0);
+
+        /* 8 maddubs for sb_lo, 8 for sb_hi. */
+        __m256i iacc_0 = _mm256_setzero_si256();
+        iacc_0         = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_00, _mm256_shuffle_epi32(r4567_00, 177), 170),
+                        _mm256_shuffle_epi32(lhs_00, 0)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_00, 177), r4567_00, 170),
+                        _mm256_shuffle_epi32(lhs_00, 85)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_01, _mm256_shuffle_epi32(r4567_01, 177), 170),
+                        _mm256_shuffle_epi32(lhs_00, 170)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_01, 177), r4567_01, 170),
+                        _mm256_shuffle_epi32(lhs_00, 255)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_02, _mm256_shuffle_epi32(r4567_02, 177), 170),
+                        _mm256_shuffle_epi32(lhs_01, 0)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_02, 177), r4567_02, 170),
+                        _mm256_shuffle_epi32(lhs_01, 85)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_03, _mm256_shuffle_epi32(r4567_03, 177), 170),
+                        _mm256_shuffle_epi32(lhs_01, 170)));
+        iacc_0 = _mm256_add_epi16(
+                iacc_0,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_03, 177), r4567_03, 170),
+                        _mm256_shuffle_epi32(lhs_01, 255)));
+        iacc_0 = _mm256_madd_epi16(iacc_0, scales_0);
+
+        __m256i iacc_1 = _mm256_setzero_si256();
+        iacc_1         = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_10, _mm256_shuffle_epi32(r4567_10, 177), 170),
+                        _mm256_shuffle_epi32(lhs_10, 0)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_10, 177), r4567_10, 170),
+                        _mm256_shuffle_epi32(lhs_10, 85)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_11, _mm256_shuffle_epi32(r4567_11, 177), 170),
+                        _mm256_shuffle_epi32(lhs_10, 170)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_11, 177), r4567_11, 170),
+                        _mm256_shuffle_epi32(lhs_10, 255)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_12, _mm256_shuffle_epi32(r4567_12, 177), 170),
+                        _mm256_shuffle_epi32(lhs_11, 0)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_12, 177), r4567_12, 170),
+                        _mm256_shuffle_epi32(lhs_11, 85)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(r0123_13, _mm256_shuffle_epi32(r4567_13, 177), 170),
+                        _mm256_shuffle_epi32(lhs_11, 170)));
+        iacc_1 = _mm256_add_epi16(
+                iacc_1,
+                _mm256_maddubs_epi16(
+                        _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_13, 177), r4567_13, 170),
+                        _mm256_shuffle_epi32(lhs_11, 255)));
+        iacc_1 = _mm256_madd_epi16(iacc_1, scales_1);
+
+        const __m256i iacc_sb = _mm256_add_epi32(iacc_0, iacc_1);
+
+        const __m256i q8s_sb      = _mm256_shuffle_epi32(q8s, 0);
+        const __m256i iacc_min_sb = _mm256_madd_epi16(q8s_sb, mins_01);
+        q8s                       = _mm256_bsrli_epi128(q8s, 4);
+
+        iacc_b     = _mm256_add_epi32(iacc_b, iacc_sb);
+        iacc_min_b = _mm256_add_epi32(iacc_min_b, iacc_min_sb);
+    }
+
+    *s1 = iacc_b;
+    *s2 = iacc_min_b;
+}
+
+/* Decode (M=1): one activation row against an 8-cell tile over n_super
+ * super-blocks, two accumulators, fma(s1, d * a_d) and fma(s2, dmin * a_d),
+ * subtracted at the end. The prefill paths use q4kx8_row_tile_tiled. */
 [[gnu::target("avx2,avx,f16c,fma")]] static __m256
 q4kx8_gemv_one_row_tile(size_t                     n_super,
                         const struct block_q4_Kx8 *W,
                         const struct q8k_row      *X,
                         __m256                    *acc_min_rows_out) {
-    static const uint32_t kmask1 = 0x3f3f3f3fu;
-    static const uint32_t kmask2 = 0x0f0f0f0fu;
-    static const uint32_t kmask3 = 0x03030303u;
-
     const __m256i finalpermutemask = _mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0);
     const __m128i deltamask = _mm_set_epi8(15, 14, 7, 6, 13, 12, 5, 4, 11, 10, 3, 2, 9, 8, 1, 0);
-    const __m128i scalemask = _mm_set_epi8(7, 7, 3, 3, 6, 6, 2, 2, 5, 5, 1, 1, 4, 4, 0, 0);
-    const __m256i m4b       = _mm256_set1_epi8(0x0F);
 
     __m256 acc_row      = _mm256_setzero_ps();
     __m256 acc_min_rows = _mm256_setzero_ps();
@@ -111,188 +323,8 @@ q4kx8_gemv_one_row_tile(size_t                     n_super,
         const __m256  col_scale_f32 = _mm256_cvtph_ps(_mm_shuffle_epi8(d_raw, deltamask));
         const __m256  col_dmin_f32  = _mm256_cvtph_ps(dmin_raw);
 
-        __m256i iacc_b     = _mm256_setzero_si256();
-        __m256i iacc_min_b = _mm256_setzero_si256();
-
-        const __m256i q8sums = _mm256_loadu_si256((const __m256i *) ap->bsums);
-        __m256i q8s = _mm256_castsi128_si256(_mm_hadd_epi16(_mm256_castsi256_si128(q8sums),
-                                                            _mm256_extracti128_si256(q8sums, 1)));
-        q8s         = _mm256_permute2f128_si256(q8s, q8s, 0);
-
-        for (int sb = 0; sb < 4; sb++) {
-            const uint8_t *qbase   = bp->qs + sb * 256;
-            const __m256i  r0123_0 = _mm256_loadu_si256((const __m256i *) (qbase + 0));
-            const __m256i  r4567_0 = _mm256_loadu_si256((const __m256i *) (qbase + 32));
-            const __m256i  r0123_1 = _mm256_loadu_si256((const __m256i *) (qbase + 64));
-            const __m256i  r4567_1 = _mm256_loadu_si256((const __m256i *) (qbase + 96));
-            const __m256i  r0123_2 = _mm256_loadu_si256((const __m256i *) (qbase + 128));
-            const __m256i  r4567_2 = _mm256_loadu_si256((const __m256i *) (qbase + 160));
-            const __m256i  r0123_3 = _mm256_loadu_si256((const __m256i *) (qbase + 192));
-            const __m256i  r4567_3 = _mm256_loadu_si256((const __m256i *) (qbase + 224));
-
-            const __m256i r0123_00 = _mm256_and_si256(r0123_0, m4b);
-            const __m256i r4567_00 = _mm256_and_si256(r4567_0, m4b);
-            const __m256i r0123_01 = _mm256_and_si256(r0123_1, m4b);
-            const __m256i r4567_01 = _mm256_and_si256(r4567_1, m4b);
-            const __m256i r0123_02 = _mm256_and_si256(r0123_2, m4b);
-            const __m256i r4567_02 = _mm256_and_si256(r4567_2, m4b);
-            const __m256i r0123_03 = _mm256_and_si256(r0123_3, m4b);
-            const __m256i r4567_03 = _mm256_and_si256(r4567_3, m4b);
-
-            const __m256i r0123_10 = _mm256_and_si256(_mm256_srli_epi16(r0123_0, 4), m4b);
-            const __m256i r4567_10 = _mm256_and_si256(_mm256_srli_epi16(r4567_0, 4), m4b);
-            const __m256i r0123_11 = _mm256_and_si256(_mm256_srli_epi16(r0123_1, 4), m4b);
-            const __m256i r4567_11 = _mm256_and_si256(_mm256_srli_epi16(r4567_1, 4), m4b);
-            const __m256i r0123_12 = _mm256_and_si256(_mm256_srli_epi16(r0123_2, 4), m4b);
-            const __m256i r4567_12 = _mm256_and_si256(_mm256_srli_epi16(r4567_2, 4), m4b);
-            const __m256i r0123_13 = _mm256_and_si256(_mm256_srli_epi16(r0123_3, 4), m4b);
-            const __m256i r4567_13 = _mm256_and_si256(_mm256_srli_epi16(r4567_3, 4), m4b);
-
-            /* Decode scales descriptor. */
-            uint32_t utmp_0[4], utmp_1[4];
-            memcpy(utmp_0, bp->scales + 24 * sb, 12);
-            utmp_0[3] = ((utmp_0[2] >> 4) & kmask2) | (((utmp_0[1] >> 6) & kmask3) << 4);
-            const uint32_t uaux_0 = utmp_0[1] & kmask1;
-            utmp_0[1]             = (utmp_0[2] & kmask2) | (((utmp_0[0] >> 6) & kmask3) << 4);
-            utmp_0[2]             = uaux_0;
-            utmp_0[0] &= kmask1;
-
-            memcpy(utmp_1, bp->scales + 12 + sb * 24, 12);
-            utmp_1[3] = ((utmp_1[2] >> 4) & kmask2) | (((utmp_1[1] >> 6) & kmask3) << 4);
-            const uint32_t uaux_1 = utmp_1[1] & kmask1;
-            utmp_1[1]             = (utmp_1[2] & kmask2) | (((utmp_1[0] >> 6) & kmask3) << 4);
-            utmp_1[2]             = uaux_1;
-            utmp_1[0] &= kmask1;
-
-            /* mins_and_scales as __m128i — 16 bytes: [s0..s7, m0..m7]. */
-            const __m128i mins_and_scales_0 =
-                    _mm_set_epi32(utmp_0[3], utmp_0[2], utmp_0[1], utmp_0[0]);
-            const __m128i mins_and_scales_1 =
-                    _mm_set_epi32(utmp_1[3], utmp_1[2], utmp_1[1], utmp_1[0]);
-
-            /* scales_0 / scales_1: scalemask-rearranged so per-cell scale is
-             * duplicated to match iacc_0/iacc_1's [s_c, s_c] pair-pattern. */
-            const __m128i scales_rearrange_0 = _mm_shuffle_epi8(mins_and_scales_0, scalemask);
-            const __m128i scales_rearrange_1 = _mm_shuffle_epi8(mins_and_scales_1, scalemask);
-            const __m256i scales_0           = _mm256_cvtepu8_epi16(scales_rearrange_0);
-            const __m256i scales_1           = _mm256_cvtepu8_epi16(scales_rearrange_1);
-
-            /* mins_01: cell c's mins for sub-blocks 2*sb and 2*sb+1 paired
-             * at lanes (2c, 2c+1). */
-            const __m256i mins_01 = _mm256_cvtepu8_epi16(
-                    _mm_unpacklo_epi8(_mm_shuffle_epi32(mins_and_scales_0, 78),
-                                      _mm_shuffle_epi32(mins_and_scales_1, 78)));
-
-            const int8_t *a_base = ap->qs + sb * 64;
-            __m256i       lhs_00 =
-                    _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 0)));
-            __m256i lhs_01 =
-                    _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 16)));
-            __m256i lhs_10 =
-                    _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 32)));
-            __m256i lhs_11 =
-                    _mm256_castsi128_si256(_mm_loadu_si128((const __m128i *) (a_base + 48)));
-            lhs_00 = _mm256_permute2f128_si256(lhs_00, lhs_00, 0);
-            lhs_01 = _mm256_permute2f128_si256(lhs_01, lhs_01, 0);
-            lhs_10 = _mm256_permute2f128_si256(lhs_10, lhs_10, 0);
-            lhs_11 = _mm256_permute2f128_si256(lhs_11, lhs_11, 0);
-
-            /* 8 maddubs for sb_lo, 8 for sb_hi. */
-            __m256i iacc_0 = _mm256_setzero_si256();
-            iacc_0         = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_00, _mm256_shuffle_epi32(r4567_00, 177), 170),
-                            _mm256_shuffle_epi32(lhs_00, 0)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_00, 177), r4567_00, 170),
-                            _mm256_shuffle_epi32(lhs_00, 85)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_01, _mm256_shuffle_epi32(r4567_01, 177), 170),
-                            _mm256_shuffle_epi32(lhs_00, 170)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_01, 177), r4567_01, 170),
-                            _mm256_shuffle_epi32(lhs_00, 255)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_02, _mm256_shuffle_epi32(r4567_02, 177), 170),
-                            _mm256_shuffle_epi32(lhs_01, 0)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_02, 177), r4567_02, 170),
-                            _mm256_shuffle_epi32(lhs_01, 85)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_03, _mm256_shuffle_epi32(r4567_03, 177), 170),
-                            _mm256_shuffle_epi32(lhs_01, 170)));
-            iacc_0 = _mm256_add_epi16(
-                    iacc_0,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_03, 177), r4567_03, 170),
-                            _mm256_shuffle_epi32(lhs_01, 255)));
-            iacc_0 = _mm256_madd_epi16(iacc_0, scales_0);
-
-            __m256i iacc_1 = _mm256_setzero_si256();
-            iacc_1         = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_10, _mm256_shuffle_epi32(r4567_10, 177), 170),
-                            _mm256_shuffle_epi32(lhs_10, 0)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_10, 177), r4567_10, 170),
-                            _mm256_shuffle_epi32(lhs_10, 85)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_11, _mm256_shuffle_epi32(r4567_11, 177), 170),
-                            _mm256_shuffle_epi32(lhs_10, 170)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_11, 177), r4567_11, 170),
-                            _mm256_shuffle_epi32(lhs_10, 255)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_12, _mm256_shuffle_epi32(r4567_12, 177), 170),
-                            _mm256_shuffle_epi32(lhs_11, 0)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_12, 177), r4567_12, 170),
-                            _mm256_shuffle_epi32(lhs_11, 85)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(r0123_13, _mm256_shuffle_epi32(r4567_13, 177), 170),
-                            _mm256_shuffle_epi32(lhs_11, 170)));
-            iacc_1 = _mm256_add_epi16(
-                    iacc_1,
-                    _mm256_maddubs_epi16(
-                            _mm256_blend_epi32(_mm256_shuffle_epi32(r0123_13, 177), r4567_13, 170),
-                            _mm256_shuffle_epi32(lhs_11, 255)));
-            iacc_1 = _mm256_madd_epi16(iacc_1, scales_1);
-
-            const __m256i iacc_sb = _mm256_add_epi32(iacc_0, iacc_1);
-
-            const __m256i q8s_sb      = _mm256_shuffle_epi32(q8s, 0);
-            const __m256i iacc_min_sb = _mm256_madd_epi16(q8s_sb, mins_01);
-            q8s                       = _mm256_bsrli_epi128(q8s, 4);
-
-            iacc_b     = _mm256_add_epi32(iacc_b, iacc_sb);
-            iacc_min_b = _mm256_add_epi32(iacc_min_b, iacc_min_sb);
-        }
+        __m256i iacc_b, iacc_min_b;
+        q4kx8_sb_sums(bp, ap, &iacc_b, &iacc_min_b);
 
         acc_row = _mm256_fmadd_ps(
                 _mm256_cvtepi32_ps(iacc_b), _mm256_mul_ps(col_scale_f32, row_scale_f32), acc_row);
@@ -304,6 +336,40 @@ q4kx8_gemv_one_row_tile(size_t                     n_super,
     acc_row           = _mm256_permutevar8x32_ps(acc_row, finalpermutemask);
     *acc_min_rows_out = acc_min_rows;
     return acc_row;
+}
+
+/* Prefill: acc (the 8 cells in order) plus one activation row against an
+ * 8-cell tile over n_super super-blocks, with the tiled GEMM's float
+ * epilogue (kernel_q4k_tiled_avx512_vnni.c, micro_8x16), the same
+ * operations in the same order:
+ *   acc = fma(s1 * d - dmin * s2, a_d, acc)
+ * so a row gets the same bits from the 4-row fallback, the m % 4 tail and
+ * the tiled GEMM: which of them an MoE expert's rows take changes with how
+ * many rows the prefill chunk routed to it (#527). */
+[[gnu::target("avx2,avx,f16c,fma")]] static __m256 q4kx8_row_tile_tiled(
+        size_t n_super, const struct block_q4_Kx8 *W, const struct q8k_row *X, __m256 acc) {
+    const __m256i finalpermutemask = _mm256_set_epi32(7, 5, 3, 1, 6, 4, 2, 0);
+    for (size_t b = 0; b < n_super; b++) {
+        const struct block_q4_Kx8 *bp = &W[b];
+        const struct q8k_row      *ap = &X[b];
+
+        uint16_t d_buf[8], dmin_buf[8];
+        memcpy(d_buf, bp->d, sizeof(d_buf));
+        memcpy(dmin_buf, bp->dmin, sizeof(dmin_buf));
+        const __m256 col_d_f32    = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) d_buf));
+        const __m256 col_dmin_f32 = _mm256_cvtph_ps(_mm_loadu_si128((const __m128i *) dmin_buf));
+
+        __m256i iacc_b, iacc_min_b;
+        q4kx8_sb_sums(bp, ap, &iacc_b, &iacc_min_b);
+
+        /* iacc_b holds the cells in the order {0,4,1,5,2,6,3,7}; iacc_min_b
+         * in order. */
+        const __m256i s1 = _mm256_permutevar8x32_epi32(iacc_b, finalpermutemask);
+        __m256        r  = _mm256_mul_ps(_mm256_cvtepi32_ps(s1), col_d_f32);
+        r                = _mm256_fnmadd_ps(col_dmin_f32, _mm256_cvtepi32_ps(iacc_min_b), r);
+        acc              = _mm256_fmadd_ps(r, _mm256_set1_ps(ap->d), acc);
+    }
+    return acc;
 }
 
 /* One GEMV or fallback-GEMM call for geist_par_for. */
@@ -331,9 +397,8 @@ static void fallback_rows(void *ctx, size_t m0, size_t m1) {
         const size_t i  = m % 4;
 
         /* Q8K_SEG super-blocks at a time, like q4kx8_gemv_m1: one segment
-         * up to K = 16384, accumulated segments beyond it. The activations
-         * arrive already quantized per super-block, so segmenting changes
-         * only the order of the fp32 sum across segments. */
+         * up to K = 16384, beyond it each segment continues the previous
+         * one's accumulator, so the sum runs as in one pass. */
         struct q8k_row a[Q8K_SEG];
         for (size_t s0 = 0; s0 < n_super_k; s0 += Q8K_SEG) {
             const size_t ns = n_super_k - s0 < Q8K_SEG ? n_super_k - s0 : Q8K_SEG;
@@ -352,14 +417,10 @@ static void fallback_rows(void *ctx, size_t m0, size_t m1) {
             }
 
             for (size_t nt = 0; nt < N_tiles; nt++) {
-                __m256       acc_min;
-                const __m256 acc_row =
-                        q4kx8_gemv_one_row_tile(ns, &W[nt * n_super_k + s0], a, &acc_min);
-                __m256 r = _mm256_sub_ps(acc_row, acc_min);
-                if (s0 != 0) {
-                    r = _mm256_add_ps(r, _mm256_loadu_ps(Y + m * N + nt * 8));
-                }
-                _mm256_storeu_ps(Y + m * N + nt * 8, r);
+                const __m256 acc =
+                        s0 == 0 ? _mm256_setzero_ps() : _mm256_loadu_ps(Y + m * N + nt * 8);
+                _mm256_storeu_ps(Y + m * N + nt * 8,
+                                 q4kx8_row_tile_tiled(ns, &W[nt * n_super_k + s0], a, acc));
             }
         }
     }
@@ -389,7 +450,7 @@ static void q4kx8_gemv_avx2_fallback(size_t                     M,
     geist_par_for(M_tiles * 4, fallback_rows, &c);
 }
 
-/* GEMV: output tiles [t0, t1) of 8 cells, one segment. */
+/* Decode GEMV: output tiles [t0, t1) of 8 cells, one segment. */
 static void gemv_tiles(void *ctx, size_t t0, size_t t1) {
     const struct x8_call c = *(const struct x8_call *) ctx;
     for (size_t nt = t0; nt < t1; nt++) {
@@ -401,6 +462,17 @@ static void gemv_tiles(void *ctx, size_t t0, size_t t1) {
             r = _mm256_add_ps(r, _mm256_loadu_ps(c.y + nt * 8));
         }
         _mm256_storeu_ps(c.y + nt * 8, r);
+    }
+}
+
+/* Prefill row: output tiles [t0, t1) of 8 cells, one segment, continuing
+ * the previous segment's accumulator. */
+static void row_tiles_tiled(void *ctx, size_t t0, size_t t1) {
+    const struct x8_call c = *(const struct x8_call *) ctx;
+    for (size_t nt = t0; nt < t1; nt++) {
+        const __m256 acc = c.first ? _mm256_setzero_ps() : _mm256_loadu_ps(c.y + nt * 8);
+        _mm256_storeu_ps(c.y + nt * 8,
+                         q4kx8_row_tile_tiled(c.ns, &c.W[nt * c.n_super + c.s0], c.a, acc));
     }
 }
 
@@ -429,8 +501,26 @@ void q4kx8_gemv_m1(
         c.ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
         c.s0    = s0;
         c.first = s0 == 0;
-        quantize_q8k_row(c.ns, x + s0 * 256, a);
+        quantize_q8k_row_decode(c.ns, x + s0 * 256, a);
         geist_par_for(N / 8, gemv_tiles, &c);
+    }
+}
+
+void q4kx8_gemv_row_tiled(
+        size_t N, size_t K, const float *x, const struct block_q4_Kx8 *W, float y[static N]) {
+    const size_t n_super = K / 256;
+    if (n_super == 0 || N % 8 != 0) {
+        return; /* unreachable: the resolver only binds N % 8 == 0, K >= 256 */
+    }
+
+    struct q8k_row a[Q8K_SEG];
+    struct x8_call c = {.N = N, .n_super = n_super, .W = W, .a = a, .y = y};
+    for (size_t s0 = 0; s0 < n_super; s0 += Q8K_SEG) {
+        c.ns    = n_super - s0 < Q8K_SEG ? n_super - s0 : Q8K_SEG;
+        c.s0    = s0;
+        c.first = s0 == 0;
+        quantize_q8k_row(c.ns, x + s0 * 256, a);
+        geist_par_for(N / 8, row_tiles_tiled, &c);
     }
 }
 

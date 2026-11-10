@@ -229,8 +229,10 @@ static bool q4k_tiled_wanted(size_t m) {
  * ISA at run time (AVX2 GEMV fallback on non-AVX-512 hosts).
  *
  * The GEMM takes whole Q8_Kx4 groups of 4 rows; the last m % 4 rows go to
- * the M=1 GEMV, as does every row of a weight in the W4A8 layout (n_out
- * not a multiple of 8). */
+ * q4kx8_gemv_row_tiled, which gives a row the bits the GEMMs give it (the
+ * M=1 decode GEMV sums in another order), so a token's output does not
+ * depend on m (#527). Every row of a weight in the W4A8 layout (n_out not
+ * a multiple of 8) takes the M=1 kernel. */
 void cpu_x86_linear_q4k_mN(size_t                     m,
                            const float               *x,
                            const struct geist_weight *w,
@@ -246,9 +248,10 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
         }
         return;
     }
-    const size_t m4 = m / 4 * 4;
+    const struct block_q4_Kx8 *wx8 = (const struct block_q4_Kx8 *) w->aux_fp32;
+    const size_t               m4  = m / 4 * 4;
     for (size_t row = m4; row < m; row++) {
-        cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
+        q4kx8_gemv_row_tiled(n_out, n_in, x + row * n_in, wx8, y + row * n_out);
     }
     if (m4 == 0) {
         return;
@@ -267,14 +270,13 @@ void cpu_x86_linear_q4k_mN(size_t                     m,
     }
     if (ws == nullptr) {
         for (size_t row = 0; row < m4; row++) {
-            cpu_x86_linear_q4k_m1(x + row * n_in, w, be, y + row * n_out);
+            q4kx8_gemv_row_tiled(n_out, n_in, x + row * n_in, wx8, y + row * n_out);
         }
         return;
     }
     struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
     quantize_q8_Kx4_groups(m4 / 4, n_in, x, acts);
 
-    const struct block_q4_Kx8 *wx8 = (const struct block_q4_Kx8 *) w->aux_fp32;
     if (q4k_tiled_wanted(m4) &&
         q4k_tiled_gemm_avx512_vnni(
                 m4, n_out, n_in, acts, wx8, y, (struct cpu_x86_state *) be->state)) {

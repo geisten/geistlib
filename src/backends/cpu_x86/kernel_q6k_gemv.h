@@ -20,8 +20,9 @@ void q6k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q6k_raw, flo
 
 /* Prefill (M>1) over the same native Q6_K weights: y[M][N] = x[M][K] W^T.
  * scratch holds the M quantized activation rows,
- * q6k_gemm_scratch_bytes(M, K) bytes, 4-byte aligned. Bit-identical per
- * output to q6k_gemv_m1 for K <= 16384. AVX2. */
+ * q6k_gemm_scratch_bytes(M, K) bytes, 4-byte aligned. A row's output is the
+ * same bits whatever M (and the tiled GEMM's, q6k_tiled_gemm_avx512_vnni);
+ * q6k_gemv_m1 sums in another order (#527). AVX2. */
 size_t q6k_gemm_scratch_bytes(size_t M, size_t K);
 void   q6k_gemm(size_t         M,
                 size_t         N,
