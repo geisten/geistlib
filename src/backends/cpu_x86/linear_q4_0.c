@@ -44,7 +44,9 @@
  * into a fixed 16-entry int8 table (kvalues_mxfp4, twice the E2M1 values)
  * and one scale per 32-element block, its E8M0 exponent byte as
  * mxfp4_e8m0_half(e). Its 17-byte blocks leave every row unaligned; the
- * kernels only use unaligned loads.
+ * kernels only use unaligned loads. On AVX-512 VNNI hosts both MXFP4 entry
+ * points (m = 1 and m > 1) bind kernel_q4_0_avx512_vnni.c's register tiles
+ * (#374), so a token's output is the same bits whatever the row count.
  */
 #define GEIST_INTERNAL_BACKEND_LAYER
 
@@ -688,12 +690,97 @@ static void cpu_x86_linear_iq4_mN(size_t                     m,
     geist_par_for(n_out, iq4_rows_mN, &c);
 }
 
+/* MXFP4 with vnni: groups [g0, g1) of Q4_0_VNNI_TILE_ROWS output rows. */
+static void mxfp4_tiles_vnni(void *ctx, size_t g0, size_t g1) {
+    const struct q4_call c = *(const struct q4_call *) ctx;
+    for (size_t g = g0; g < g1; g++) {
+        const size_t j0   = g * Q4_0_VNNI_TILE_ROWS;
+        const size_t rows = c.n_out - j0 < Q4_0_VNNI_TILE_ROWS ? c.n_out - j0 : Q4_0_VNNI_TILE_ROWS;
+        mxfp4_gemm_rows_avx512_vnni(c.m,
+                                    c.nb,
+                                    c.n_out,
+                                    j0,
+                                    rows,
+                                    (const struct block_mxfp4_t *) c.raw,
+                                    (const uint8_t *) c.qx,
+                                    c.dx,
+                                    c.y);
+    }
+}
+
+/* Activation rows [i0, i1) to Q8_0 blocks, the codes stored XOR 0x80
+ * (x + 128 as uint8, the MXFP4 tiles' unsigned operand). */
+static void quant_rows_u8(void *ctx, size_t i0, size_t i1) {
+    const struct q4_call c    = *(const struct q4_call *) ctx;
+    const __m256i        flip = _mm256_set1_epi8((char) 0x80);
+    for (size_t i = i0; i < i1; i++) {
+        int8_t *q = c.qx + i * c.n_in;
+        for (size_t b = 0; b < c.nb; b++) {
+            const __m256i v = quant_block_q8_0(c.x + i * c.n_in + b * QK, &c.dx[i * c.nb + b]);
+            _mm256_storeu_si256((__m256i *) (q + b * QK), _mm256_xor_si256(v, flip));
+        }
+    }
+}
+
+/* MXFP4 on a VNNI host, any m >= 1: the rows to Q8_0 blocks (x + 128),
+ * then the register tiles, one call per group of output rows. */
+static void linear_mxfp4_vnni(size_t                     m,
+                              const float               *x,
+                              const struct geist_weight *w,
+                              struct geist_backend      *be,
+                              float                     *y) {
+    const size_t              n_in  = (size_t) w->n_in;
+    const size_t              n_out = (size_t) w->n_out;
+    const size_t              nb    = n_in / QK;
+    struct cpu_x86_workspace *ws    = acquire_acts(be, m, n_in, QK, 0);
+    if (ws == nullptr) {
+        geist_linear_ref(m, x, w, y);
+        return;
+    }
+    struct q4_call c = {.m     = m,
+                        .n_in  = n_in,
+                        .n_out = n_out,
+                        .nb    = nb,
+                        .fmt   = LUT4_MXFP4,
+                        .raw   = (const uint8_t *) w->raw,
+                        .x     = x,
+                        .qx    = ws->mN_acts,
+                        .dx    = ws->mN_scale,
+                        .y     = y};
+    if (m == 1) {
+        quant_rows_u8(&c, 0, 1);
+    } else {
+        geist_par_for(m, quant_rows_u8, &c);
+    }
+    geist_par_for((n_out + Q4_0_VNNI_TILE_ROWS - 1) / Q4_0_VNNI_TILE_ROWS, mxfp4_tiles_vnni, &c);
+}
+
+static void cpu_x86_linear_mxfp4_m1_vnni(const float               *x,
+                                         const struct geist_weight *w,
+                                         struct geist_backend      *be,
+                                         float                     *y) {
+    linear_mxfp4_vnni(1, x, w, be, y);
+}
+
+static void cpu_x86_linear_mxfp4_mN_vnni(size_t                     m,
+                                         const float               *x,
+                                         const struct geist_weight *w,
+                                         struct geist_backend      *be,
+                                         float                     *y) {
+    linear_mxfp4_vnni(m, x, w, be, y);
+}
+
 void cpu_x86_linear_q4_0_bind(struct geist_weight *w) {
     w->linear_m1 = cpu_x86_linear_q4_0_m1;
     w->linear_mN = vnni_tiles_usable() ? cpu_x86_linear_q4_0_mN_vnni : cpu_x86_linear_q4_0_mN;
 }
 
 void cpu_x86_linear_iq4_bind(struct geist_weight *w) {
+    if (w->dtype == GEIST_DTYPE_MXFP4 && vnni_tiles_usable()) {
+        w->linear_m1 = cpu_x86_linear_mxfp4_m1_vnni;
+        w->linear_mN = cpu_x86_linear_mxfp4_mN_vnni;
+        return;
+    }
     w->linear_m1 = cpu_x86_linear_iq4_m1;
     w->linear_mN = cpu_x86_linear_iq4_mN;
 }
