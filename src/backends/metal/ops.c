@@ -1381,6 +1381,63 @@ metal_vec_of(const struct geist_backend *be, const struct geist_tensor *t, struc
     return metal_op_end(be, cmd, enc, nullptr);
 }
 
+/* prims->layernorm (#523): one threadgroup per row, METAL_ELEM_THREADS wide
+ * at any row count -- the kernel has no single-row register path, so the
+ * wide decode dispatch of metal_rows_threads buys it nothing. */
+[[nodiscard]] static enum geist_status metal_layernorm(struct geist_backend      *be,
+                                                       const struct geist_tensor *x,
+                                                       const struct geist_tensor *w,
+                                                       const struct geist_tensor *b,
+                                                       float                      eps,
+                                                       struct geist_tensor       *y) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_rows xr, yr, wr, br;
+    if (!metal_rows_of(be, x, &xr) || !metal_rows_of(be, y, &yr) || !metal_vec_of(be, w, &wr) ||
+        !metal_vec_of(be, b, &br) || yr.rows != xr.rows || yr.cols != xr.cols ||
+        wr.cols != xr.cols || br.cols != xr.cols) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (!xr.fits || !yr.fits || !wr.fits || !br.fits) {
+        return GEIST_E_INVALID_ARG;
+    }
+    enum geist_status s = metal_ensure(be, METAL_TAB_QUANT);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_state                 *st     = be->state;
+    const struct metal_layernorm_params params = {
+            .rows         = (uint32_t) xr.rows,
+            .cols         = (uint32_t) xr.cols,
+            .x_offset     = (uint32_t) xr.off,
+            .w_offset     = (uint32_t) wr.off,
+            .b_offset     = (uint32_t) br.off,
+            .y_offset     = (uint32_t) yr.off,
+            .x_row_stride = (uint32_t) xr.stride,
+            .y_row_stride = (uint32_t) yr.stride,
+            .eps          = eps,
+    };
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
+
+    struct metal_cmdbuf_h  *cmd = nullptr;
+    struct metal_encoder_h *enc = metal_op_begin(be, nullptr, &cmd);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(st, enc, st->layernorm_rows_simd_pipeline);
+    metal_msg_send_set_buffer(st, enc, x->buffer->buffer, x->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
+    metal_msg_send_set_buffer(st, enc, b->buffer->buffer, b->buffer->base_off, 2);
+    metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 3);
+    metal_msg_send_set_bytes(st, enc, &params, sizeof(params), 4);
+    const struct metal_size groups  = {.width = params.rows, .height = 1, .depth = 1};
+    const struct metal_size threads = {.width = METAL_ELEM_THREADS, .height = 1, .depth = 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_RMSNORM_ROWS, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    return metal_op_end(be, cmd, enc, nullptr);
+}
+
 [[nodiscard]] static enum geist_status metal_rmsnorm_add(struct geist_backend      *be,
                                                          const struct geist_tensor *res,
                                                          const struct geist_tensor *x,
@@ -5666,7 +5723,8 @@ static const struct geist_backend_primitives metal_prims =
                             metal_attention,
                             .relu_squared = metal_relu_squared,
                             .scale_f32    = metal_scale_f32,
-                            .add_bias     = metal_add_bias);
+                            .add_bias     = metal_add_bias,
+                            .layernorm    = metal_layernorm);
 
 static const struct geist_backend_fused metal_fused = {
         .supported                    = metal_fused_supported,

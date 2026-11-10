@@ -120,7 +120,8 @@ static const struct geist_backend_primitives cpu_scalar_prims =
                             cpu_scalar_rope_apply,
                             cpu_scalar_attention,
                             .relu_squared = cpu_scalar_relu_squared,
-                            .add_bias     = geist_host_add_bias);
+                            .add_bias     = geist_host_add_bias,
+                            .layernorm    = geist_host_layernorm);
 
 /* Exported: cpu_x86 copies it as the base of its own. */
 const struct geist_backend_fused cpu_scalar_fused = {

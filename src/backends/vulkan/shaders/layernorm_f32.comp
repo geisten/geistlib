@@ -1,0 +1,85 @@
+#version 450
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_basic : enable
+
+/* LayerNorm with bias (prims->layernorm, #523), one workgroup per row:
+ *   y = (x - mean(x)) * inversesqrt(var(x) + eps) * w + b
+ * var the population variance. The mean and the variance of the centred row
+ * are each rmsnorm_f32.comp's two-level reduce. An invocation reads only its
+ * own columns of x, and all of them before it writes, so y may be x. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer X {
+    float x[];
+};
+
+layout(set = 0, binding = 1) readonly buffer W {
+    float w[];
+};
+
+layout(set = 0, binding = 2) readonly buffer B {
+    float b[];
+};
+
+layout(set = 0, binding = 3) writeonly buffer Y {
+    float y[];
+};
+
+layout(push_constant) uniform Push {
+    uint rows;
+    uint feat;
+    uint x_offset;
+    uint w_offset;
+    uint b_offset;
+    uint y_offset;
+    float eps;
+    uint x_stride; /* row strides in floats, as rmsnorm_f32.comp */
+    uint y_stride;
+} pc;
+
+/* One slot per subgroup, sized for any subgroup size. */
+shared float part_mean[256];
+shared float part_var[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint lid = gl_LocalInvocationID.x;
+    uint xb = pc.x_offset + row * pc.x_stride;
+
+    float sum = 0.0;
+    for (uint j = lid; j < pc.feat; j += 256) {
+        sum += x[xb + j];
+    }
+    sum = subgroupAdd(sum);
+    if (subgroupElect()) {
+        part_mean[gl_SubgroupID] = sum;
+    }
+    barrier();
+    float total = 0.0;
+    for (uint i = 0; i < gl_NumSubgroups; i++) {
+        total += part_mean[i];
+    }
+    float mean = total / float(pc.feat);
+
+    float ss = 0.0;
+    for (uint j = lid; j < pc.feat; j += 256) {
+        float v = x[xb + j] - mean;
+        ss = fma(v, v, ss);
+    }
+    ss = subgroupAdd(ss);
+    if (subgroupElect()) {
+        part_var[gl_SubgroupID] = ss;
+    }
+    barrier();
+    total = 0.0;
+    for (uint i = 0; i < gl_NumSubgroups; i++) {
+        total += part_var[i];
+    }
+
+    float inv = inversesqrt(total / float(pc.feat) + pc.eps);
+    for (uint j = lid; j < pc.feat; j += 256) {
+        y[pc.y_offset + row * pc.y_stride + j] =
+                (x[xb + j] - mean) * inv * w[pc.w_offset + j] + b[pc.b_offset + j];
+    }
+}

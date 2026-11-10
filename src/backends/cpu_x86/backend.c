@@ -568,7 +568,8 @@ static const struct geist_backend_primitives cpu_x86_prims =
                             cpu_scalar_rope_apply,
                             cpu_x86_attention,
                             .relu_squared = cpu_scalar_relu_squared,
-                            .add_bias     = geist_host_add_bias);
+                            .add_bias     = geist_host_add_bias,
+                            .layernorm    = geist_host_layernorm);
 
 /* The fused paths are all optional: cpu_scalar's, with cpu_x86's on top. */
 [[gnu::constructor]] static void cpu_x86_init_fused(void) {

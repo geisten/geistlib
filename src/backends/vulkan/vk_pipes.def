@@ -46,6 +46,7 @@ X(VK_PIPE_GELU_MUL,               gelu_tanh_mul_f32_spv,       "gelu_mul",      
 X(VK_PIPE_SCALE,                  scale_f32_spv,               "scale",                  2, PLAIN)
 X(VK_PIPE_RMSNORM,                rmsnorm_f32_spv,             "rmsnorm",                3, PLAIN)
 X(VK_PIPE_RMSNORM_ADD,            rmsnorm_add_f32_spv,         "rmsnorm_add",            4, PLAIN)
+X(VK_PIPE_LAYERNORM,              layernorm_f32_spv,           "layernorm",              4, PLAIN)
 X(VK_PIPE_ROPE,                   rope_f32_spv,                "rope",                   3, PLAIN)
 X(VK_PIPE_ATTENTION,              attention_f32_spv,           "attention",              4, PLAIN)
 X(VK_PIPE_ARGMAX,                 argmax_f32_spv,              "argmax",                 2, PLAIN)

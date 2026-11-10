@@ -184,6 +184,7 @@ static const struct metal_pipeline_row metal_quant_rows[] = {
         METAL_PIPE(q6k_n4, "matvec_q6k_n4", q6k_n4),
         METAL_PIPE(q6k_n4, "matvec_q6k_m8", q6k_m8),
         METAL_PIPE(elem_simd, "rmsnorm_rows_simd", rmsnorm_rows_simd),
+        METAL_PIPE(elem_simd, "layernorm_rows_simd", layernorm_rows_simd),
         METAL_PIPE(elem, "gelu_rows", gelu_rows),
         METAL_PIPE(silu, "silu_rows", silu_rows),
         METAL_PIPE(silu, "relu2_rows", relu2_rows),

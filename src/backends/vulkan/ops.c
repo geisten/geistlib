@@ -1435,6 +1435,74 @@ static bool vk_feat_rows(const struct geist_tensor *t, size_t feat, size_t *rows
     return GEIST_OK;
 }
 
+/* prims->layernorm (#523): layernorm_f32.comp, one workgroup per row; on
+ * host-visible buffers the CPU backends' double reduction. */
+[[nodiscard]] static enum geist_status vk_layernorm(struct geist_backend      *be,
+                                                    const struct geist_tensor *x,
+                                                    const struct geist_tensor *w,
+                                                    const struct geist_tensor *b,
+                                                    float                      eps,
+                                                    struct geist_tensor       *y) {
+    const size_t n    = vk_t_n(x);
+    const size_t feat = n != 0 ? (size_t) x->shape[x->ndim - 1] : 0;
+    size_t       rows = 0, xs = 0, yrows = 0, ys = 0;
+    if (!vk_feat_rows(x, feat, &rows, &xs) || !vk_feat_rows(y, feat, &yrows, &ys) ||
+        yrows != rows || vk_t_n(w) != feat || vk_t_n(b) != feat) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan layernorm: feature mismatch");
+        return GEIST_E_INVALID_ARG;
+    }
+    {
+        VkDescriptorBufferInfo bi[4];
+        uint32_t               off[4];
+        if (vk_tensor_gpu(x, &bi[0], &off[0]) && vk_tensor_gpu(w, &bi[1], &off[1]) &&
+            vk_tensor_gpu(b, &bi[2], &off[2]) && vk_tensor_gpu(y, &bi[3], &off[3])) {
+            struct {
+                uint32_t rows, feat, x, w, b, y;
+                float    eps;
+                uint32_t xs, ys;
+            } push = {0, 0, off[0], off[1], off[2], off[3], eps, 0, 0};
+            if (vk_ckd_u32(rows, &push.rows) || vk_ckd_u32(feat, &push.feat) ||
+                vk_ckd_u32(xs, &push.xs) || vk_ckd_u32(ys, &push.ys)) {
+                return vk_too_wide(be, "layernorm");
+            }
+            const struct vk_access acc[4] = {vk_acc_tensor(x, false),
+                                             vk_acc_tensor(w, false),
+                                             vk_acc_tensor(b, false),
+                                             vk_acc_tensor(y, true)};
+            return vk_seq_dispatch_acc(
+                    be, VK_PIPE_LAYERNORM, bi, acc, &push, sizeof(push), push.rows, 1, 1);
+        }
+    }
+    size_t       nx = 0, nw = 0, nb = 0, ny = 0;
+    const float *xp = vk_tensor_host(x, &nx);
+    const float *wp = vk_tensor_host(w, &nw);
+    const float *bp = vk_tensor_host(b, &nb);
+    float       *yp = vk_tensor_host(y, &ny);
+    if (xp == nullptr || wp == nullptr || bp == nullptr || yp == nullptr) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan layernorm: bad inputs");
+        return GEIST_E_INVALID_ARG;
+    }
+    for (size_t r = 0; r < rows; r++) {
+        const float *row_x = xp + r * xs;
+        float       *row_y = yp + r * ys;
+        double       sum = 0.0, ss = 0.0;
+        for (size_t i = 0; i < feat; i++) {
+            sum += (double) row_x[i];
+        }
+        const double mean = sum / (double) feat;
+        for (size_t i = 0; i < feat; i++) {
+            const double c = (double) row_x[i] - mean;
+            ss += c * c;
+        }
+        const float inv = (float) (1.0 / sqrt(ss / (double) feat + (double) eps));
+        const float m   = (float) mean;
+        for (size_t i = 0; i < feat; i++) {
+            row_y[i] = (row_x[i] - m) * inv * wp[i] + bp[i];
+        }
+    }
+    return GEIST_OK;
+}
+
 [[nodiscard]] static enum geist_status vk_rope_apply(struct geist_backend      *be,
                                                      struct geist_tensor       *x,
                                                      const struct geist_tensor *cos,
@@ -4531,7 +4599,8 @@ static const struct geist_backend_primitives vk_prims =
                             vk_attention,
                             .relu_squared = vk_relu_squared,
                             .scale_f32    = vk_scale_f32,
-                            .add_bias     = vk_add_bias);
+                            .add_bias     = vk_add_bias,
+                            .layernorm    = vk_layernorm);
 
 static const struct geist_backend_fused vk_fused = {
         .supported     = vk_fused_supported,

@@ -12,6 +12,8 @@
 #include "gemma4_kernels.h"
 #include "hadamard.h"
 
+#include <math.h>
+
 /* Reports a refused view under the backend's name and returns the code. */
 static enum geist_status
 refuse(struct geist_backend *be, enum geist_status code, const char *op, const char *what) {
@@ -63,6 +65,45 @@ enum geist_status geist_host_add_bias(struct geist_backend      *be,
     /* feat divides n (geist_host_ew_views) */
     for (size_t i = 0; i < v.n; i += v.feat) {
         add_fp32(v.feat, v.x + i, v.w, v.y + i);
+    }
+    return GEIST_OK;
+}
+
+enum geist_status geist_host_layernorm(struct geist_backend      *be,
+                                       const struct geist_tensor *x,
+                                       const struct geist_tensor *w,
+                                       const struct geist_tensor *b,
+                                       float                      eps,
+                                       struct geist_tensor       *y) {
+    struct geist_host_ew v;
+    enum geist_status    s = geist_host_ew_views(be, "layernorm", GEIST_EW_W, x, nullptr, w, y, &v);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    size_t       nb   = 0;
+    const float *bias = geist_host_tensor_f32(b, &nb);
+    if (bias == nullptr || nb != v.feat) {
+        return refuse(be, GEIST_E_INVALID_ARG, "layernorm", "bad bias");
+    }
+    const size_t n = v.feat;
+    /* feat divides n (geist_host_ew_views) */
+    for (size_t r = 0; r < v.n; r += n) {
+        const float *xr  = v.x + r;
+        float       *yr  = v.y + r;
+        double       sum = 0.0, ss = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            sum += (double) xr[i];
+        }
+        const double mean = sum / (double) n;
+        for (size_t i = 0; i < n; i++) {
+            const double c = (double) xr[i] - mean;
+            ss += c * c;
+        }
+        const float inv = (float) (1.0 / sqrt(ss / (double) n + (double) eps));
+        const float m   = (float) mean;
+        for (size_t i = 0; i < n; i++) {
+            yr[i] = (xr[i] - m) * inv * v.w[i] + bias[i];
+        }
     }
     return GEIST_OK;
 }
