@@ -1,12 +1,16 @@
+#if defined(MOE_MM_CM)
 #extension GL_KHR_cooperative_matrix : enable
 #extension GL_KHR_shader_subgroup_basic : enable
 #extension GL_KHR_memory_scope_semantics : enable
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+#else
+#extension GL_EXT_control_flow_attributes : enable
+#endif
 #extension GL_EXT_buffer_reference : require
 #extension GL_EXT_buffer_reference_uvec2 : require
 
-/* Grouped expert GEMM on the tensor cores (#499), llama.cpp's mul_mm_id and
- * Metal's moe_mm (#482): the routed slots of a prefill chunk, bucketed by
+/* Grouped expert GEMM (#499), llama.cpp's mul_mm_id and Metal's moe_mm
+ * (#482): the routed slots of a prefill chunk, bucketed by
  * expert (moe_map.comp), each expert's tiles multiplied by its weight in one
  * dispatch. Workgroup (i, y) takes tile i of moe_map's list (past the count:
  * nothing), e | (j << 16): sorted rows j*BN .. j*BN + BN-1 of expert e, and
@@ -15,16 +19,26 @@
  * row per token; 1: one per slot) and writes y row s.
  *
  * The frame of matmul_pq2_0_cm_body.glsl with BN = VK_MOE_MM_BN slots:
- * BM = 128 weight rows x BN slots x BK = 32 per 256-thread workgroup, 8
- * subgroups in a 4 x 2 layout, each owning 32 rows x BN / 2 slots (the four
- * accumulators unrolled by hand: an array of them indexed in a loop leaves
- * registers, #658), the next k-step's loads in flight during the MMAs and
- * stored after them (one barrier per step), weights and x rounded to f16,
- * f32 accumulation. The A stage per DT_* reads the weights as the dense
+ * BM = 128 weight rows x BN slots x BK = 32 per 256-thread workgroup, the
+ * next k-step's loads in flight during the multiplies and stored after them
+ * (one barrier per step), weights and x rounded to f16 in shared memory,
+ * f32 accumulation. Two ways to multiply the staged tiles:
+ *   MOE_MM_CM (moe_mm_*_cm.comp) on the tensor cores: 8 subgroups of 32
+ *     lanes in a 4 x 2 layout, each owning 32 rows x BN / 2 slots (the four
+ *     accumulators unrolled by hand: an array of them indexed in a loop
+ *     leaves registers, #658);
+ *   otherwise (moe_mm_*.comp, #249: GPUs without cooperative matrices, any
+ *     subgroup size) in registers, as llama.cpp's non-coopmat mul_mm_id:
+ *     thread (tr, tc) = (lid % 16, lid / 16) owns rows tr + 16 i (i < 8) x
+ *     slots 4 tc .. 4 tc + 3 -- each 8-k vector of a weight row read once
+ *     per thread for its 4 slots, the 16 lanes of a row group reading 16
+ *     rows without bank conflicts (the padded stride) -- and skips the
+ *     multiplies when all 4 slots are past the tile's count.
+ * The A stage per DT_* reads the weights as the dense
  * GEMMs lay them out: Q4_K / Q5_K superblocks, Q6_K's 216-byte padded
  * blocks, and the struct-of-arrays Q8_0, Q5_0 and MXFP4 (mv_legacy.glsl).
- * The slots' outputs leave through a 16 x 16 shared tile per subgroup (their
- * y rows are scattered). Weight rows past n_out read as zero and are not
+ * The tensor cores' outputs leave through a 16 x 16 shared tile per subgroup
+ * (their y rows are scattered). Weight rows past n_out read as zero and are not
  * written; x offsets and strides are multiples of 4.
  * Dispatch: gx = the tiles' bound mk / BN + min(n, mk), gy = ceil(n_out / BM). */
 
@@ -63,7 +77,9 @@ const uint STRIDE4 = BK / 8u + 1u;
 
 shared uvec4 Ash[2][BM * STRIDE4];
 shared uvec4 Bsh[2][BN * STRIDE4];
+#if defined(MOE_MM_CM)
 shared float Csh[8][256]; /* one 16 x 16 output tile per subgroup */
+#endif
 shared uint slot_sh[BN];
 
 /* The expert's weight (one address, three views) */
@@ -295,6 +311,7 @@ void store_tiles(uint buf, uint lid, uint row0, Fetch f) {
     }
 }
 
+#if defined(MOE_MM_CM)
 /* The subgroup's 16 x 16 tile acc of weight rows rb.. and slot columns cb..
  * to y: through its shared tile, each lane 8 of the 256 values. */
 void store_out(coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc,
@@ -311,6 +328,16 @@ void store_out(coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
     }
     subgroupBarrier();
 }
+#else
+const uint TM = BM / 16u; /* rows per thread */
+const uint TN = BN / 16u; /* slots per thread */
+
+/* 8 f16 values (one shared-memory vector) as two vec4 */
+void unpack8(uvec4 v, out vec4 lo, out vec4 hi) {
+    lo = vec4(unpackHalf2x16(v.x), unpackHalf2x16(v.y));
+    hi = vec4(unpackHalf2x16(v.z), unpackHalf2x16(v.w));
+}
+#endif
 
 void main() {
     uint lid = gl_LocalInvocationID.x;
@@ -330,11 +357,22 @@ void main() {
     w2 = WU2(wa);
     w4 = WU4(wa);
     uint row0 = gl_WorkGroupID.y * BM;
+#if defined(MOE_MM_CM)
     uint sg = gl_SubgroupID;
     uint sgr = sg >> 1u; /* 32-row quarter */
     uint sgc = sg & 1u;  /* BN / 2-slot half */
+#else
+    uint tr = lid & 15u;
+    uint tc = lid >> 4u;
+    bool busy = tc * TN < cnt; /* the same for the 16 lanes of a row group */
+    float acc[TM * TN];
+    [[unroll]] for (uint i = 0u; i < TM * TN; i++) {
+        acc[i] = 0.0;
+    }
+#endif
     barrier();
 
+#if defined(MOE_MM_CM)
     coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc00 =
             coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
     coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc01 =
@@ -343,6 +381,7 @@ void main() {
             coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
     coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator> acc11 =
             coopmat<float, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>(0.0);
+#endif
 
     uint ksteps = pc.n_in / BK;
     store_tiles(0u, lid, row0, fetch_tiles(0u, lid, row0));
@@ -355,6 +394,7 @@ void main() {
         if (more) {
             nxt = fetch_tiles(ks + 1u, lid, row0);
         }
+#if defined(MOE_MM_CM)
         for (uint kk = 0u; kk < BK; kk += 16u) {
             coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB> matB0;
             coopMatLoad(matB0, Bsh[cur], (sgc * (BN / 2u) + 0u) * STRIDE4 + kk / 8u, STRIDE4,
@@ -377,16 +417,48 @@ void main() {
                 acc11 = coopMatMulAdd(matA, matB1, acc11);
             }
         }
+#else
+        if (busy) {
+            [[unroll]] for (uint q = 0u; q < BK / 8u; q++) {
+                vec4 b[TN][2];
+                [[unroll]] for (uint j = 0u; j < TN; j++) {
+                    unpack8(Bsh[cur][(tc * TN + j) * STRIDE4 + q], b[j][0], b[j][1]);
+                }
+                [[unroll]] for (uint i = 0u; i < TM; i++) {
+                    vec4 a0, a1;
+                    unpack8(Ash[cur][(tr + 16u * i) * STRIDE4 + q], a0, a1);
+                    [[unroll]] for (uint j = 0u; j < TN; j++) {
+                        acc[i * TN + j] += dot(a0, b[j][0]) + dot(a1, b[j][1]);
+                    }
+                }
+            }
+        }
+#endif
         if (more) {
             store_tiles(cur ^ 1u, lid, row0, nxt);
         }
         barrier();
     }
 
+#if defined(MOE_MM_CM)
     uint rb = row0 + sgr * 32u;
     uint cb = sgc * (BN / 2u);
     store_out(acc00, sg, rb, cb, cnt);
     store_out(acc01, sg, rb, cb + 16u, cnt);
     store_out(acc10, sg, rb + 16u, cb, cnt);
     store_out(acc11, sg, rb + 16u, cb + 16u, cnt);
+#else
+    [[unroll]] for (uint j = 0u; j < TN; j++) {
+        uint c = tc * TN + j;
+        if (c < cnt) {
+            uint yb = pc.y_offset + slot_sh[c] * pc.y_stride;
+            [[unroll]] for (uint i = 0u; i < TM; i++) {
+                uint r = row0 + tr + 16u * i;
+                if (r < pc.n_out) {
+                    y[yb + r] = acc[i * TN + j];
+                }
+            }
+        }
+    }
+#endif
 }
