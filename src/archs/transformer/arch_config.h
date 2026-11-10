@@ -149,6 +149,10 @@ constexpr int GEIST_MOE_MAX_EXPERTS = 512;
 constexpr float GEIST_SWIGLU_OAI_ALPHA = 1.702f;
 constexpr float GEIST_SWIGLU_OAI_LIMIT = 7.0f;
 
+/* SparseMixer's router_jitter_noise (GEIST_MOE_GATING_SPARSEMIXER): 0.01 in
+ * every published Phi-MoE config; the GGUF does not carry it. */
+constexpr double GEIST_SPARSEMIXER_JITTER = 0.01;
+
 struct geist_arch_config {
     /* ---- Numerics. */
     float rms_eps;       /* RMSNorm epsilon. Gemma 4: 1e-6f. */
@@ -164,6 +168,16 @@ struct geist_arch_config {
     /* ---- Multiplies output_norm's weights at load, so it divides the
      * logits on every head path (Granite); 0: none. */
     float output_norm_scale;
+
+    /* ---- LayerNorm stack (Phi-MoE, #523): the attention, FFN and output
+     * norms are torch.nn.LayerNorm with a bias (blk.N.attn_norm.bias,
+     * blk.N.ffn_norm.bias, output_norm.bias) on prims->layernorm, not
+     * RMSNorms; rms_eps is their epsilon. A backend without the primitive
+     * refuses the model at load. */
+    bool norm_layernorm;
+    /* ---- The lm_head has a bias (output.bias, [VOCAB]) added to every row
+     * of logits. */
+    bool lm_head_bias;
 
     /* ---- PLE (Per-Layer Embedding, Gemma 4 family only). When
      * has_ple == false, the precompute path is skipped entirely. */
@@ -259,12 +273,21 @@ struct geist_arch_config {
      *                   p, weights p (renormalised when moe_norm_topk).
      *   SOFTMAX_WEIGHT  the k largest logits; weights the softmax over those
      *                   k logits alone (GPT-OSS, #243).
+     *   SPARSEMIXER     Phi-MoE (#523), exactly two per token: the largest
+     *                   logit, then the largest of the rest. Each is weighted
+     *                   by its softmax among the candidates (all experts for
+     *                   the first, all but the first for the second) whose
+     *                   logit s lies within GEIST_SPARSEMIXER_JITTER of it:
+     *                   (top - s) <= 2 * jitter * max(|s|, top). The two
+     *                   weights are independent: usually both are 1.
      * The router's bias (ffn_gate_inp.bias), where a layer has one, is added
-     * to the logits first. Values are the GGUF key's. */
+     * to the logits first. Values 1..3 are the GGUF key's; SPARSEMIXER is
+     * not one of llama.cpp's and no file states it. */
     enum geist_moe_gating : uint32_t {
         GEIST_MOE_GATING_SOFTMAX        = 1,
         GEIST_MOE_GATING_SIGMOID        = 2,
         GEIST_MOE_GATING_SOFTMAX_WEIGHT = 3,
+        GEIST_MOE_GATING_SPARSEMIXER    = 0x100,
     } moe_gating;
     static_assert(sizeof(enum geist_moe_gating) == sizeof(uint32_t));
     /* DeepSeek-V3's router (#242), as llama.cpp's build_moe_ffn runs it:

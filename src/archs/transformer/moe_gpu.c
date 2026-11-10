@@ -825,7 +825,8 @@ enum geist_status moe_gpu_attach(struct transformer_arch_state *st, struct geist
      * them on the device at decode (GEIST_MOE_DEVICE=0: never). */
     if (gbe == st->backend && slots == n_exp && gf->moe_route != nullptr &&
         gf->linear_t_ids != nullptr && gf->moe_weighted_sum != nullptr &&
-        gf->supported != nullptr && geist_env_flag("GEIST_MOE_DEVICE", true)) {
+        gf->supported != nullptr && cf->moe_gating != GEIST_MOE_GATING_SPARSEMIXER &&
+        geist_env_flag("GEIST_MOE_DEVICE", true)) {
         mg->device = heap_calloc_array_aligned(bool, n_layers);
         for (size_t l = 0; mg->device != nullptr && l < n_layers; l++) {
             bool all = moe_layer(st, l);

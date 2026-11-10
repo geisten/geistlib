@@ -31,9 +31,10 @@ static inline struct geist_arch_readout *dr_handle(struct transformer_decision_r
 
 bool transformer_decision_supported(const struct geist_arch_state *state) {
     const struct transformer_arch_state *st = tf_cstate(state);
+    /* The tiles are raw lm_head rows: not with an lm_head bias (#523). */
     return st != nullptr && !geist_pooling_is_embedding(st->config.pooling) &&
-           st->embed_table_w.linear_rows != nullptr && st->embed_table_w.linear_rows_tile > 0 &&
-           st->embed_table_w.linear_rows_tile <= 32;
+           st->output_b.buffer == nullptr && st->embed_table_w.linear_rows != nullptr &&
+           st->embed_table_w.linear_rows_tile > 0 && st->embed_table_w.linear_rows_tile <= 32;
 }
 
 void transformer_decision_destroy(struct geist_arch_readout *readout) {

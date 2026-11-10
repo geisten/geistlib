@@ -407,7 +407,8 @@ static void spec_final_rows(void *ctx, size_t c0, size_t c1) {
  * spec_dtype_ok). Returns true on success, false if ineligible/OOM. */
 static bool spec_head_build(struct transformer_arch_state *st) {
     const struct geist_weight *w = &st->embed_table_w;
-    if (w->raw == nullptr || !spec_dtype_ok(w->dtype)) {
+    /* The sketch ranks raw dots: not with an lm_head bias (#523). */
+    if (w->raw == nullptr || !spec_dtype_ok(w->dtype) || st->output_b.buffer != nullptr) {
         return false;
     }
 #if !(defined(__ARM_NEON) && defined(__ARM_FEATURE_DOTPROD))

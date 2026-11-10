@@ -1008,9 +1008,8 @@ transformer_decode_batch_forward(size_t n, struct transformer_arch_session *cons
     if (s == GEIST_OK && h_in != carrier->scratch_h_a)
         s = v->buffer_copy(carrier->scratch_h_a, 0, h_in, 0, n * row_h);
     struct geist_tensor t_h = view_2d(carrier->scratch_h_a, (int64_t) n, (int64_t) d);
-    struct geist_tensor t_w = view_1d(st->output_norm.buffer, (int64_t) d);
     if (s == GEIST_OK)
-        s = be->desc->prims->rmsnorm(be, &t_h, &t_w, st->config.rms_eps, &t_h);
+        s = transformer_output_norm(st, &t_h);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, n, d, carrier->scratch_h_a);
     struct geist_tensor t_logits = view_2d(carrier->scratch_logits, (int64_t) n, st->vocab_size);
@@ -1024,6 +1023,8 @@ transformer_decode_batch_forward(size_t n, struct transformer_arch_session *cons
                                &t_h,
                                &st->output_table,
                                &t_logits);
+    if (s == GEIST_OK)
+        s = transformer_head_bias(st, n, carrier->scratch_logits);
     /* Each row to its session (row 0 already is seqs[0]'s): the logits for
      * sampling and peek, the normed hidden for a dense recompute. */
     for (size_t b = 1; s == GEIST_OK && b < n; b++) {

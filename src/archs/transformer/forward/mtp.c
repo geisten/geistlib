@@ -236,6 +236,8 @@ enum geist_status transformer_mtp_forward(struct transformer_arch_session *sess,
                                                       &t_norm,
                                                       &st->output_table,
                                                       &t_logits);
+    if (s == GEIST_OK)
+        s = transformer_head_bias(st, n, sess->scratch_logits);
     if (s != GEIST_OK)
         return s;
 

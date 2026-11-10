@@ -32,6 +32,16 @@
                                             const struct geist_tensor            *w,
                                             struct geist_buffer                  *y);
 
+/* y = norm(x) over rows of n, y may be x: the LayerNorm with weight w and
+ * bias b where the model's norms are LayerNorms (b has a buffer, #523),
+ * else blk_rmsnorm(x, w). */
+[[nodiscard]] enum geist_status blk_norm(struct transformer_layer_forward_ctx *ctx,
+                                         size_t                                n,
+                                         struct geist_buffer                  *x,
+                                         const struct geist_tensor            *w,
+                                         const struct geist_tensor            *b,
+                                         struct geist_buffer                  *y);
+
 /* y = a + b over rows of n; y may be a or b. */
 [[nodiscard]] enum geist_status blk_add(struct transformer_layer_forward_ctx *ctx,
                                         size_t                                n,
@@ -254,6 +264,7 @@ struct moe_router {
  *   6. weights: the unbiased scores of the selected, SOFTMAX_WEIGHT the
  *      softmax over the selected logits; renormalised when norm (the sum
  *      clamped below at 2^-14, as llama.cpp); times w_scale.
+ * SPARSEMIXER is its own rule (arch_config.h): steps 2-6 do not apply, k is 2.
  * Without sel_bias, groups and scale, SOFTMAX is moe_route_topk exactly.
  * False as moe_route_topk, when n exceeds GEIST_MOE_MAX_EXPERTS or the
  * groups do not divide n (topk_group 0 or past n_group). */

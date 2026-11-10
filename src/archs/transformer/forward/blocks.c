@@ -22,6 +22,23 @@ enum geist_status blk_rmsnorm(struct transformer_layer_forward_ctx *ctx,
     return ctx->prims->rmsnorm(ctx->be, &t_x, &t_w, ctx->eps, &t_y);
 }
 
+enum geist_status blk_norm(struct transformer_layer_forward_ctx *ctx,
+                           size_t                                n,
+                           struct geist_buffer                  *x,
+                           const struct geist_tensor            *w,
+                           const struct geist_tensor            *b,
+                           struct geist_buffer                  *y) {
+    if (b->buffer == nullptr) {
+        return blk_rmsnorm(ctx, n, x, w, y);
+    }
+    /* The loader refused the model on a backend without the primitive. */
+    struct geist_tensor t_x = view_2d(x, ctx->SEQ, (int64_t) n);
+    struct geist_tensor t_w = view_1d(w->buffer, (int64_t) n);
+    struct geist_tensor t_b = view_1d_at(b->buffer, (size_t) b->offset, (int64_t) n);
+    struct geist_tensor t_y = view_2d(y, ctx->SEQ, (int64_t) n);
+    return ctx->prims->layernorm(ctx->be, &t_x, &t_w, &t_b, ctx->eps, &t_y);
+}
+
 enum geist_status blk_add(struct transformer_layer_forward_ctx *ctx,
                           size_t                                n,
                           struct geist_buffer                  *a,
@@ -583,7 +600,8 @@ enum geist_status blk_attn_norm(struct transformer_layer_forward_ctx *ctx, struc
     if (ctx->x_prenormed) {
         return GEIST_OK;
     }
-    return blk_rmsnorm(ctx, ctx->st->d_model, ctx->h_in_buf, &ctx->L->attn_norm, x);
+    return blk_norm(
+            ctx, ctx->st->d_model, ctx->h_in_buf, &ctx->L->attn_norm, &ctx->L->attn_norm_b, x);
 }
 
 /* y = res + scale * (w != nullptr ? rmsnorm(x, w) : x), z = rmsnorm(y, z_w)
@@ -722,9 +740,10 @@ enum geist_status blk_ffn_swiglu(struct transformer_layer_forward_ctx *ctx) {
     struct geist_buffer              *x    = sess->scratch_pre_ff;
 
     /* Each step runs only while s is GEIST_OK. */
-    enum geist_status s = ctx->ffn_x_prenormed
-                                  ? GEIST_OK
-                                  : blk_rmsnorm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, x);
+    enum geist_status s =
+            ctx->ffn_x_prenormed
+                    ? GEIST_OK
+                    : blk_norm(ctx, d, sess->scratch_h_post_attn, &L->ffn_norm, &L->ffn_norm_b, x);
     if (s == GEIST_OK)
         s = transformer_rotate_rows(st, ctx->seq, d, x);
     if (s == GEIST_OK && ctx->seq == 1 && ctx->P->fuse_ffn_gate_up_silu_m1) {

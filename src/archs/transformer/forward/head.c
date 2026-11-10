@@ -42,6 +42,44 @@ TRANSFORMER_PROFILE_DEFINE(g_head_profile,
                            "softcap",
                            "sample");
 
+enum geist_status transformer_output_norm(struct transformer_arch_state *st,
+                                          struct geist_tensor           *t_h) {
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+    struct geist_tensor                    t_w   = view_1d(st->output_norm.buffer, st->d_model);
+    if (st->output_norm_b.buffer == nullptr) {
+        return prims->rmsnorm(be, t_h, &t_w, st->config.rms_eps, t_h);
+    }
+    /* The loader refused the model on a backend without the primitive. */
+    struct geist_tensor t_b =
+            view_1d_at(st->output_norm_b.buffer, (size_t) st->output_norm_b.offset, st->d_model);
+    return prims->layernorm(be, t_h, &t_w, &t_b, st->config.rms_eps, t_h);
+}
+
+enum geist_status
+transformer_head_bias(struct transformer_arch_state *st, size_t k, struct geist_buffer *logits) {
+    if (st->output_b.buffer == nullptr) {
+        return GEIST_OK;
+    }
+    struct geist_backend                  *be    = st->backend;
+    const struct geist_backend_primitives *prims = be->desc->prims;
+    const int64_t                          V     = st->vocab_size;
+    struct geist_tensor t_b = view_2d_at(st->output_b.buffer, (size_t) st->output_b.offset, 1, V);
+    enum geist_status   s   = GEIST_E_UNSUPPORTED;
+    if (prims->add_bias != nullptr) {
+        struct geist_tensor t_x = view_2d(logits, (int64_t) k, V);
+        s                       = prims->add_bias(be, &t_x, &t_b, &t_x);
+        if (s != GEIST_E_UNSUPPORTED)
+            return s;
+    }
+    s = GEIST_OK;
+    for (size_t r = 0; r < k && s == GEIST_OK; r++) {
+        struct geist_tensor t_x = view_2d_at(logits, r * (size_t) V * sizeof(float), 1, V);
+        s                       = prims->add(be, &t_x, &t_b, &t_x);
+    }
+    return s;
+}
+
 /* The output head's front half on `k` rows: rows [row0, row0 + k) of
  * scratch_h_b, output_norm'd, into scratch_h_a's first k rows. That is HF's
  * `last_hidden_state`. The copy runs on the device where the plan bound it
@@ -50,12 +88,11 @@ TRANSFORMER_PROFILE_DEFINE(g_head_profile,
  * copy and the norm as the head's stages. */
 [[nodiscard]] static enum geist_status
 head_norm_rows(struct transformer_arch_session *sess, size_t row0, size_t k, bool profile) {
-    struct transformer_arch_state         *st    = sess->model;
-    struct geist_backend                  *be    = st->backend;
-    const struct geist_backend_vtbl       *v     = be->desc->vtbl;
-    const struct geist_backend_primitives *prims = be->desc->prims;
-    const size_t                           row   = (size_t) st->d_model * sizeof(float);
-    uint64_t                               t0    = profile ? geist_now_ns() : 0;
+    struct transformer_arch_state   *st  = sess->model;
+    struct geist_backend            *be  = st->backend;
+    const struct geist_backend_vtbl *v   = be->desc->vtbl;
+    const size_t                     row = (size_t) st->d_model * sizeof(float);
+    uint64_t                         t0  = profile ? geist_now_ns() : 0;
 
     if (st->model_fusions.backend_buffer_copy) {
         const enum geist_status cs =
@@ -82,9 +119,8 @@ head_norm_rows(struct transformer_arch_session *sess, size_t row0, size_t k, boo
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_COPY, t0);
 
     struct geist_tensor t_h   = view_2d(sess->scratch_h_a, (int64_t) k, st->d_model);
-    struct geist_tensor t_w   = view_1d(st->output_norm.buffer, st->d_model);
     t0                        = profile ? geist_now_ns() : 0;
-    const enum geist_status s = prims->rmsnorm(be, &t_h, &t_w, st->config.rms_eps, &t_h);
+    const enum geist_status s = transformer_output_norm(st, &t_h);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_NORM, t0);
     return s;
 }
@@ -169,6 +205,8 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
                                                          &t_h_2d,
                                                          &st->output_table,
                                                          &t_logits_2d);
+    if (s == GEIST_OK)
+        s = transformer_head_bias(st, 1, sess->scratch_logits);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_LM_HEAD, t0);
     if (s != GEIST_OK) {
         return s;
@@ -285,6 +323,8 @@ transformer_head_dense_recompute(struct transformer_arch_session *sess) {
                                                                       &t_h_2d,
                                                                       &st->output_table,
                                                                       &t_logits_2d);
+    if (s == GEIST_OK)
+        s = transformer_head_bias(st, 1, sess->scratch_logits);
     if (s == GEIST_OK) {
         sess->logits_sparse = false;
     }
@@ -327,6 +367,8 @@ finalize_logits_batch(struct transformer_arch_session *sess, size_t k, geist_tok
                                                          &t_h_2d,
                                                          &st->output_table,
                                                          &t_logits_2d);
+    if (s == GEIST_OK)
+        s = transformer_head_bias(st, k, sess->scratch_logits);
     if (s != GEIST_OK) {
         return s;
     }
