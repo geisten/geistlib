@@ -1,0 +1,31 @@
+# Manual data transfer for the pinned Qwen 32k package.
+name: Stage Qwen 32k data on Mac mini
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macmini-m6
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macmini-m6
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify and stage private package
+        env:
+          QWEN_M6_PACKAGE_USER: ${{ vars.QWEN_M6_PACKAGE_USER }}
+          QWEN_M6_PACKAGE_TOKEN: ${{ secrets.QWEN_M6_PACKAGE_TOKEN }}
+        run: |
+          set -eu
+          "$HOME/bin/with-macmini-lock" /usr/bin/python3 scripts/m6-transfer.py receive \
+            "$HOME/geist-lab-qwen32k/incoming" afd65d96e79dc8bdacbcf7854feb9a38a784d7db89899af90b46ccb947998fc8
