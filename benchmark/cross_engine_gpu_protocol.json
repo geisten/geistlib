@@ -72,6 +72,8 @@
         "max_retries": 3,
         "timeout_seconds": 1200,
         "apple_power_gate": true,
+        "cool_each_repeat": true,
+        "cool_each_repeat_note": "One engine call per sequence length and repeat, each after the temperature gate (#444). Measured 2026-11-12 (macmon, geist, gemma4-e2b-q4km): the twelve measurements of one back-to-back call are about 11 s of GPU load and take the chip from its start temperature to 75-82 C; the clock leaves 1293 MHz at 78-81 C. Twelve 512-token repeats in one call from 55 C: nine at 1559-1571 tok/s, then 1092, 1057, 994 with the clock at 907-1144 MHz. One call per repeat: 1560-1567 tok/s in 13 of 14 calls. The night cells of 2026-11-10/-12 failed the 5 % spread gate on this in 12 of 12 tries.",
         "note": "Replaces the load-average test on this host (bench_cross_engine.py host_is_quiet): macOS on an interactive desktop shared with agents never shows a load average near 0.2/core (2026-10-12: 4-8 at 73 % idle), so the frozen gate waited out Gitea's 3 h job limit without one measurement. The host is quiet when >= 80 % of all cores stayed idle over the settle window; the other agents' benchmarks are excluded by ~/bin/with-mac-lock. A run whose repeats spread by more than 5 % (prefill or decode, any length) is discarded and measured again, up to 3 times: the gate before a run cannot see work that starts during it. A cell waits at most 20 min for a quiet host and then fails as busy: Gitea hands the macOS runner its jobs in ID order, so a nightly cell waiting 2 h per cycle on a desktop in use held every macOS CI check behind it for a day (2026-10-13).",
         "apple_temp_gate": {
           "max_gpu_c": 65,
