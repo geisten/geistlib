@@ -121,7 +121,7 @@ def extract(source, name, archive, incoming, expected=None):
         root = Path(folder)
         parts = [str(source / p["file"]) for p in archive["parts"]]
         with subprocess.Popen(["/bin/cat", *parts], stdout=subprocess.PIPE) as cat:
-            with tarfile.open(fileobj=cat.stdout, mode="r|") as tar:
+            with tarfile.open(fileobj=cat.stdout, mode="r|*") as tar:
                 for member in tar:
                     rel = PurePosixPath(member.name)
                     check(not rel.is_absolute() and rel.parts and rel.parts[0] == name
@@ -176,17 +176,39 @@ def receive(incoming, expected):
     print(f"Mac mini M6 received and verified assets and {manifest['snapshot']}")
 
 
+def receive_cutover(incoming, expected):
+    host = subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.model"], text=True).strip()
+    check(host == "Mac18,5", "This transfer job is restricted to the Mac mini M6")
+    name = "snapshot-00000111-cutover"
+    part = {"file": name + ".tar.gz", "bytes": 123631140, "sha256": expected}
+    archive = {"parts": [part], "archive_sha256": expected}
+    check(re.fullmatch(r"[0-9a-f]{64}", expected), "Invalid cutover SHA-256")
+    incoming.mkdir(mode=0o700, parents=True, exist_ok=True)
+    receipt = incoming / name / ".transfer-verified"
+    if receipt.exists():
+        check(receipt.read_text().strip() == expected, "Cutover snapshot hash differs")
+    else:
+        with tempfile.TemporaryDirectory(prefix=".m6-cutover-", dir=incoming) as folder:
+            root = Path(folder)
+            with request(part["file"]) as response, (root / part["file"]).open("xb") as output:
+                verify(response, part, output=output)
+            extract(root, name, archive, incoming, expected)
+    print(f"Mac mini M6 verified the 111-response snapshot: {name}")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("operation", choices=("upload", "receive"))
+    p.add_argument("operation", choices=("upload", "receive", "receive-cutover"))
     p.add_argument("path", type=Path)
     p.add_argument("manifest_sha256")
     args = p.parse_args()
     try:
         if args.operation == "upload":
             upload(args.path.resolve(), args.manifest_sha256)
-        else:
+        elif args.operation == "receive":
             receive(args.path.resolve(), args.manifest_sha256)
+        else:
+            receive_cutover(args.path.resolve(), args.manifest_sha256)
     except HTTPError as e:
         p.exit(1, f"Package request denied or failed with HTTP {e.code}.\n")
     except (OSError, ValueError, KeyError, tarfile.TarError) as e:
