@@ -363,32 +363,33 @@
     }
    },
    "apple_m1max/gemma4-e2b-q4km": {
-    "date": "2026-10-25T01:15",
-    "commit": "af6689407",
-    "archive": "runs/apple_m1max/gemma4-e2b-q4km/2026-10-25T011511Z_geist_llama_cpu_gemma4-e2b-q4km.jsonl",
+    "date": "2026-11-11T22:26",
+    "commit": "6642260d5",
+    "archive": null,
+    "note": "measured by hand for #444 under with-mac-lock, protocol and tooling at 6642260d, passed the unchanged gates on the fourth try. The raw record was lost when a reboot cleared /private/tmp; the values are the medians of the run's report as quoted on issue #444 (comment of 2026-11-12). Replaces the cell of 2026-10-25 (af6689407).",
     "pp": {
-     "128": 344.61,
-     "256": 337.4,
-     "512": 325.43,
-     "1024": 303.02
+     "128": 350.5,
+     "256": 343.04,
+     "512": 328.4,
+     "1024": 300.55
     },
     "tg64": {
-     "128": 62.26,
-     "256": 59.77,
-     "512": 56.02,
-     "1024": 53.73
+     "128": 61.9,
+     "256": 59.61,
+     "512": 56.21,
+     "1024": 53.4
     },
     "pp_vs_llama_pct": {
-     "1024": 7.2,
-     "128": 13.1,
-     "256": 12.9,
-     "512": 7.9
+     "128": 13.6,
+     "256": 9.1,
+     "512": 7.4,
+     "1024": 3.9
     },
     "tg_vs_llama_pct": {
-     "1024": 13.7,
-     "128": 22.3,
-     "256": 20.4,
-     "512": 15.5
+     "128": 21.4,
+     "256": 20.6,
+     "512": 15.3,
+     "1024": 12.4
     }
    },
    "apple_m1max/gemma4-e4b-q4km": {
@@ -447,6 +448,36 @@
      "128": 10.8,
      "256": 8.4,
      "512": 4.3
+    }
+   },
+   "apple_m1max_metal/gemma4-e2b-q4km": {
+    "date": "2026-11-13T18:01",
+    "commit": "6642260d5",
+    "archive": "benchmark/results/raw/c23-m1max-2026-11-13/apple_m1max_metal/gemma4-e2b-q4km/2026-11-13T180152Z_geist_llama_gpu_gemma4-e2b-q4km.jsonl",
+    "note": "measured by hand for #444 under with-mac-lock with cool_each_repeat (protocol and tooling at 0b27a7bb, PR #536); passed the unchanged 5 % repeat-spread gate on the first try, four of eight measurements re-measured once",
+    "pp": {
+     "128": 1387.02,
+     "256": 1557.58,
+     "512": 1556.16,
+     "1024": 1540.98
+    },
+    "tg64": {
+     "128": 120.7,
+     "256": 119.87,
+     "512": 118.44,
+     "1024": 117.19
+    },
+    "pp_vs_llama_pct": {
+     "128": -1.3,
+     "256": 2.2,
+     "512": 0.4,
+     "1024": 3.8
+    },
+    "tg_vs_llama_pct": {
+     "128": 21.5,
+     "256": 20.7,
+     "512": 19.3,
+     "1024": 20.2
     }
    },
    "apple_m6_mini/bonsai2-27b-pq2": {
@@ -1292,8 +1323,8 @@
    }
   },
   "not_measured": {
-   "apple_m1max (CPU)": "cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents). Second attempt 2026-11-04 (other agents idle): bench-matrix run 2990 (nightly set, ref 6642260d) failed the 80 % idle gate on all four cells at 73-79 % idle (the workstation's own browser, Spotlight and loginwindow). Then the four nightly cells by hand under with-mac-lock (LOCK_PRIO=batch), same bench_cross_engine.py and protocol at 6642260d except min_cpu_idle_pct 70 for the two M1 Max profiles: every cell failed the unchanged 5 % repeat-spread gate after 4 tries (spread %: CPU qwen35-0.8b-q8 21.7/19.2/49.7/26.1, CPU gemma4-e2b-q4km 12.3/8.8/12.6/12.4, Metal gemma4-e2b-q4km 12.5/11.5/14.4/25.1, Metal bonsai2-27b-pq2 24.5/29.0/26.1/49.1), with corespotlightd, hybridsearchd and mobileassetd at 50-85 % CPU. Nothing was recorded: the spread gate is the guard against exactly this, and is not relaxed. Third attempt 2026-11-10 01:31-06:00 (#444), same binary, protocol and unchanged gates, one with-mac-lock lease per cell after Spotlight went idle (pre-run idle 84-93 %): all four cells failed the 5 % repeat-spread gate on every try (qwen35-0.8b-q8 CPU 3 tries, gemma4-e2b-q4km CPU 3, gemma4-e2b-q4km Metal 3, bonsai2-27b-pq2 Metal 2; final spreads 5.4-96.3 %), with Chrome helpers, other Claude sessions and geist-lab's runner active on the host. Raw logs: benchmark/results/raw/c23-m1max-2026-11-10/.",
-   "apple_m1max_metal": "no run ever archived; run 2818's two nightly cells failed the same way. See the CPU entry: the same attempts, same outcome. Third attempt 2026-11-10: see the CPU entry."
+   "apple_m1max (CPU)": "cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents). Second attempt 2026-11-04 (other agents idle): bench-matrix run 2990 (nightly set, ref 6642260d) failed the 80 % idle gate on all four cells at 73-79 % idle (the workstation's own browser, Spotlight and loginwindow). Then the four nightly cells by hand under with-mac-lock (LOCK_PRIO=batch), same bench_cross_engine.py and protocol at 6642260d except min_cpu_idle_pct 70 for the two M1 Max profiles: every cell failed the unchanged 5 % repeat-spread gate after 4 tries (spread %: CPU qwen35-0.8b-q8 21.7/19.2/49.7/26.1, CPU gemma4-e2b-q4km 12.3/8.8/12.6/12.4, Metal gemma4-e2b-q4km 12.5/11.5/14.4/25.1, Metal bonsai2-27b-pq2 24.5/29.0/26.1/49.1), with corespotlightd, hybridsearchd and mobileassetd at 50-85 % CPU. Nothing was recorded: the spread gate is the guard against exactly this, and is not relaxed. Third attempt 2026-11-10 01:31-06:00 (#444), same binary, protocol and unchanged gates, one with-mac-lock lease per cell after Spotlight went idle (pre-run idle 84-93 %): all four cells failed the 5 % repeat-spread gate on every try (qwen35-0.8b-q8 CPU 3 tries, gemma4-e2b-q4km CPU 3, gemma4-e2b-q4km Metal 3, bonsai2-27b-pq2 Metal 2; final spreads 5.4-96.3 %), with Chrome helpers, other Claude sessions and geist-lab's runner active on the host. Raw logs: benchmark/results/raw/c23-m1max-2026-11-10/. Fourth attempt 2026-11-11/12 (#444, quiet window): gemma4-e2b-q4km passed and is recorded above; qwen35-0.8b-q8 failed 6 tries. Traced 2026-11-13 (macmon): its large outliers coincide with fully busy efficiency cores (other processes: WindowServer, geistbox-service, agent sessions), a smaller part is the P-core clock dipping above 90 C in a back-to-back call. gemma4-e4b-q4km and qwen35-4b-q4 remain from 2026-10-18/25. Logs: benchmark/results/raw/c23-m1max-2026-11-13/.",
+   "apple_m1max_metal": "gemma4-e2b-q4km recorded above (2026-11-13, with cool_each_repeat, PR #536: back-to-back repeats had run into GPU throttling at 78-81 C). bonsai2-27b-pq2 failed 6 tries without and 2 with cool_each_repeat; traced 2026-11-13: on the llama.cpp side one 512- or 1024-token measurement alone takes the GPU to 86-90 C and the clock from 1293 to 900-1050 MHz, so repeats spread 9-18 % from a cool start. Logs: benchmark/results/raw/c23-m1max-2026-11-13/."
   }
  },
  "moe": {
