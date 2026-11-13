@@ -1,0 +1,82 @@
+# Run the Qwen parity pilot and continuation under the Mac mini host lock.
+name: Qwen 32k Mac mini
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "prepare-pilot, pilot, prepare-run, or run"
+        required: true
+      snapshot:
+        description: "Staged snapshot name for prepare actions"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macmini-m6
+  cancel-in-progress: false
+
+jobs:
+  chunk:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macmini-m6
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify and stage the 111-response cutover
+        if: inputs.action == 'prepare-run'
+        env:
+          QWEN_M6_PACKAGE_USER: ${{ vars.QWEN_M6_PACKAGE_USER }}
+          QWEN_M6_PACKAGE_TOKEN: ${{ secrets.QWEN_M6_PACKAGE_TOKEN }}
+        run: |
+          set -eu
+          "$HOME/bin/with-macmini-lock" /usr/bin/python3 scripts/m6-transfer.py receive-cutover \
+            "$HOME/geist-lab-qwen32k/incoming" dd272ea4aeb554592c5cf55df5b30178fda8d9c42ff4f584f96ffc7d19c25462
+      - name: Prepare or commit one generation
+        env:
+          HANDOFF_ACTION: ${{ inputs.action }}
+          HANDOFF_SNAPSHOT: ${{ inputs.snapshot }}
+        run: |
+          set -eu
+          base="$HOME/geist-lab-qwen32k"
+          py=/opt/homebrew/opt/python@3.12/bin/python3.12
+          if [ ! -x "$py" ]; then
+            echo "The pinned Python 3.12 runtime is missing. Check the staged bottles." >&2
+            exit 1
+          fi
+          # The macmini runner's job-started hook holds the host lease.
+          case "$HANDOFF_ACTION" in
+            prepare-pilot) "$py" scripts/benchmark-macmini.py prepare "$base/incoming" "$HANDOFF_SNAPSHOT" "$base/state" pilot ;;
+            pilot) "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step "$base/state" pilot ;;
+            prepare-run) "$py" scripts/benchmark-macmini.py prepare "$base/incoming" snapshot-00000111-cutover "$base/state" run ;;
+            run) "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step "$base/state" run ;;
+            *) exit 2 ;;
+          esac
+      - name: Copy reports for download
+        if: always()
+        run: |
+          set -eu
+          state="$HOME/geist-lab-qwen32k/state"
+          out="$RUNNER_TEMP/qwen32k-status"
+          mkdir -p "$out"
+          if [ -f "$state/pilot-pass.json" ]; then cp "$state/pilot-pass.json" "$out"; fi
+          for mode in pilot run; do
+            if [ -d "$state/$mode" ]; then
+              mkdir -p "$out/$mode"
+              for name in results.json scores.csv report.html handoff.json; do
+                if [ -f "$state/$mode/$name" ]; then cp "$state/$mode/$name" "$out/$mode"; fi
+              done
+            fi
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: qwen32k-status-${{ github.run_id }}
+          path: ${{ runner.temp }}/qwen32k-status/
+          retention-days: 14
+          if-no-files-found: ignore
