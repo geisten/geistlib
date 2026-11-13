@@ -44,11 +44,7 @@ jobs:
         run: |
           set -eu
           base="$HOME/geist-lab-qwen32k"
-          py=/opt/homebrew/opt/python@3.12/bin/python3.12
-          if [ ! -x "$py" ]; then
-            echo "The pinned Python 3.12 runtime is missing. Check the staged bottles." >&2
-            exit 1
-          fi
+          py=/usr/bin/python3
           # The macmini runner's job-started hook holds the host lease.
           case "$HANDOFF_ACTION" in
             prepare-pilot) "$py" scripts/benchmark-macmini.py prepare "$base/incoming" "$HANDOFF_SNAPSHOT" "$base/state" pilot ;;

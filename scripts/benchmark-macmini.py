@@ -12,7 +12,6 @@ import shutil
 import subprocess
 import tempfile
 
-PYTHON = Path("/opt/homebrew/opt/python@3.12/bin/python3.12")
 DYLIBS = (
     Path("/opt/homebrew/opt/python@3.12/Frameworks/Python.framework/Versions/3.12/Python"),
     Path("/opt/homebrew/opt/libomp/lib/libomp.dylib"),
@@ -36,8 +35,11 @@ def require(ok, message):
 
 
 def sha(path):
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def read_json(path):
@@ -77,9 +79,9 @@ def manifest_sha(plan):
     return hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()
 
 
-def case_status(root):
+def case_status(root, env=None):
     proc = subprocess.run([root / "runner", "--benchmark-status", root],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, env=env)
     require(proc.returncode in (0, 10), proc.stderr.strip() or "Invalid C journal")
     return json.loads(proc.stdout)
 
@@ -224,7 +226,51 @@ def export(source, bundle, cutover):
     print(target)
 
 
-def checker_identity(executable):
+def runtime_paths(root):
+    frameworks = root / "python@3.12/3.12.14/Frameworks"
+    framework = frameworks / "Python.framework/Versions/3.12"
+    libomp = root / "libomp/23.1.5/lib"
+    return framework / "bin/python3.12", (framework / "Python", libomp / "libomp.dylib"), {
+        **os.environ, "DYLD_FRAMEWORK_PATH": str(frameworks), "DYLD_LIBRARY_PATH": str(libomp)
+    }
+
+
+def pinned_runtime(assets, state, expected):
+    root = state / "runtime"
+    if not root.exists():
+        # The bottles arrived in the verified assets archive. Restore the two
+        # relocated dylibs byte-for-byte as used by the original benchmark.
+        patches = read_json(Path(__file__).with_name("macmini-runtime-relocation.json"))
+        with tempfile.TemporaryDirectory(prefix=".runtime-", dir=state) as folder:
+            staging = Path(folder)
+            bottles = [(name, digest) for name, digest in
+                       expected["package_and_bottle_sha256"].items() if name.startswith("bottles/")]
+            require(len(bottles) == 2, "Expected two pinned runtime bottles")
+            for name, digest in bottles:
+                require(re.fullmatch(r"bottles/[a-z0-9@._-]+\.tar\.gz", name),
+                        "Invalid runtime bottle name")
+                bottle = assets / name
+                require(sha(bottle) == digest, f"Damaged runtime bottle: {name}")
+                subprocess.run(["/usr/bin/tar", "-xzf", bottle, "-C", staging], check=True)
+            _, dylibs, _ = runtime_paths(staging)
+            for original, target in zip(DYLIBS, dylibs):
+                content = bytearray(target.read_bytes())
+                for offset, hex_bytes in patches[str(target.relative_to(staging))]:
+                    replacement = bytes.fromhex(hex_bytes)
+                    require(0 <= offset <= len(content) - len(replacement), "Invalid relocation patch")
+                    content[offset:offset + len(replacement)] = replacement
+                require(hashlib.sha256(content).hexdigest() == expected["dylib_sha256"][str(original)],
+                        f"Relocated runtime digest differs: {target.name}")
+                target.chmod(target.stat().st_mode | 0o200)
+                target.write_bytes(content)
+            staging.rename(root)
+    py, dylibs, env = runtime_paths(root)
+    require(all(sha(path) == expected["dylib_sha256"][str(original)]
+                for original, path in zip(DYLIBS, dylibs)), "Campaign runtime dylib differs")
+    return py, env
+
+
+def checker_identity(executable, env):
     code = """import hashlib, importlib, importlib.metadata, sys
 print('CPython=' + sys.version)
 for name in ('math-verify','latex2sympy2-extended','antlr4-python3-runtime','sympy','mpmath'):
@@ -233,29 +279,28 @@ for name in ('parser','grader'):
     module = importlib.import_module('math_verify.' + name)
     print(name + '_sha256=' + hashlib.sha256(open(module.__file__, 'rb').read()).hexdigest())
 """
-    return subprocess.check_output([executable, "-I", "-c", code])
+    return subprocess.check_output([executable, "-I", "-c", code], env=env)
 
 
 def environment(assets, state, expected):
     env = state / "venv"
-    require(all(sha(p) == expected["dylib_sha256"][str(p)] for p in DYLIBS),
-            "Homebrew CPython/libomp differ from frozen runtime. Check the staged bottles.")
+    py_runtime, runtime_env = pinned_runtime(assets, state, expected)
     if not env.exists():
         with tempfile.TemporaryDirectory(prefix=".venv-", dir=state) as folder:
             temp = Path(folder) / "venv"
-            subprocess.run([PYTHON, "-I", "-m", "venv", "--without-pip", temp], check=True)
+            subprocess.run([py_runtime, "-I", "-m", "venv", "--without-pip", temp], check=True, env=runtime_env)
             for name, digest in expected["package_and_bottle_sha256"].items():
                 if name.startswith("site-packages/"):
                     require(sha(assets / name) == digest, f"Damaged dependency {name}")
             shutil.copytree(assets / "site-packages", temp / "lib/python3.12/site-packages",
                             dirs_exist_ok=True)
-            require(hashlib.sha256(checker_identity(temp / "bin/python")).hexdigest()
+            require(hashlib.sha256(checker_identity(temp / "bin/python", runtime_env)).hexdigest()
                     == expected["checker_sha256"], "Staged math-verify identity differs")
             temp.rename(env)
     py = env / "bin/python"
-    require(hashlib.sha256(checker_identity(py)).hexdigest() == expected["checker_sha256"],
+    require(hashlib.sha256(checker_identity(py, runtime_env)).hexdigest() == expected["checker_sha256"],
             "Staged math-verify identity differs")
-    return py
+    return py, runtime_env
 
 
 def prepare(bundle, snapshot, state, mode):
@@ -278,7 +323,7 @@ def prepare(bundle, snapshot, state, mode):
     require(expected["runner_sha256"] == plan["binary_sha256"]
             and expected["model_sha256"] == model_hashes(plan)
             and expected["checker_sha256"] == plan["checker_sha256"], "Assets do not match snapshot")
-    py = environment(assets, state, expected)
+    py, runtime_env = environment(assets, state, expected)
     for key, name in MODELS.items():
         path = assets / "models" / name
         before = stamp(path)
@@ -316,8 +361,8 @@ def prepare(bundle, snapshot, state, mode):
             "target_plan_sha256": new_sha, "imported": meta["committed"] - len(chosen),
             "pilot_cases": chosen,
         })
-        subprocess.run([temp / "runner", "--benchmark-report", temp], check=True)
-        require(case_status(temp)["committed_generations"] == meta["committed"] - len(chosen),
+        subprocess.run([temp / "runner", "--benchmark-report", temp], check=True, env=runtime_env)
+        require(case_status(temp, runtime_env)["committed_generations"] == meta["committed"] - len(chosen),
                 "Imported journal count differs")
         temp.rename(target)
     print(target)
@@ -353,14 +398,14 @@ def step(state, mode):
     require_ci_lease()
     root = state / mode
     info = read_json(root / "handoff.json")
-    require(all(sha(p) == info["dylib_sha256"][str(p)] for p in DYLIBS),
-            "Homebrew CPython/libomp changed after preparation")
+    _, runtime_env = pinned_runtime(Path(info["snapshot"]).parent / "assets", state, info)
     if (root / "STOP").exists():
         return
     if mode == "pilot":
         pending = [i for i in info["pilot_cases"] if not (root / "cases" / f"{i:08d}.json").exists()]
         if pending:
-            subprocess.run([root / "runner", "--benchmark-run", root, "--max-cases", "1"], check=True)
+            subprocess.run([root / "runner", "--benchmark-run", root, "--max-cases", "1"],
+                           check=True, env=runtime_env)
         finished = [i for i in info["pilot_cases"] if i not in pending[1:]]
         compare_pilot(root, {**info, "pilot_cases": finished})
         print(f"Pilot parity: {len(finished)}/{len(info['pilot_cases'])} cases verified.", flush=True)
@@ -370,11 +415,12 @@ def step(state, mode):
                 "verified_cases": info["pilot_cases"],
             })
             print("Pilot matched token trace, logits, output bytes and math-verify scores.")
-    elif not case_status(root)["complete"]:
+    elif not case_status(root, runtime_env)["complete"]:
         receipt = read_json(state / "pilot-pass.json")
         require(receipt["settings_sha256"] == info["settings_sha256"] and receipt["host"] == host(),
                 "Missing matching M6 pilot")
-        subprocess.run([root / "runner", "--benchmark-run", root, "--max-cases", "1"], check=True)
+        subprocess.run([root / "runner", "--benchmark-run", root, "--max-cases", "1"],
+                           check=True, env=runtime_env)
 
 
 def main():
