@@ -1,0 +1,19 @@
+2026-11-13 18:37:32 === start
+2026-11-13 19:01:47 quiet: idle=95.71
+llama.cpp ggml-org/llama.cpp @ d81235049384534c167caea52b85a694f6103d14 (metal)
+2026-11-13 19:01:49 start apple_m1max_metal/gemma4-e2b-q4km llama=/Users/germar/llama.cpp-cross-engine/build-metal/bin/llama-bench gguf=/Users/germar/geist-models/gemma4-e2b-Q4_K_M.gguf
+2026-11-13 19:35:01 end apple_m1max_metal/gemma4-e2b-q4km rc=0;   waiting for quiet host: load 4.11 (0.411/core), 87.7 % idle|  repeat spread 5.6 % > 5 %: host disturbed, measuring again|  waiting for quiet host: load 2.80 (0.280/core), 82.2 % idle|
+2026-11-13 19:35:01 OK apple_m1max_metal/gemma4-e2b-q4km (try 1)
+2026-11-13 19:36:13 quiet: idle=89.47
+llama.cpp PrismML-Eng/llama.cpp @ adfffbe41b2cabcd51fff326ab045662265062bb (metal)
+2026-11-13 19:36:17 start apple_m1max_metal/bonsai2-27b-pq2 llama=/Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-metal/bin/llama-bench gguf=/Users/germar/geist-models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+2026-11-13 20:21:03 end apple_m1max_metal/bonsai2-27b-pq2 rc=99;   waiting for quiet host: load 15.48 (1.548/core), 79.0 % idle|  repeat spread 16.5 % > 5 %: host disturbed, measuring again|ERROR: repeat spread stayed above 5 %: [23.4, 5.82, 22.17, 16.47]|
+2026-11-13 20:21:03 FAIL apple_m1max_metal/bonsai2-27b-pq2 (try 1)
+2026-11-13 20:27:45 quiet: idle=89.16
+llama.cpp PrismML-Eng/llama.cpp @ adfffbe41b2cabcd51fff326ab045662265062bb (metal)
+2026-11-13 20:27:49 start apple_m1max_metal/bonsai2-27b-pq2 llama=/Users/germar/llama.cpp-cross-engine-PrismML-Eng_llama.cpp/build-metal/bin/llama-bench gguf=/Users/germar/geist-models/Ternary-Bonsai-2-27B-PQ2_0.gguf
+2026-11-13 21:11:32 end apple_m1max_metal/bonsai2-27b-pq2 rc=99;   waiting for quiet host: load 2.52 (0.252/core), 85.2 % idle|  repeat spread 7.2 % > 5 %: host disturbed, measuring again|ERROR: repeat spread stayed above 5 %: [14.36, 8.98, 11.35, 7.19]|
+2026-11-13 21:11:32 FAIL apple_m1max_metal/bonsai2-27b-pq2 (try 2)
+2026-11-13 21:11:32 summary apple_m1max_metal/gemma4-e2b-q4km done=1 tries=1
+2026-11-13 21:11:32 summary apple_m1max_metal/bonsai2-27b-pq2 done=0 tries=2
+2026-11-13 21:11:32 === end

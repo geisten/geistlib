@@ -7,7 +7,7 @@ The numbers #333's performance gates compare against: `.text` per library, clean
 `python3 tools/text_size.py measure build/<target>/release lib/<target>/release/libgeist.<so|dylib>`; compare two such files with `text_size.py compare base.json new.json` (fails above +1 %).
 
 | | `macos-arm64` | `linux-arm64` | `linux-x86_64` |
-|---|--:|--:|--:|
+|---|--:|--:|--:|--:|
 | `libgeist.a` (objects) | 896,972 (130) | 806,000 (123) | 1,630,606 (142) |
 | shared library | 896,972 | 807,796 | — |
 | `src/archs/audio_conformer` | 50,928 | 33,824 | 41,899 |
@@ -46,26 +46,28 @@ newest geisten/bench-results run per cell whose geist binary is 6642260d (the Su
 
 pp512 / tg64 at depth 512, tok/s:
 
-| model | `apple_m6_mini` | `apple_m6_mini_metal` | `apple_m1max` | `amd_9950x` | `nvidia_2080ti_vulkan` | `pi5` |
-|---|--:|--:|--:|--:|--:|--:|
-| bitnet-large-tq2 | — | — | — | 2388 / 271.3 | 13267 / 340.9 | 129 / 30.7 |
-| bonsai2-27b-pq2 | 33 / 12.9 | 225 / 19.0 | — | 83 / 9.6 | 633 / 40.0 | — |
-| gemma4-e2b-q4km | 341 / 66.0 | 2699 / 89.4 | 325 / 56.0 ¹ | 952 / 51.7 | 5742 / 158.3 | 28 / 7.1 |
-| gemma4-e4b-q4km | 172 / 35.5 | 1356 / 45.7 | 81 / 21.1 ¹ | 500 / 26.1 | 2944 / 96.8 | — |
-| llama32-3b-q4km | 236 / 53.1 | 2067 / 69.0 | — | 735 / 37.2 | 4877 / 150.9 | 23 / 5.3 |
-| qwen3-0.6b-q8 | 967 / 141.4 | 9336 / 193.7 | — | 1996 / 111.5 | 18380 / 323.4 | 158 / 14.3 |
-| qwen35-0.8b-q8 | 967 / 137.4 | 7182 / 153.4 | — | 1743 / 82.1 | 15257 / 327.5 | 106 / 13.3 |
-| qwen35-4b-q4 | 147 / 40.8 | 1533 / 49.4 | 164 / 33.8 ¹ | 561 / 26.2 | 3495 / 122.4 | 17 / 4.3 |
-| qwen38-27b-q4 | — | 220 / 9.0 | — | 98 / 4.8 | — | — |
+| model | `apple_m6_mini` | `apple_m6_mini_metal` | `apple_m1max` | `apple_m1max_metal` | `amd_9950x` | `nvidia_2080ti_vulkan` | `pi5` |
+|---|--:|--:|--:|--:|--:|--:|--:|
+| bitnet-large-tq2 | — | — | — | — | 2388 / 271.3 | 13267 / 340.9 | 129 / 30.7 |
+| bonsai2-27b-pq2 | 33 / 12.9 | 225 / 19.0 | — | — | 83 / 9.6 | 633 / 40.0 | — |
+| gemma4-e2b-q4km | 341 / 66.0 | 2699 / 89.4 | 328 / 56.2 ² | 1556 / 118.4 ² | 952 / 51.7 | 5742 / 158.3 | 28 / 7.1 |
+| gemma4-e4b-q4km | 172 / 35.5 | 1356 / 45.7 | 81 / 21.1 ¹ | — | 500 / 26.1 | 2944 / 96.8 | — |
+| llama32-3b-q4km | 236 / 53.1 | 2067 / 69.0 | — | — | 735 / 37.2 | 4877 / 150.9 | 23 / 5.3 |
+| qwen3-0.6b-q8 | 967 / 141.4 | 9336 / 193.7 | — | — | 1996 / 111.5 | 18380 / 323.4 | 158 / 14.3 |
+| qwen35-0.8b-q8 | 967 / 137.4 | 7182 / 153.4 | — | — | 1743 / 82.1 | 15257 / 327.5 | 106 / 13.3 |
+| qwen35-4b-q4 | 147 / 40.8 | 1533 / 49.4 | 164 / 33.8 ¹ | — | 561 / 26.2 | 3495 / 122.4 | 17 / 4.3 |
+| qwen38-27b-q4 | — | 220 / 9.0 | — | — | 98 / 4.8 | — | — |
 
-¹ not at 6642260d: `apple_m1max` cells are from 2026-10-18/25 (c993379b0, af6689407).
+¹ not at 6642260d: these `apple_m1max` cells are from 2026-10-18/25 (c993379b0, af6689407).
+
+² measured by hand for #444 at 6642260d: `apple_m1max` on 2026-11-11 (raw record lost in a reboot, values from the run report quoted on #444), `apple_m1max_metal` on 2026-11-13 with `cool_each_repeat` (PR #536), record in `benchmark/results/raw/c23-m1max-2026-11-13/`.
 
 Every cell's other lengths (128, 256, 1024), its ratio to llama.cpp and the archive file are in the JSON.
 
 **Not measured:**
 
-- apple_m1max (CPU): cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents).
-- apple_m1max_metal: no run ever archived; run 2818's two nightly cells failed the same way.
+- apple_m1max (CPU): cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents). Fourth attempt 2026-11-11/12 (#444): gemma4-e2b-q4km passed (²); qwen35-0.8b-q8 failed 6 tries.
+- apple_m1max_metal: gemma4-e2b-q4km recorded 2026-11-13 (²); bonsai2-27b-pq2 failed 6 tries without and 2 with `cool_each_repeat`.
 
 ## MoE rows of #333 (Qwen3-30B-A3B, Qwen3.6-35B-A3B)
 
@@ -87,7 +89,7 @@ moe-baseline.yml on geist-vulkan (Ryzen 9 9950X + RTX 2080 Ti) at 6642260d, 2 in
 gguf_artifacts/synth/llama32-1b-q4_k.gguf (tools/gen_synth_gguf.py), bench_perf_sweep --seq-lens 32,128,512,1024 --decode-n 64 --warmup 32 --repeats 5 on the M1 Max under with-mac-lock at 1-min load ~15: indicative only, repeat spread 3-30 % (prefill/decode best-to-worst).
 
 | backend | seq | prefill tok/s | decode tok/s | spread pp / tg % | RSS MB |
-|---|--:|--:|--:|---|--:|
+|---|--:|--:|--:|---|--:|--:|
 | M1 Max cpu_neon | 32 | 640.9 | 123.2 | 11.4 / 6.8 | 2113 |
 | M1 Max cpu_neon | 128 | 645.2 | 119.1 | 11.4 / 15.0 | 2113 |
 | M1 Max cpu_neon | 512 | 591.2 | 105.4 | 7.0 / 30.5 | 2113 |
@@ -101,5 +103,6 @@ gguf_artifacts/synth/llama32-1b-q4_k.gguf (tools/gen_synth_gguf.py), bench_perf_
 
 - M1 Max CPU at 6642260d and M1 Max Metal at all. First attempt (run 2818, 2026-11-04 night): the host was saturated by other agents' unit tests (0 % idle) and bench-matrix's quiet gate refused every cell. Second attempt (2026-11-04 evening, other agents idle): run 2990 failed the 80 % idle gate at 73-79 % idle (the workstation's browser, Spotlight); the four nightly cells run by hand under `with-mac-lock` with the idle gate at 70 % then failed the unchanged 5 % repeat-spread gate on all four tries each (spreads 8.8-49.7 %, corespotlightd/hybridsearchd/mobileassetd at 50-85 % CPU). Nothing was recorded; the spread gate is not relaxed. The M6 columns cover Apple CPU and Metal at 6642260d; the M1 Max needs a night with Spotlight idle.
 - Third M1 Max attempt (#444), 2026-11-10 01:31–06:00: same binary, protocol and unchanged gates, one `with-mac-lock` lease per cell, each started only after Spotlight was idle and the host ≥ 85 % idle (pre-run idle 84–93 %). Every cell failed the 5 % repeat-spread gate on every try. Spreads of the last measurement per try: CPU qwen35-0.8b-q8 22.4 / 13.7 / 12.2 %, CPU gemma4-e2b-q4km 5.4 / 7.2 / 9.6 %, Metal gemma4-e2b-q4km 14.1 / 6.2 / 6.4 %, Metal bonsai2-27b-pq2 6.0 / 24.0 % (every spread in [`raw/c23-m1max-2026-11-10/`](raw/c23-m1max-2026-11-10/README.md)). Disturbers outside the lock: Chrome helpers (~46 % CPU), other Claude sessions, geist-lab's qwen-math500 runner between the cells, Spotlight until 01:46. An idle gate before the run does not keep this desktop quiet for the 10–30 min of a cell; the M1 Max cells need a window in which the Mac is kept idle on purpose (no browser, no agents, geist-lab paused), or the Apple baseline rests on the M6 columns.
+- Fourth M1 Max attempt (#444), 2026-11-11 to 13. Cause of the Metal failures: one protocol call ran its twelve measurements back to back, about 11 s of GPU load that takes the chip to 75–82 °C, and the clock leaves 1293 MHz at 78–81 °C (twelve 512-token prefills in one call: nine at 1559–1571 tok/s, then 1092, 1057, 994; one call per repeat: 1560–1567 in 13 of 14). With `cool_each_repeat` (PR #536) the Metal gemma4-e2b-q4km cell passed on the first try. Still open: Metal bonsai2-27b-pq2, where on the llama.cpp side a single 512- or 1024-token measurement alone heats the GPU to 86–90 °C and throttles inside the measurement (repeats 9–18 % apart from a cool start), and CPU qwen35-0.8b-q8, whose outliers (354–492 against 950–990 tok/s at 512 tokens) coincide with fully busy efficiency cores, i.e. other processes on the workstation, with a smaller thermal part above 90 °C. Traces and logs: `benchmark/results/raw/c23-m1max-2026-11-13/`.
 - The synthetic row is indicative (spread up to 30 %); per-PR A/B on the M6 (mac-ab.yml) is the gate for it.
 - Thread sweeps (`tools/bench_thread_sweep.py`), the batched decode path and `make bench-quality-small` were not run for Phase 0; the cross-engine protocol fixes the thread counts per host profile.
