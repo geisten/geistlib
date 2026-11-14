@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "prepare-pilot, pilot, prepare-run, or run"
+        description: "prepare-pilot, pilot, diagnose-pilot-47, prepare-run, or run"
         required: true
       snapshot:
         description: "Staged snapshot name for prepare actions"
@@ -37,7 +37,15 @@ jobs:
           set -eu
           "$HOME/bin/with-macmini-lock" /usr/bin/python3 scripts/m6-transfer.py receive-cutover \
             "$HOME/geist-lab-qwen32k/incoming" dd272ea4aeb554592c5cf55df5b30178fda8d9c42ff4f584f96ffc7d19c25462
+      - name: Compare the saved artifacts for Qwen pilot case 47
+        if: inputs.action == 'diagnose-pilot-47'
+        run: |
+          set -eu
+          base="$HOME/geist-lab-qwen32k"
+          /usr/bin/python3 scripts/compare-qwen-pilot.py \
+            "$base/state" "$base/incoming" "$RUNNER_TEMP/qwen32k-status/case-47"
       - name: Prepare or commit one generation
+        if: inputs.action != 'diagnose-pilot-47'
         env:
           HANDOFF_ACTION: ${{ inputs.action }}
           HANDOFF_SNAPSHOT: ${{ inputs.snapshot }}
