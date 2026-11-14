@@ -138,7 +138,15 @@ mode off. Anything else (battery, a UPS, Low Power Mode on) makes the gate
 wait, polling every 30 s and logging "waiting for AC power / low power mode
 off"; past the gate's timeout the run fails as busy, like a warm chip or a
 host that never gets quiet. Each run records the state it started in as
-`power: {source, low_power_mode, wait_seconds}` in its machine state.
+`power: {source, low_power_mode, charge_pct, wait_seconds}` in its machine
+state.
+
+A laptop's battery must also hold at least 50 % (`APPLE_MIN_CHARGE_PCT`).
+On 2026-11-14 the M1 Max sat on a 30 W adapter at 7–10 % charge: a few
+seconds into a 27B Metal run the GPU clock fell from 1293 to 388 MHz and
+stayed there at 61–65 °C, in 7 of 14 calls (prefill 33–45 instead of 107–148
+tok/s). On 65 W at 100 % it did not happen in 12 calls. "On AC" does not say
+the adapter carries the load; a charged battery covers the difference.
 
 - `bench_cross_engine.py`: `"apple_power_gate": true` in the Apple host
   profiles' `host_gate`, checked after the quiet-host gate and before the

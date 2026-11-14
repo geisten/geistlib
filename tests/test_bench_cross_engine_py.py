@@ -285,6 +285,8 @@ PMSET_BATT = {
           "0:00 remaining present: true",
     "battery": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=39125091)\t80%; "
                "discharging; 11:08 remaining present: true",
+    "ac_empty": "Now drawing from 'AC Power'\n -InternalBattery-0 (id=39125091)\t9%; charging; "
+                "11:50 remaining present: true",
     "desktop": "Now drawing from 'AC Power'",
     "ups": "Now drawing from 'UPS Power'\n -UPS (id=1)\t90%; discharging",
 }
@@ -340,19 +342,29 @@ class ApplePowerGateTest(unittest.TestCase):
         return state, [call.args[0] for call in sleep.call_args_list]
 
     def test_parse_reads_source_and_low_power_mode(self) -> None:
-        cases = {("ac", "off"): ("AC", 0), ("battery", "off"): ("battery", 0),
-                 ("battery", "low"): ("battery", 1), ("ac", "low"): ("AC", 1),
-                 ("desktop", "absent"): ("AC", 0), ("ups", "off"): ("UPS Power", 0),
-                 ("ac", "powermode_low"): ("AC", 1), ("ac", "powermode_high"): ("AC", 0)}
-        for (batt, settings), (source, low) in cases.items():
+        cases = {("ac", "off"): ("AC", 0, 100), ("battery", "off"): ("battery", 0, 80),
+                 ("battery", "low"): ("battery", 1, 80), ("ac", "low"): ("AC", 1, 100),
+                 ("desktop", "absent"): ("AC", 0, None), ("ups", "off"): ("UPS Power", 0, None),
+                 ("ac_empty", "off"): ("AC", 0, 9),
+                 ("ac", "powermode_low"): ("AC", 1, 100), ("ac", "powermode_high"): ("AC", 0, 100)}
+        for (batt, settings), (source, low, charge) in cases.items():
             power = HOST.parse_pmset_power(PMSET_BATT[batt], PMSET_SETTINGS[settings])
-            self.assertEqual(power, {"source": source, "low_power_mode": low}, (batt, settings))
+            self.assertEqual(power, {"source": source, "low_power_mode": low,
+                                     "charge_pct": charge}, (batt, settings))
+
+    def test_a_nearly_empty_battery_on_ac_waits(self) -> None:
+        # #444: a weak adapter and an empty battery cap the GPU clock.
+        state, sleeps = self.gate([("ac_empty", "off"), ("ac", "off")])
+        self.assertEqual(sleeps, [HOST.APPLE_POWER_POLL_SECONDS])
+        self.assertEqual(state["power"]["charge_pct"], 100)
+        with self.assertRaisesRegex(TimeoutError, "charge 9 %"):
+            self.gate([("ac_empty", "off")], deadline=0.0)
 
     def test_ac_with_low_power_off_starts_at_once(self) -> None:
         state, sleeps = self.gate([("ac", "off")])
         self.assertEqual(sleeps, [])
         self.assertEqual(state, {"power": {"source": "AC", "low_power_mode": 0,
-                                           "wait_seconds": state["power"]["wait_seconds"]}})
+                                           "charge_pct": 100, "wait_seconds": state["power"]["wait_seconds"]}})
 
     def test_a_desktop_without_battery_passes(self) -> None:
         state, sleeps = self.gate([("desktop", "absent")])

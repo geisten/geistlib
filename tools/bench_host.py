@@ -200,13 +200,16 @@ def parse_pmset_power(batt: str, settings: str) -> dict:
     source is "AC", "battery" or pmset's own name for anything else (a UPS);
     a Mac without a battery (Mac mini, Studio) prints no battery line and may
     lack the lowpowermode key, which reads as AC with the mode off. Laptops
-    with High Power Mode name the setting powermode (1 = low)."""
+    with High Power Mode name the setting powermode (1 = low). charge_pct is
+    the internal battery's charge, None without one."""
     drawing = re.search(r"drawing from '([^']+)'", batt)
     name = drawing.group(1) if drawing else "AC Power"
     source = {"AC Power": "AC", "Battery Power": "battery"}.get(name, name)
     modes = dict(re.findall(r"^\s*(lowpowermode|powermode)\s+(\d+)", settings, re.MULTILINE))
     low = modes.get("lowpowermode") == "1" or modes.get("powermode") == "1"
-    return {"source": source, "low_power_mode": int(low)}
+    charge = re.search(r"InternalBattery[^\n]*?\t(\d+)%", batt)
+    return {"source": source, "low_power_mode": int(low),
+            "charge_pct": int(charge.group(1)) if charge else None}
 
 
 def apple_power() -> dict:
@@ -214,12 +217,23 @@ def apple_power() -> dict:
                              command_output(["pmset", "-g"]))
 
 
+# On a 30 W adapter at 7-10 % charge the M1 Max dropped its GPU clock from
+# 1293 to 388 MHz a few seconds into a 27B Metal run and held it there at
+# 61-65 C (#444, 2026-11-14: prefill 33-45 instead of 107-148 tok/s in 7 of
+# 14 calls); on 65 W at 100 % it did so in 0 of 12. "On AC" alone does not say
+# the adapter carries the load; a charged battery covers what it does not.
+APPLE_MIN_CHARGE_PCT = 50
+
+
 def apple_power_ok(power: dict) -> bool:
-    return power["source"] == "AC" and not power["low_power_mode"]
+    charge = power.get("charge_pct")
+    return (power["source"] == "AC" and not power["low_power_mode"]
+            and (charge is None or charge >= APPLE_MIN_CHARGE_PCT))
 
 
 def wait_for_apple_power(deadline: float) -> dict:
-    """Block until the Mac runs on AC power with Low Power Mode off: on
+    """Block until the Mac runs on AC power with Low Power Mode off and a
+    battery, if it has one, at APPLE_MIN_CHARGE_PCT or more: on
     battery with Low Power Mode on the M1 Max measured ~1.5x slower, silently
     (2026-10-30). Polls every 30 s; raises TimeoutError, the busy failure,
     when the deadline passes first. Returns {"power": {source,
@@ -228,9 +242,12 @@ def wait_for_apple_power(deadline: float) -> dict:
     while not apple_power_ok(power := apple_power()):
         if time.monotonic() >= deadline:
             raise TimeoutError(f"power gate: source {power['source']}, low power mode "
-                               f"{power['low_power_mode']} at timeout")
-        print(f"  waiting for AC power / low power mode off: source {power['source']}, "
-              f"low power mode {power['low_power_mode']}", file=sys.stderr, flush=True)
+                               f"{power['low_power_mode']}, charge {power['charge_pct']} % "
+                               f"at timeout")
+        print(f"  waiting for AC power / low power mode off / charge >= "
+              f"{APPLE_MIN_CHARGE_PCT} %: source {power['source']}, low power mode "
+              f"{power['low_power_mode']}, charge {power['charge_pct']} %",
+              file=sys.stderr, flush=True)
         _sleep(APPLE_POWER_POLL_SECONDS)
     return {"power": {**power, "wait_seconds": round(time.monotonic() - started, 1)}}
 

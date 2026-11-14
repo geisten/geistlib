@@ -80,6 +80,16 @@
           "fallback_seconds": 45,
           "note": "Every run starts on a cool GPU (#17, benchmark/METHODOLOGY.md#cool-start-on-apple-silicon): the GPU holds 1293 MHz only up to ~78-83 C, so back to back the engine that runs second, or loads faster, measures throttling (4-7 % in prefill). Checked after the idle gate and its cooldown, right before the run. Measured on the M1 Max (2026-10-21, macmon): idle under the lock the chip settles at GPU 49-55 C, CPU 50-55 C; Metal prefill takes the GPU from 49 to 76 C in 7 s, the clock leaves 1293 MHz at 78-83 C and the GPU reaches 96 C after 90 s; from there it is back below 65 C in about 40 s and below 60 C in about 75 s (CPU alike). 65 C is reached from the hottest state within a minute and lies 10-15 C above the idle floor, so a shared desktop can reach it. Without macmon (not on PATH, /opt/homebrew/bin or /usr/local/bin) the gate pauses 45 s instead, which cooled both engines to parity in #17, and records cool_gate=time."
         }
+      },
+      "model_host_gate": {
+        "bonsai2-27b-pq2": {
+          "apple_temp_gate": {
+            "max_gpu_c": 55,
+            "fallback_seconds": 45
+          },
+          "max_repeat_spread_pct": 15,
+          "note": "The 27B on this GPU (#444): llama.cpp (PrismML-Eng adfffbe41) alone takes the chip past 82 C inside one 512- or 1024-token measurement and the clock from 1293 to 900-1050 MHz, so its repeats spread by how early that happens. From the profile's 65 C three cooled 1024-token calls measured 114.9/114.7/105.3 tok/s prefill and 14.8/17.3/15.5 decode; from 55 C 117.9/117.3/118.0 and 17.4/17.5/17.3 (2026-11-13/14, macmon). Under the full protocol from 55 C (2026-11-14, host 95 % idle) geist's repeats spread 0.2 % at every length while llama.cpp's runs spread 4.4, 10.0, 10.5, 11.0, 11.9, 14.6 and 25.4 %: the 5 % limit rejects the reference engine's own throttling, not a disturbed host. 15 % keeps the run-to-run band measured there and still discards the outlier; the recorded run that followed discarded four more llama.cpp measurements at 15.9-20.1 %, so the band is wider than that one run showed; the cell's llama.cpp rows at 512 and 1024 are throttled values and carry that spread."
+        }
       }
     },
     "apple_m6_mini_metal": {
