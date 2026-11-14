@@ -49,7 +49,7 @@ pp512 / tg64 at depth 512, tok/s:
 | model | `apple_m6_mini` | `apple_m6_mini_metal` | `apple_m1max` | `apple_m1max_metal` | `amd_9950x` | `nvidia_2080ti_vulkan` | `pi5` |
 |---|--:|--:|--:|--:|--:|--:|--:|
 | bitnet-large-tq2 | — | — | — | — | 2388 / 271.3 | 13267 / 340.9 | 129 / 30.7 |
-| bonsai2-27b-pq2 | 33 / 12.9 | 225 / 19.0 | — | — | 83 / 9.6 | 633 / 40.0 | — |
+| bonsai2-27b-pq2 | 33 / 12.9 | 225 / 19.0 | — | 162 / 21.2 ³ | 83 / 9.6 | 633 / 40.0 | — |
 | gemma4-e2b-q4km | 341 / 66.0 | 2699 / 89.4 | 328 / 56.2 ² | 1556 / 118.4 ² | 952 / 51.7 | 5742 / 158.3 | 28 / 7.1 |
 | gemma4-e4b-q4km | 172 / 35.5 | 1356 / 45.7 | 81 / 21.1 ¹ | — | 500 / 26.1 | 2944 / 96.8 | — |
 | llama32-3b-q4km | 236 / 53.1 | 2067 / 69.0 | — | — | 735 / 37.2 | 4877 / 150.9 | 23 / 5.3 |
@@ -62,12 +62,14 @@ pp512 / tg64 at depth 512, tok/s:
 
 ² measured by hand for #444 at 6642260d: `apple_m1max` on 2026-11-11 (raw record lost in a reboot, values from the run report quoted on #444), `apple_m1max_metal` on 2026-11-13 with `cool_each_repeat` (PR #536), record in `benchmark/results/raw/c23-m1max-2026-11-13/`.
 
+³ measured by hand for #444 at 6642260d on 2026-11-14 with this cell's own gate: start at 55 °C or cooler and a repeat spread of up to 15 % (`model_host_gate`). llama.cpp throttles the GPU inside one 512- or 1024-token measurement of this model (its repeats spread 10–20 %, geist's 0.2 %), so its values there, 125 ± 11 tok/s prefill at 512, are throttled ones. Record in `benchmark/results/raw/c23-m1max-2026-11-14/`.
+
 Every cell's other lengths (128, 256, 1024), its ratio to llama.cpp and the archive file are in the JSON.
 
 **Not measured:**
 
 - apple_m1max (CPU): cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents). Fourth attempt 2026-11-11/12 (#444): gemma4-e2b-q4km passed (²); qwen35-0.8b-q8 failed 6 tries.
-- apple_m1max_metal: gemma4-e2b-q4km recorded 2026-11-13 (²); bonsai2-27b-pq2 failed 6 tries without and 2 with `cool_each_repeat`.
+- apple_m1max_metal: gemma4-e2b-q4km recorded 2026-11-13 (²); bonsai2-27b-pq2 recorded 2026-11-14 with its own gate (³) after 8 failed tries under the 5 % limit.
 
 ## MoE rows of #333 (Qwen3-30B-A3B, Qwen3.6-35B-A3B)
 

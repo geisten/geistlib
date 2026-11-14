@@ -1,0 +1,124 @@
+with-mac-lock: waiting (#1 in queue, interactive) behind pid 63183 'geisten/geistlib run 3743 build-test-full' [ci] runner job hold, 4m32s of 45 min; queue 1: interactive/76940 0s
+L-E55C/256/0 single load 3.5 spread 0.0 %
+    256 pp [147.6] tg [20.7]
+    C/MHz: 49/866 58/1293 58/1293 58/1293 58/1293 58/1293 68/1293 68/1293 68/1293 68/1293 68/1293 71/1293 71/1293 71/1293 71/1293 71/1293 73/1293 71/1293 71/1293 71/1293 71/1293 71/1293 71/1293 71/1293 71/1293 71/1290 75/1293 75/1293 75/1293 75/1293 72/1293 72/1293 72/1293 72/1293 72/1293 73/1293 73/1293 73/1214 73/1059 73/995
+  waiting for cool chip: GPU 60.5 C, CPU 62.8 C
+  waiting for cool chip: GPU 55.8 C, CPU 58.8 C
+L-E55C/256/1 single load 3.2 spread 0.0 %
+    256 pp [147.5] tg [20.2]
+    C/MHz: 54/980 54/1293 54/1293 54/1293 70/1293 70/1293 70/1293 70/1293 75/1293 75/1293 75/1293 75/1293 75/1293 77/1293 77/1293 77/1293 77/1287 78/1292 78/1293 73/1293 73/1293 73/1293 73/1293 80/1293 80/1293 80/1293 80/1293 80/1293 78/1293 78/1293 78/1293 78/1293 77/1293 77/1293 77/1293 77/1283 77/1119 78/1028 78/988 78/997
+  waiting for cool chip: GPU 74.1 C, CPU 68.8 C
+  waiting for cool chip: GPU 61.1 C, CPU 65.1 C
+  waiting for cool chip: GPU 58.7 C, CPU 61.0 C
+  waiting for cool chip: GPU 56.9 C, CPU 59.2 C
+  waiting for cool chip: GPU 56.6 C, CPU 61.9 C
+L-E55C/256/2 single load 3.9 spread 0.0 %
+    256 pp [147.6] tg [20.4]
+    C/MHz: 55/941 55/1293 55/1293 70/1293 70/1293 70/1293 70/1293 70/1293 76/1293 76/1293 76/1293 76/1293 78/1293 78/1293 78/1293 78/1293 79/1259 79/1293 72/1293 72/1293 72/1293 72/1293 80/1293 80/1293 80/1291 80/1293 80/1293 80/1293 80/1293 80/1293 80/1293 78/1293 78/1293 78/1293 78/1293 78/1287 79/1128 79/1002 79/960
+  waiting for cool chip: GPU 75.7 C, CPU 70.8 C
+  waiting for cool chip: GPU 62.1 C, CPU 65.7 C
+  waiting for cool chip: GPU 60.9 C, CPU 64.9 C
+  waiting for cool chip: GPU 59.7 C, CPU 63.9 C
+  waiting for cool chip: GPU 58.7 C, CPU 62.5 C
+  waiting for cool chip: GPU 57.7 C, CPU 61.0 C
+  waiting for cool chip: GPU 56.8 C, CPU 59.9 C
+  waiting for cool chip: GPU 55.8 C, CPU 59.1 C
+  waiting for cool chip: GPU 55.1 C, CPU 58.6 C
+L-E55C/256/3 single load 5.2 spread 0.0 %
+    256 pp [147.3] tg [18.7]
+    C/MHz: 55/1191 55/1293 55/1293 55/1293 71/1293 71/1293 71/1293 71/1293 76/1293 76/1293 76/1293 76/1293 76/1293 78/1293 78/1293 78/1293 79/1039 79/1293 74/1293 74/1293 74/1293 74/1293 74/1293 81/1293 81/1290 81/1293 81/1293 80/1293 80/1293 80/1293 80/1293 80/1293 79/1095 79/944 79/918 79/925 75/927 75/920 75/894 75/910
+  waiting for cool chip: GPU 66.0 C, CPU 69.3 C
+  waiting for cool chip: GPU 62.4 C, CPU 65.3 C
+  waiting for cool chip: GPU 60.7 C, CPU 63.7 C
+  waiting for cool chip: GPU 60.3 C, CPU 62.1 C
+  waiting for cool chip: GPU 59.3 C, CPU 61.6 C
+  waiting for cool chip: GPU 58.9 C, CPU 61.0 C
+  waiting for cool chip: GPU 57.8 C, CPU 60.0 C
+  waiting for cool chip: GPU 57.4 C, CPU 59.6 C
+  waiting for cool chip: GPU 57.0 C, CPU 59.6 C
+  waiting for cool chip: GPU 56.5 C, CPU 58.4 C
+  waiting for cool chip: GPU 56.1 C, CPU 58.5 C
+  waiting for cool chip: GPU 56.0 C, CPU 57.9 C
+  waiting for cool chip: GPU 55.6 C, CPU 57.8 C
+  waiting for cool chip: GPU 55.3 C, CPU 58.0 C
+  waiting for cool chip: GPU 55.1 C, CPU 57.4 C
+L-E55C/512/0 single load 5.3 spread 0.0 %
+    512 pp [131.8] tg [16.7]
+    C/MHz: 54/1293 54/1293 70/1293 75/1293 75/1293 77/1293 77/1293 79/1293 79/1293 81/1293 81/1293 82/1255 82/948 80/902 75/1293 77/1008 77/995 80/968 79/1024 79/943 79/946 79/950 80/1060 80/977 78/980 78/965 77/949 77/947 78/930
+  waiting for cool chip: GPU 69.2 C, CPU 72.6 C
+  waiting for cool chip: GPU 65.5 C, CPU 68.9 C
+  waiting for cool chip: GPU 63.9 C, CPU 67.1 C
+  waiting for cool chip: GPU 62.0 C, CPU 64.7 C
+  waiting for cool chip: GPU 60.9 C, CPU 63.8 C
+  waiting for cool chip: GPU 59.7 C, CPU 62.6 C
+  waiting for cool chip: GPU 59.4 C, CPU 71.2 C
+  waiting for cool chip: GPU 58.1 C, CPU 61.2 C
+  waiting for cool chip: GPU 56.7 C, CPU 60.2 C
+  waiting for cool chip: GPU 55.6 C, CPU 58.9 C
+L-E55C/512/1 single load 3.8 spread 0.0 %
+    512 pp [129.5] tg [16.6]
+    C/MHz: 55/1293 69/1293 69/1293 76/1293 76/1293 78/1293 78/1293 80/1293 80/1293 81/1293 82/1293 82/1248 82/964 82/974 72/1293 72/1147 82/992 82/977 80/986 80/989 80/1014 80/1002 81/1046 79/1025 79/1001 78/1003 78/983 78/987 78/964
+  waiting for cool chip: GPU 72.3 C, CPU 72.3 C
+  waiting for cool chip: GPU 66.3 C, CPU 67.4 C
+  waiting for cool chip: GPU 64.3 C, CPU 65.5 C
+  waiting for cool chip: GPU 63.0 C, CPU 64.9 C
+  waiting for cool chip: GPU 61.2 C, CPU 62.7 C
+  waiting for cool chip: GPU 60.2 C, CPU 61.6 C
+  waiting for cool chip: GPU 58.9 C, CPU 60.6 C
+  waiting for cool chip: GPU 58.0 C, CPU 59.3 C
+  waiting for cool chip: GPU 57.2 C, CPU 58.6 C
+  waiting for cool chip: GPU 56.6 C, CPU 57.8 C
+  waiting for cool chip: GPU 55.1 C, CPU 57.6 C
+L-E55C/512/2 single load 2.7 spread 0.0 %
+    512 pp [139.2] tg [17.1]
+    C/MHz: 54/1293 63/1293 63/1293 74/1293 74/1293 77/1293 77/1293 77/1293 78/1293 78/1293 80/1293 80/1293 81/1293 81/1293 82/1293 82/988 82/918 71/1293 71/1293 83/1293 83/1078 82/959 82/924 82/971 79/945 79/957 80/1113 80/999 78/987 78/985 78/975 77/980 77/984 77/978 77/975
+  waiting for cool chip: GPU 68.5 C, CPU 71.1 C
+  waiting for cool chip: GPU 64.2 C, CPU 66.5 C
+  waiting for cool chip: GPU 61.8 C, CPU 64.5 C
+  waiting for cool chip: GPU 60.1 C, CPU 62.3 C
+  waiting for cool chip: GPU 58.4 C, CPU 61.2 C
+  waiting for cool chip: GPU 57.0 C, CPU 60.0 C
+  waiting for cool chip: GPU 55.7 C, CPU 59.6 C
+L-E55C/512/3 single load 1.9 spread 0.0 %
+    512 pp [136.1] tg [17.2]
+    C/MHz: 55/1215 55/1293 72/1293 72/1293 72/1293 77/1293 77/1293 79/1293 79/1293 80/1293 80/1293 82/1293 82/1293 82/1293 83/1271 83/921 81/948 75/1293 75/1293 80/1034 80/941 81/997 81/1009 80/1041 80/1004 80/1010 80/982 80/1046 80/1012 80/1021 78/1010 78/997 78/1005 78/980 78/989
+  waiting for cool chip: GPU 77.6 C, CPU 73.7 C
+  waiting for cool chip: GPU 64.8 C, CPU 67.5 C
+  waiting for cool chip: GPU 62.4 C, CPU 65.7 C
+  waiting for cool chip: GPU 60.1 C, CPU 62.9 C
+  waiting for cool chip: GPU 58.4 C, CPU 61.6 C
+  waiting for cool chip: GPU 57.1 C, CPU 60.2 C
+  waiting for cool chip: GPU 56.2 C, CPU 60.6 C
+L-E55C/1024/0 single load 2.2 spread 0.0 %
+    1024 pp [111.2] tg [16.7]
+    C/MHz: 55/1107 69/1293 76/1293 78/1293 80/1293 81/1293 83/1293 84/914 78/914 78/936 79/952 79/982 80/995 81/982 81/994 82/986 83/1023 79/1293 88/1293 88/923 84/947 85/939 85/952 86/976 86/997 87/976 87/1015 84/1000 84/970 84/964
+  waiting for cool chip: GPU 83.8 C, CPU 79.7 C
+  waiting for cool chip: GPU 70.6 C, CPU 72.4 C
+  waiting for cool chip: GPU 67.0 C, CPU 69.5 C
+  waiting for cool chip: GPU 64.5 C, CPU 67.3 C
+  waiting for cool chip: GPU 62.7 C, CPU 65.6 C
+  waiting for cool chip: GPU 61.1 C, CPU 63.9 C
+  waiting for cool chip: GPU 59.6 C, CPU 62.7 C
+  waiting for cool chip: GPU 58.3 C, CPU 61.1 C
+  waiting for cool chip: GPU 57.1 C, CPU 59.7 C
+  waiting for cool chip: GPU 56.2 C, CPU 59.2 C
+  waiting for cool chip: GPU 55.1 C, CPU 58.3 C
+L-E55C/1024/1 single load 2.3 spread 0.0 %
+    1024 pp [116.0] tg [17.5]
+    C/MHz: 54/1012 69/1293 76/1293 78/1293 79/1293 81/1293 82/1293 83/1182 81/953 78/976 79/995 79/971 80/1046 81/1037 82/1018 82/1039 81/1174 86/1293 90/1092 85/995 85/1010 85/1026 85/1014 86/1055 87/1024 87/1068 86/1032 84/1023 84/1021
+  waiting for cool chip: GPU 83.8 C, CPU 76.8 C
+  waiting for cool chip: GPU 68.6 C, CPU 70.7 C
+  waiting for cool chip: GPU 65.7 C, CPU 67.7 C
+  waiting for cool chip: GPU 63.4 C, CPU 65.6 C
+  waiting for cool chip: GPU 61.6 C, CPU 63.3 C
+  waiting for cool chip: GPU 59.2 C, CPU 61.7 C
+  waiting for cool chip: GPU 57.8 C, CPU 59.9 C
+  waiting for cool chip: GPU 56.3 C, CPU 58.7 C
+L-E55C/1024/2 single load 1.2 spread 0.0 %
+    1024 pp [117.7] tg [17.3]
+    C/MHz: 55/1287 71/1293 77/1293 79/1293 80/1293 82/1293 83/1293 84/1215 82/962 79/980 80/1016 81/1048 81/1053 82/1039 83/1042 83/1053 84/1064 78/1293 89/1208 91/919 85/909 85/934 86/1021 87/1022 87/1018 88/1106 87/1044 85/1029 85/1008
+  waiting for cool chip: GPU 85.0 C, CPU 77.6 C
+  waiting for cool chip: GPU 70.1 C, CPU 71.6 C
+L-E55C/1024/3 single load 1.2 spread 0.0 %
+    1024 pp [113.1] tg [17.2]
+    C/MHz: 67/1293 82/1293 88/1293 90/1293 91/1293 92/1293 93/1293 94/951 88/881 88/969 88/980 89/992 90/1014 90/1025 91/996 91/1010 92/1035 92/1293 98/1285 94/962 92/968 92/1006 93/1009 93/997 93/979 93/956 94/1032 91/1021 90/1005

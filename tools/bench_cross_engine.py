@@ -448,7 +448,9 @@ def main() -> int:
     metadata["host_profile"] = args.host_profile
     # A profile may refine the gate for its host (the Apple profiles: idle
     # CPU instead of load average, and a per-run spread limit).
-    gate = {**protocol["host_gate"], **profile.get("host_gate", {})}
+    # model_host_gate refines it once more for one model on that host.
+    gate = {**protocol["host_gate"], **profile.get("host_gate", {}),
+            **profile.get("model_host_gate", {}).get(args.model, {})}
     metadata["host_gate"] = gate
     schedule = build_schedule(engines, workload["cycles"])
     if args.resume is not None:
