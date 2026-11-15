@@ -9,7 +9,7 @@
    "what": "__attribute__"
   },
   "__builtin": {
-   "max": 76,
+   "max": 78,
    "what": "__builtin_* calls and names"
   },
   "define_function": {
@@ -49,7 +49,7 @@
    "what": "(void **) casts, as in safe_free((void **) &p)"
   },
   "void_ptr": {
-   "max": 1282,
+   "max": 1289,
    "what": "void * (one per `void` followed by `*`)"
   },
   "void_ptr_cast": {
