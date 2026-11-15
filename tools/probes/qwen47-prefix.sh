@@ -23,10 +23,14 @@ printf '%s  %s\n' \
 git -C "$repo" archive --output="$engine/source.tar" 916f0e2bbc76fe19af5278ee0922e02ba000e065
 tar -xf "$engine/source.tar" -C "$engine"
 /usr/bin/python3 "$diag/qwen47-instrument.py" "$engine" "$diag"
-make -C "$engine" -s -j 4 TARGET=mac-omp LIBOMP_PREFIX="$omp" lib
-xcrun clang -std=c23 -O2 -Wall -Wextra -Werror -I"$engine/include" "$diag/qwen47-prefix.c" \
-  "$engine/lib/mac-omp/release/libgeist.a" -framework Accelerate -L"$omp/lib" -lomp -lm \
-  -o "$engine/qwen47-prefix"
+driver="$engine/qwen47-prefix"
+build() {
+  make -C "$engine" -s -j 4 TARGET=mac-omp LIBOMP_PREFIX="$omp" lib
+  xcrun clang -std=c23 -O2 -Wall -Wextra -Werror -I"$engine/include" "$diag/qwen47-prefix.c" \
+    "$engine/lib/mac-omp/release/libgeist.a" -framework Accelerate -L"$omp/lib" -lomp -lm \
+    -o "$driver"
+}
+build
 /usr/bin/python3 - "$reference" "$engine" <<'PY'
 from pathlib import Path
 import hashlib
@@ -48,7 +52,6 @@ if trace["n_prompt"] != 91 or not trace["sampled"] or trace["sampled"][0]["id"] 
     raise ValueError("Unexpected case 47 token fixture")
 (engine / "prompt.bin").write_bytes(struct.pack("<92i", *trace["ids"][:92]))
 PY
-driver="$engine/qwen47-prefix"
 input="$engine/prompt.bin"
 {
   sw_vers
@@ -62,10 +65,22 @@ replay() {
 }
 replay > "$out/default.txt"
 replay GEIST_METAL_TENSOR=0 > "$out/tensor-off.txt"
-replay QWEN47_TRACE=1 > "$out/trace.txt"
+mkdir -p "$out/default-vectors"
+replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/default-vectors" > "$out/trace.txt"
 for file in default tensor-off trace; do
   printf '%s ' "$file"
   tail -1 "$out/$file.txt"
 done
 awk '$1 == "logits"' "$out/trace.txt" > "$out/trace-logits.txt"
 diff -u "$out/default.txt" "$out/trace-logits.txt"
+shader="$engine/src/backends/metal/metal_shaders.h"
+cp "$shader" "$engine/metal_shaders.template"
+for order in descending ascending; do
+  cp "$engine/metal_shaders.template" "$shader"
+  /usr/bin/python3 "$diag/qwen47-matvec-reduction.py" "$engine" "$order"
+  build
+  mkdir -p "$out/$order-vectors"
+  replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/$order-vectors" > "$out/$order.txt"
+  printf '%s ' "$order"
+  tail -1 "$out/$order.txt"
+done
