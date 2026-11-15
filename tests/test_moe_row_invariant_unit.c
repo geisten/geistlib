@@ -23,6 +23,9 @@
  *   DeepSeek-V2-Lite   gate/up Q4_K 2048->1408, down Q5_0 / Q8_0 1408->2048,
  *                      shared expert Q4_K 2048->2816, Q4_K / Q6_K 2816->2048
  *   gpt-oss-20b        gate/up/down MXFP4 2880->2880
+ * and, for a dense model's prefill chunks (#554), Llama 3.2 3B's Q6_K
+ * ffn_down 8192->3072: n_in >= 4096 puts it on cpu_neon's stream layout
+ * (install_q6k_ntile_if_eligible), a kernel none of the expert shapes reach.
  *
  * GEIST_ROWINV_REPORT=1 prints every m whose rows differ and which rows,
  * instead of failing on the first per shape (a survey of a host's kernels).
@@ -66,6 +69,7 @@ static const struct shape SHAPES[] = {
         {"deepseek2 shexp down", GEIST_DTYPE_Q6_K, 2816, 2048, false},
         {"gpt-oss gate/up", GEIST_DTYPE_MXFP4, 2880, 2880, true},
         {"gpt-oss down", GEIST_DTYPE_MXFP4, 2880, 2880, false},
+        {"llama3.2-3b ffn_down", GEIST_DTYPE_Q6_K, 8192, 3072, false},
 };
 
 static size_t dtype_index(enum geist_dtype dt) {
