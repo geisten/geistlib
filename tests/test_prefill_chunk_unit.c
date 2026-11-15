@@ -5,19 +5,21 @@
  * A chunk of one row is a decode step to every stage of the forward
  * (seq == 1): the M=1 kernels and fusions, which sum in another order than
  * a chunk's M>1 GEMMs. A prompt of m_max + 1 tokens used to split m_max + 1
- * and so gave other logits than the same prompt in one chunk. The last two
- * chunks are now (m_max - 1) + 2 (transformer_prefill_chunk).
+ * and so gave other logits than the same prompt in one chunk. The chunk
+ * before the last now gives it rows (transformer_prefill_chunk): the last
+ * has 8 from m_max 16 on, 4 from 8 on, else 2.
  *
  * On an in-memory llama, on every CPU backend in the build:
  *   - the plan, for m_max 1..9, 16, 64, 128 and every prompt length up to
  *     3 * m_max + 2: the chunks add up to the prompt, none exceeds m_max,
- *     there are ceil(n / m_max) of them, all but the last two are m_max
- *     rows, and none has one row unless the prompt has one token or
- *     m_max < 3 (2 + 1 has no other split);
+ *     there are ceil(n / m_max) of them, a chunk below m_max has at most
+ *     8 rows after it, and none has one row unless the prompt has one
+ *     token or m_max < 3 (2 + 1 has no other split);
  *   - the forward, for m_max 3, 8, 64 and prompts of m_max + 1 and
  *     2 * m_max + 1 tokens: one prefill call gives, bit for bit, the logits
- *     of the calls prefill(n - 2), prefill(2), whose chunks are the plan's
- *     by construction; a call of one token still runs (the decode step).
+ *     of the calls prefill(n - t), prefill(t), t the last chunk's rows (2,
+ *     4, 8), whose chunks are the plan's by construction; a call of one
+ *     token still runs (the decode step).
  *
  * That the M>1 kernels give a row the same bits for every row count, which
  * makes those chunks equal to one chunk, is test_moe_row_invariant_unit's.
@@ -68,8 +70,8 @@ static int check_plan(const struct transformer_arch_session *a, size_t m_max, si
         }
         over = over || c > m_max;
         ones += c == 1 ? 1 : 0;
-        /* A chunk below m_max with more than two rows left after it. */
-        short_early += c < m_max && n - off - c > 2 ? 1 : 0;
+        /* A chunk below m_max with more than a last chunk's rows after it. */
+        short_early += c < m_max && n - off - c > 8 ? 1 : 0;
         off += c;
         chunks++;
     }
@@ -144,17 +146,19 @@ static int check_backend(const char *name, struct geist_backend *be) {
             continue; /* reported above for 3, 8 and 64 */
         }
         for (size_t k = 1; k <= 2; k++) {
-            const size_t n = k * FWD[i] + 1;
+            const size_t n    = k * FWD[i] + 1;
+            const size_t tail = FWD[i] >= 16 ? 8 : FWD[i] >= 8 ? 4 : 2;
             float        one[VOCAB], split[VOCAB];
-            const bool   ok = logits_after(s, n, 0, one) && logits_after(s, n, 2, split);
+            const bool   ok = logits_after(s, n, 0, one) && logits_after(s, n, tail, split);
             snprintf(what,
                      sizeof what,
                      "%s: m_max %zu, %zu tokens in one call are the bits of prefill(%zu), "
-                     "prefill(2)",
+                     "prefill(%zu)",
                      name,
                      FWD[i],
                      n,
-                     n - 2);
+                     n - tail,
+                     tail);
             fails += geist_expect(ok && memcmp(one, split, sizeof one) == 0, what);
         }
         float one[VOCAB];

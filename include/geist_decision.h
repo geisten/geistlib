@@ -125,7 +125,8 @@ const char *geist_decision_errmsg(const struct geist_decision *d);
  * joined prompt splits into the same passes only when the prefix length is
  * a multiple of geist_decision_prefill_chunk and the suffix has two tokens
  * or more: a prefill never ends in a pass of one token (#554), so the
- * joined prompt of a one-token suffix ends in passes of chunk - 1 and 2.
+ * joined prompt of a one-token suffix moves tokens of the prefix's last
+ * pass into the final one.
  *
  * Builds without DECISION_CONTEXT=1 keep these symbols: they return
  * GEIST_E_UNSUPPORTED (or false / nothing) and clear their outputs. */
