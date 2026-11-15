@@ -21,6 +21,7 @@
 #include "internal.h"
 #include "par.h"
 #include "kernels/decode_rows.h"
+#include "kernels/f32_rows.h"
 #include "tl1.h"
 
 #include <geist.h>
@@ -1007,6 +1008,7 @@ struct deq_tiles_job {
     const struct geist_weight *w;
     size_t                     m, n_in, n_out, tile_rows, n_tiles;
     bool                       gemv;    /* the M=1 trampoline: sgemv */
+    bool                       rows;    /* f32_rows_gemm instead of sgemm */
     bool                       dynamic; /* tiles handed out one at a time */
     float                     *tiles;   /* geist_par_max_threads() slots */
     atomic_size_t              slot;    /* the next free slot */
@@ -1033,6 +1035,7 @@ static void deq_tiles(void *ctx, size_t t0, size_t t1) {
     const size_t               tile_rows = job->tile_rows;
     const size_t               n_tiles   = job->n_tiles;
     const bool                 gemv      = job->gemv;
+    const bool                 rows      = job->rows;
     const bool                 dynamic   = job->dynamic;
     float                     *y         = job->y;
     float *tile = job->tiles +
@@ -1061,6 +1064,8 @@ static void deq_tiles(void *ctx, size_t t0, size_t t1) {
                         0.0f,
                         y + r0,
                         1);
+        } else if (rows) {
+            f32_rows_gemm(m, tr, n_in, n_out, x, tile, y + r0);
         } else {
             geist_sgemm(GEIST_OP_N,
                         GEIST_OP_T,
@@ -1089,6 +1094,7 @@ static void deq_tiles_run(const float               *x,
                           size_t                     m,
                           size_t                     tile_rows,
                           bool                       gemv,
+                          bool                       rows,
                           bool                       dynamic,
                           float                     *tiles,
                           float                     *y) {
@@ -1101,6 +1107,7 @@ static void deq_tiles_run(const float               *x,
                                   .tile_rows = tile_rows,
                                   .n_tiles   = (n_out + tile_rows - 1) / tile_rows,
                                   .gemv      = gemv,
+                                  .rows      = rows,
                                   .dynamic   = dynamic,
                                   .tiles     = tiles,
                                   .y         = y};
@@ -1146,7 +1153,7 @@ static void cpu_neon_w_dequant_trampoline_m1(const float               *x,
         geist_linear_ref(1, x, w, y);
         return;
     }
-    deq_tiles_run(x, w, 1, DEQ_GEMV_TILE_ROWS, true, false, ws->dequant_w_fp32, y);
+    deq_tiles_run(x, w, 1, DEQ_GEMV_TILE_ROWS, true, false, false, ws->dequant_w_fp32, y);
 }
 
 /* Fused F16 × A32 GEMV (M=1): one pass over the f16 weight, converted
@@ -1214,7 +1221,29 @@ static void cpu_neon_w_dequant_trampoline_mN(size_t                     m,
         geist_linear_ref(m, x, w, y);
         return;
     }
-    deq_tiles_run(x, w, m, DEQ_TILE_ROWS_DEFAULT, false, true, ws->dequant_w_fp32, y);
+    deq_tiles_run(x, w, m, DEQ_TILE_ROWS_DEFAULT, false, false, true, ws->dequant_w_fp32, y);
+}
+
+/* Q5_0 M>1: the trampoline's tiles, each through f32_rows_gemm instead of
+ * cblas_sgemm. Q5_0 is what llama-quantize leaves an expert's ffn_down in
+ * when n_in is no multiple of 256 (DeepSeek-V2-Lite: 1408), and an MoE
+ * expert's row count is how many of a prefill chunk's tokens chose it. A
+ * BLAS picks its path by row count (one row goes through gemv), so a
+ * token's output changed with the chunking; f32_rows_gemm sums every
+ * output in one order (#528). */
+static void cpu_neon_w_q5_0_mN(size_t                     m,
+                               const float               *x,
+                               const struct geist_weight *w,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    struct cpu_neon_state     *st = (be != nullptr) ? (struct cpu_neon_state *) be->state : nullptr;
+    struct cpu_neon_workspace *ws = st != nullptr ? cpu_neon_ws(st) : nullptr;
+    if (ws == nullptr ||
+        !cpu_neon_dequant_w_workspace_prepare(ws, DEQ_TILE_ROWS_DEFAULT, (size_t) w->n_in)) {
+        geist_linear_ref(m, x, w, y);
+        return;
+    }
+    deq_tiles_run(x, w, m, DEQ_TILE_ROWS_DEFAULT, false, true, true, ws->dequant_w_fp32, y);
 }
 
 /* ---- Resolver -------------------------------------------------------- */
@@ -1278,12 +1307,13 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
         {GEIST_DTYPE_Q4_0, CPU_NEON_ISA_NEON, cpu_neon_w_q4_0_m1, cpu_neon_w_q4_0_mN, "q4_0/w4a8"},
         {GEIST_DTYPE_Q4_1, CPU_NEON_ISA_NEON, cpu_neon_w_q4_1_m1, cpu_neon_w_q4_1_mN, "q4_1/w4a8"},
         /* Q5_0: the odd tensors llama-quantize keeps in Q4_K_M models; no
-         * native kernel yet, so both paths dequantize. */
+         * native kernel yet, so both paths dequantize. Prefill sums each
+         * output in one order whatever the row count (#528). */
         {GEIST_DTYPE_Q5_0,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_dequant_trampoline_m1,
-         cpu_neon_w_dequant_trampoline_mN,
-         "q5_0/trampoline"},
+         cpu_neon_w_q5_0_mN,
+         "q5_0/dequant-rows"},
 
         /* TQ2_0: ternary BitNet b1.58. Preferred (q8a, requires dotprod)
          * first, fp32 fallback second, for a host without dotprod at run
