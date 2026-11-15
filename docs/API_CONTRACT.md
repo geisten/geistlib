@@ -184,7 +184,9 @@ the agent-runtime contract. The default-off `DECKNET=1` feature adds a
 second kind of model, the geistbox deck-check network (#532): a fixed
 convolutional net that takes two RGB8 camera images and returns one state
 vector per deck position, with its own load / run / read / destroy entry
-points and no tokenizer, session or backend handle. Unlike the decision API
+points and no tokenizer, session or backend handle; `geist_decknet_stream_*`
+(#533) runs the same net frame after frame on a camera stream, reading RGB8,
+NV12 or YUYV frames in the caller's memory. Unlike the decision API
 it leaves no stubs behind: a library built without `DECKNET=1` has none of
 the `geist_decknet_*` symbols and is byte for byte the library without the
 arch. `geist_model_load` refuses a decknet file with `GEIST_E_UNSUPPORTED`

@@ -1,7 +1,9 @@
 /*
  * decknet: the geistbox deck-check network, a small fixed convolutional net
  * for images (#532). Two camera images in (the deck now, the empty deck),
- * one state vector per deck position out. All declarations are EXPERIMENTAL.
+ * one state vector per deck position out; as single images
+ * (geist_decknet_run) or frame after frame from one camera
+ * (geist_decknet_stream_*, #533). All declarations are EXPERIMENTAL.
  *
  * Build with DECKNET=1. A library built without it has none of these
  * symbols, so a default build is byte-for-byte what it was; a program that
@@ -129,6 +131,102 @@ geist_decknet_info(const struct geist_decknet *d, struct geist_decknet_info *out
  * of range. */
 [[nodiscard]] enum geist_status
 geist_decknet_slot(const struct geist_decknet *d, size_t slot, struct geist_decknet_slot *out);
+
+/* ---- stream: one camera, frame after frame (#533) ----------------------- */
+
+struct geist_decknet_stream;
+
+/* @stability EXPERIMENTAL — how the bytes of a frame are laid out. Rows run
+ * top to bottom, `stride` bytes apart.
+ *   RGB8  3 bytes per pixel, R G B.
+ *   NV12  a plane of Y, one byte per pixel, then at byte stride * height a
+ *         plane of U V pairs, one pair per 2 x 2 pixels, its rows `stride`
+ *         bytes apart as well. Width and height are even.
+ *   YUYV  4 bytes per 2 pixels: Y0 U Y1 V. Width is even.
+ * NV12 and YUYV are read as BT.601 limited range ("video range") with the
+ * chroma of a pixel taken from its block without interpolation; the exact
+ * integer formula is in docs/DECKNET.md. */
+enum geist_decknet_format : uint32_t {
+    GEIST_DECKNET_FORMAT_RGB8 = 0,
+    GEIST_DECKNET_FORMAT_NV12 = 1,
+    GEIST_DECKNET_FORMAT_YUYV = 2,
+};
+static_assert(sizeof(enum geist_decknet_format) == sizeof(uint32_t));
+
+/* @stability EXPERIMENTAL — one frame in the caller's memory. It is read in
+ * place during the call and never kept. `n_bytes` is the extent of `data`:
+ * nothing at or behind data + n_bytes is read. */
+struct geist_decknet_frame {
+    enum geist_decknet_format format;
+    size_t                    width; /* pixels; the model's image_width, image_height */
+    size_t                    height;
+    size_t                    stride; /* bytes from one row to the next */
+    size_t                    n_bytes;
+    const uint8_t            *data;
+    uint64_t                  timestamp; /* the caller's; handed back with the result */
+};
+
+/* @stability EXPERIMENTAL — what the last pushed frame gave. */
+struct geist_decknet_stream_result {
+    struct geist_decknet_result image;     /* as geist_decknet_run reports it */
+    uint64_t                    timestamp; /* of that frame */
+    uint64_t                    n_frames;  /* frames processed since the stream was created */
+};
+
+/* @stability EXPERIMENTAL
+ * A stream on `d`, which it borrows: `d` outlives the stream, and between
+ * the creation and the destruction of the stream no geist_decknet_run is
+ * called on it (the stream computes in the handle's workspace). Allocates
+ * everything the stream will ever need; no later call on it allocates.
+ * GEIST_E_INVALID_ARG for a null argument, GEIST_E_OOM. On failure *out is
+ * nullptr. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_create(struct geist_decknet *d, struct geist_decknet_stream **out);
+
+/* @stability EXPERIMENTAL — nullptr is a no-op. The model handle stays. */
+void geist_decknet_stream_destroy(struct geist_decknet_stream *s);
+
+/* @stability EXPERIMENTAL
+ * The empty deck: the image every pushed frame is compared with (`ref` of
+ * geist_decknet_run), in any of the formats. Also takes over the handle's
+ * homographies as they are now: after geist_decknet_set_homographies the
+ * reference is set again before the next frame. GEIST_E_INVALID_ARG for a
+ * null argument or a frame whose geometry is refused (see
+ * geist_decknet_stream_push_frame); the stream then keeps the reference it
+ * had. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
+                                   const struct geist_decknet_frame *ref);
+
+/* @stability EXPERIMENTAL
+ * One forward pass on `frame` against the reference; returns when it is
+ * done. Only the pixels the network samples are read, in the frame's own
+ * format. The result is that of geist_decknet_run on the same two images:
+ * bit for bit for RGB8, and for NV12 and YUYV bit for bit that of the frame
+ * converted to RGB8 by the formula in docs/DECKNET.md.
+ *
+ * GEIST_E_INVALID_ARG, with nothing read and the last result kept, for a
+ * null argument, an unknown format, a width or height that is not the
+ * model's (or is odd where the format needs it even), a stride shorter than
+ * a row, or n_bytes smaller than the frame's last row ends.
+ * GEIST_E_INVALID_STATE before a reference is set and after the handle's
+ * homographies were replaced. Never call one stream from two threads at
+ * once. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_push_frame(struct geist_decknet_stream      *s,
+                                const struct geist_decknet_frame *frame);
+
+/* @stability EXPERIMENTAL — the result of the last pushed frame.
+ * GEIST_E_INVALID_STATE, with *out zero, before the first. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_result(const struct geist_decknet_stream  *s,
+                            struct geist_decknet_stream_result *out);
+
+/* @stability EXPERIMENTAL — the units of slot `slot` from the last pushed
+ * frame; statuses and lifetime as geist_decknet_slot. */
+[[nodiscard]] enum geist_status geist_decknet_stream_slot(const struct geist_decknet_stream *s,
+                                                          size_t                             slot,
+                                                          struct geist_decknet_slot         *out);
 
 #ifdef __cplusplus
 }

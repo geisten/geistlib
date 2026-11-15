@@ -74,13 +74,18 @@ test-decision:
 # and proves the way back: no decknet symbol is left in the archive.
 .PHONY: test-decknet
 DECKNET_TESTS := $(BIN_DIR)/tests/test_decknet_unit $(BIN_DIR)/tests/test_decknet_malformed_unit \
-                 $(BIN_DIR)/tests/fuzz_decknet
+                 $(BIN_DIR)/tests/test_decknet_stream_unit \
+                 $(BIN_DIR)/tests/fuzz_decknet $(BIN_DIR)/tests/fuzz_decknet_stream
+# The stream bench (#533) is built here so that it cannot rot; it is not run.
+DECKNET_BINS  := $(DECKNET_TESTS) $(BIN_DIR)/tools/bench_stream
 test-decknet:
-	@$(MAKE) DECKNET=1 $(DECKNET_TESTS)
+	@$(MAKE) DECKNET=1 $(DECKNET_BINS)
 	@$(BIN_DIR)/tests/test_decknet_unit
 	@$(BIN_DIR)/tests/test_decknet_malformed_unit
+	@$(BIN_DIR)/tests/test_decknet_stream_unit
 	@$(BIN_DIR)/tests/fuzz_decknet $(FUZZ_RUNS)
-	@rm -f $(DECKNET_TESTS)  # mk/run-tests.sh runs whatever test binary it finds
+	@$(BIN_DIR)/tests/fuzz_decknet_stream $(FUZZ_RUNS)
+	@rm -f $(DECKNET_BINS)  # mk/run-tests.sh runs whatever test binary it finds
 	@$(MAKE) DECKNET=0 lib
 	@if nm $(LIB_FILE) 2>/dev/null | grep -q decknet; then \
 	    echo "test-decknet: a DECKNET=0 library still has decknet symbols"; exit 1; \
@@ -239,9 +244,10 @@ FUZZ_RUNS    ?= 3000
 FUZZ_SECONDS ?= 30
 FUZZ_CC      ?= clang
 FUZZ_TARGETS := gguf tokenizer
-# The decknet loader and forward pass (#532), where the arch is built.
+# The decknet loader and forward pass (#532) and the frame geometry of its
+# stream (#533), where the arch is built.
 ifeq ($(DECKNET),1)
-FUZZ_TARGETS += decknet
+FUZZ_TARGETS += decknet decknet_stream
 endif
 FUZZ_BINS    := $(addprefix $(TEST_BIN_DIR)/fuzz_,$(FUZZ_TARGETS))
 

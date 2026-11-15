@@ -341,6 +341,14 @@ model or the network, because the input *is* the format:
   array indices as F32; one the loader let through would show as a bad read
   in the pass. The deterministic driver fails when fewer than 50 of its
   inputs get as far as the pass.
+- `fuzz_decknet_stream.c` (`DECKNET=1` only, #533) →
+  `geist_decknet_stream_push_frame` and `_set_reference` with a frame
+  description out of the input (format, width, height, stride, extent) on a
+  buffer of exactly that extent, optionally with homographies out of the
+  input. The harness computes for itself whether the description fits the
+  buffer and aborts on a wrong verdict in either direction; the deterministic
+  driver fails when fewer than 100 frames are accepted or fewer than 100
+  refused.
 
 All are entry points for libFuzzer *and* carry a deterministic PRNG driver
 behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
