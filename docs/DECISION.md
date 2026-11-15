@@ -116,8 +116,10 @@ for the next call to restore again.
 - **Bit-identity.** Restore + suffix equals a fresh session that prefills the
   prefix and then the suffix, bit for bit, on CPU NEON, scalar and Metal
   (`tests/test_decision_prefix_unit.c`, `tests/test_decision_prefix_int.c`).
-  With `n_prefix` a multiple of the chunk it also equals scoring the joined
-  prompt in one call. Off the boundary the joined prompt splits into other
+  With `n_prefix` a multiple of the chunk and a suffix of two tokens or more
+  it also equals scoring the joined prompt in one call (a prefill never ends
+  in a chunk of one row, #554: the joined prompt of a one-token suffix ends
+  in chunks of chunk - 1 and 2 rows). Off the boundary the joined prompt splits into other
   prefill passes; on the test fixtures the candidate logits then differ by at
   most 8.5e-7 (recorded, not asserted).
 

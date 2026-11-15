@@ -998,7 +998,8 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
 /* Offload (#78): the rows of the next prefill chunk at q_position, n rows
  * left: up to the session's m_max when the chunk runs on the twins, else
  * at most what the load backend's kernels take per call. Without offload:
- * min(n, m_max). */
+ * min(n, m_max). One row less when exactly one row would be left after it
+ * (#554): a chunk of one row runs as a decode step, on other kernels. */
 [[nodiscard]] size_t
 transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_position, size_t n);
 

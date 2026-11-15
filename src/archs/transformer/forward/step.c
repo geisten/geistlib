@@ -391,12 +391,23 @@ offload_takes(const struct transformer_arch_session *sess, size_t q_position, si
 size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
                                  size_t                                 q_position,
                                  size_t                                 n) {
-    const size_t m = n < sess->m_max ? n : sess->m_max;
-    if (offload_takes(sess, q_position, m)) {
-        return m;
+    size_t     m    = n < sess->m_max ? n : sess->m_max;
+    const bool twin = offload_takes(sess, q_position, m);
+    if (!twin) {
+        const size_t cap = load_m_cap(sess->model);
+        m                = m < cap ? m : cap;
     }
-    const size_t cap = load_m_cap(sess->model);
-    return m < cap ? m : cap;
+    /* Never leave one row for the next chunk (#554): seq == 1 is a decode
+     * step, on the M=1 kernels and fusions, which sum in another order than
+     * a chunk's M>1 GEMMs, so that token's bits, and the logits, would
+     * depend on where the chunk boundary falls. The last two chunks are
+     * (m - 1) + 2 rows instead, still ceil(n / m) chunks. Not for m < 3
+     * (2 + 1 has no other split), and not when the smaller chunk would
+     * leave the twins. A call of one token stays the decode step it is. */
+    if (n - m == 1 && m > 2 && (!twin || offload_takes(sess, q_position, m - 1))) {
+        m--;
+    }
+    return m;
 }
 
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,

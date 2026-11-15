@@ -123,7 +123,9 @@ const char *geist_decision_errmsg(const struct geist_decision *d);
  * Bit-identity: restore + suffix gives the logits a fresh session gives for
  * prefill(prefix) followed by prefill(suffix). A single prefill of the
  * joined prompt splits into the same passes only when the prefix length is
- * a multiple of geist_decision_prefill_chunk.
+ * a multiple of geist_decision_prefill_chunk and the suffix has two tokens
+ * or more: a prefill never ends in a pass of one token (#554), so the
+ * joined prompt of a one-token suffix ends in passes of chunk - 1 and 2.
  *
  * Builds without DECISION_CONTEXT=1 keep these symbols: they return
  * GEIST_E_UNSUPPORTED (or false / nothing) and clear their outputs. */
