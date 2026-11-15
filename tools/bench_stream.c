@@ -1,0 +1,738 @@
+/*
+ * tools/bench_stream.c — decknet on a camera stream against the still-image
+ * path called once per frame (#533).
+ *
+ * Needs no camera, no file and no model: the frames come from memory (a
+ * static scene with a block moving over it) and the network is invented
+ * here, in the shape of a deck check (six slots, 31 homographies, a
+ * 256 x 192 crop, a 12 x 8 raster of units with disc and ring pooling, 9 x 9
+ * and 13 x 13 kernels, two region pools over most of the floor crop). It
+ * describes no device. How much of a crop a network reads decides what the
+ * region of interest saves, so the numbers are this network's; the line
+ * "samples per frame" says what it is.
+ *
+ * Two ways through the same frames, for each size and format:
+ *
+ *   still   geist_decknet_run per frame. It takes RGB8, so an NV12 or YUYV
+ *           frame is first converted whole (the formula of docs/DECKNET.md);
+ *           the empty deck is converted once, outside the timing.
+ *   stream  geist_decknet_stream_push_frame on the frame as it is.
+ *
+ * Reported per row: frames per second, and the median and 99th percentile
+ * of the time one frame takes. Single thread. Every output of every frame is
+ * hashed, and the two ways must give the same hash: the bench fails if the
+ * stream is not bit-identical to the still path.
+ *
+ * Run it under the host lock like every timing (CONTRIBUTING.md):
+ *   make DECKNET=1 bin/<target>/release/tools/bench_stream
+ *   bench_stream [--frames N] [--only still|stream]
+ */
+#define _POSIX_C_SOURCE 200809L
+#include <geist.h>
+#include <geist_decknet.h>
+
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+constexpr size_t N_SLOTS  = 6;
+constexpr size_t CROP_W   = 256;
+constexpr size_t CROP_H   = 192;
+constexpr size_t BG_W     = 32;
+constexpr size_t BG_H     = 160;
+constexpr size_t RASTER_W = 12;
+constexpr size_t RASTER_H = 8;
+constexpr size_t N_TUBES  = 8;
+constexpr size_t RING     = 8; /* distinct frames, pushed round robin */
+constexpr size_t WARMUP   = 20;
+
+[[noreturn]] static void die(const char *what) {
+    fprintf(stderr, "bench_stream: %s\n", what);
+    exit(1);
+}
+
+static void *must_alloc(size_t n) {
+    void *p = malloc(n);
+    if (p == nullptr) {
+        die("out of memory");
+    }
+    return p;
+}
+
+/* ---- the invented network, as a GGUF in memory ------------------------- */
+
+struct buf {
+    uint8_t *b;
+    size_t   n, cap;
+};
+
+static void put(struct buf *o, const void *p, size_t n) {
+    if (o->n + n > o->cap) {
+        o->cap = (o->n + n) * 2;
+        o->b   = realloc(o->b, o->cap);
+        if (o->b == nullptr) {
+            die("out of memory");
+        }
+    }
+    memcpy(o->b + o->n, p, n);
+    o->n += n;
+}
+static void put_u32(struct buf *o, uint32_t v) {
+    put(o, &v, 4);
+}
+static void put_u64(struct buf *o, uint64_t v) {
+    put(o, &v, 8);
+}
+static void put_str(struct buf *o, const char *s) {
+    put_u64(o, strlen(s));
+    put(o, s, strlen(s));
+}
+static void put_pad(struct buf *o) {
+    while (o->n % 32 != 0) {
+        put(o, "", 1);
+    }
+}
+
+struct tensor {
+    const char *name;
+    uint32_t    n_dims;
+    uint64_t    dims[3]; /* GGUF order: innermost first */
+    struct buf  v;       /* F32 */
+};
+
+static void push_f32(struct tensor *t, float v) {
+    put(&t->v, &v, 4);
+}
+
+/* Pooling rows for the crop pixels within [r_lo, r_hi) of (cx, cy), in
+ * ascending pixel order, equal weights that sum to 1. */
+static void
+pool_ring(struct tensor *t, size_t unit, double cx, double cy, double r_lo, double r_hi) {
+    size_t n = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t y = 0; y < CROP_H; y++) {
+            for (size_t x = 0; x < CROP_W; x++) {
+                const double r = hypot((double) x - cx, (double) y - cy);
+                if (r < r_lo || r >= r_hi) {
+                    continue;
+                }
+                if (pass == 0) {
+                    n++;
+                } else {
+                    push_f32(t, (float) unit);
+                    push_f32(t, (float) (y * CROP_W + x));
+                    push_f32(t, 1.0f / (float) n);
+                }
+            }
+        }
+    }
+    t->dims[1] += n;
+}
+
+/* One unit over the rectangle [x0, x1) x [y0, y1). */
+static void pool_rect(struct tensor *t, size_t x0, size_t y0, size_t x1, size_t y1) {
+    const size_t n = (x1 - x0) * (y1 - y0);
+    for (size_t y = y0; y < y1; y++) {
+        for (size_t x = x0; x < x1; x++) {
+            push_f32(t, 0.0f);
+            push_f32(t, (float) (y * CROP_W + x));
+            push_f32(t, 1.0f / (float) n);
+        }
+    }
+    t->dims[1] = n;
+}
+
+/* A point-symmetric side x side kernel with sum 0: +1 inside r_in, a
+ * negative rim that balances it. */
+static void kernel(struct tensor *t, size_t side, double r_in) {
+    const double mid   = (double) (side / 2);
+    size_t       n_in  = 0;
+    size_t       n_out = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t a = 0; a < side; a++) {
+            for (size_t b = 0; b < side; b++) {
+                const bool in = hypot((double) a - mid, (double) b - mid) <= r_in;
+                if (pass == 0) {
+                    n_in += in;
+                    n_out += !in;
+                } else {
+                    push_f32(t, in ? 1.0f / (float) n_in : -1.0f / (float) n_out);
+                }
+            }
+        }
+    }
+    t->dims[0] = t->dims[1] = side;
+}
+
+/* The file for an img_w x img_h camera image. The crops are a fixed number
+ * of pixels; the homographies spread them over whatever the image is. */
+static struct buf network(size_t img_w, size_t img_h) {
+    const double w = (double) img_w, h = (double) img_h;
+    enum {
+        T_H,
+        T_PLANES,
+        T_NOMINAL,
+        T_BLOB,
+        T_TUBE,
+        T_CHANGE,
+        T_WALL,
+        T_ON,
+        T_OFF,
+        T_PTUBE,
+        T_PWALL,
+        T_FRONT,
+        T_REAR,
+        N_T
+    };
+    struct tensor t[N_T] = {
+            [T_H]       = {"decknet.homography", 3, {3, 3, 1 + 5 * N_SLOTS}, {0}},
+            [T_PLANES]  = {"decknet.planes_mm", 1, {5}, {0}},
+            [T_NOMINAL] = {"decknet.bg_nominal", 1, {3}, {0}},
+            [T_BLOB]    = {"decknet.conv.blob", 2, {0}, {0}},
+            [T_TUBE]    = {"decknet.conv.tube", 2, {0}, {0}},
+            [T_CHANGE]  = {"decknet.change.w", 2, {6, 4}, {0}},
+            [T_WALL]    = {"decknet.wall.w", 2, {6, 3}, {0}},
+            [T_ON]      = {"decknet.pool.on", 2, {3, 0}, {0}},
+            [T_OFF]     = {"decknet.pool.off", 2, {3, 0}, {0}},
+            [T_PTUBE]   = {"decknet.pool.tube", 2, {3, 0}, {0}},
+            [T_PWALL]   = {"decknet.pool.wall", 2, {3, 0}, {0}},
+            [T_FRONT]   = {"decknet.pool.occ_front", 2, {3, 0}, {0}},
+            [T_REAR]    = {"decknet.pool.occ_rear", 2, {3, 0}, {0}},
+    };
+
+    /* [0]: the worktable strip, down the left edge. Then per slot (three
+     * columns, two rows) five planes, each a little off the one below, with
+     * some shear and perspective so that no sample falls on a pixel centre. */
+    const double strip[9] = {h / 720.0, 0.0, 0.015 * w, 0.0, h / 720.0, 0.2 * h, 0.0, 0.0, 1.0};
+    for (size_t i = 0; i < 9; i++) {
+        push_f32(&t[T_H], (float) strip[i]);
+    }
+    for (size_t s = 0; s < N_SLOTS; s++) {
+        const double col = (double) (s % 3), row = (double) (s / 3);
+        for (size_t p = 0; p < 5; p++) {
+            const double grow = 1.0 + 0.012 * (double) p;
+            const double m[9] = {
+                    grow * 0.27 * w / (double) CROP_W,
+                    0.013 * (col - 1.0),
+                    (0.10 + 0.295 * col) * w - 0.004 * w * (double) p,
+                    0.011 * (row - 0.5),
+                    grow * 0.42 * h / (double) CROP_H,
+                    (0.04 + 0.48 * row) * h - 0.006 * h * (double) p,
+                    2.0e-5 * (col - 1.0),
+                    3.0e-5 * (0.5 - row),
+                    1.0,
+            };
+            for (size_t i = 0; i < 9; i++) {
+                push_f32(&t[T_H], (float) m[i]);
+            }
+        }
+    }
+    const float planes[5] = {0.0f, 10.0f, 20.0f, 30.0f, 40.0f};
+    put(&t[T_PLANES].v, planes, sizeof planes);
+    const float nominal[3] = {0.5f, 0.5f, 0.5f};
+    put(&t[T_NOMINAL].v, nominal, sizeof nominal);
+    kernel(&t[T_BLOB], 9, 2.0);
+    kernel(&t[T_TUBE], 13, 3.0);
+    const float change[24] = {0.9f,  1.1f,    0.7f,   -0.9f, -1.1f, -0.7f,  -0.9f,  -1.1f,
+                              -0.7f, 0.9f,    1.1f,   0.7f,  0.02f, -0.01f, 0.015f, -0.02f,
+                              0.01f, -0.015f, -0.01f, 0.02f, 0.01f, 0.01f,  -0.02f, -0.01f};
+    put(&t[T_CHANGE].v, change, sizeof change);
+    const float wall[18] = {-1.0f,
+                            0.2f,
+                            0.8f,
+                            0.5f,
+                            -0.1f,
+                            -0.4f,
+                            0.3f,
+                            -1.0f,
+                            0.7f,
+                            -0.2f,
+                            0.5f,
+                            -0.3f,
+                            0.6f,
+                            0.4f,
+                            -1.0f,
+                            -0.3f,
+                            -0.2f,
+                            0.5f};
+    put(&t[T_WALL].v, wall, sizeof wall);
+
+    for (size_t u = 0; u < RASTER_W * RASTER_H; u++) {
+        const double cx = ((double) (u % RASTER_W) + 0.5) * (double) CROP_W / (double) RASTER_W;
+        const double cy = ((double) (u / RASTER_W) + 0.5) * (double) CROP_H / (double) RASTER_H;
+        pool_ring(&t[T_ON], u, cx, cy, 0.0, 2.1);
+        pool_ring(&t[T_OFF], u, cx, cy, 3.6, 4.5);
+    }
+    for (size_t u = 0; u < 2 * N_TUBES; u++) {
+        const double along = ((double) (u % N_TUBES) + 0.5) * (double) CROP_W / (double) N_TUBES;
+        const double cx    = u < N_TUBES ? along : (double) CROP_W - along + 5.0;
+        pool_ring(&t[T_PTUBE], u, cx, u < N_TUBES ? 70.0 : 122.0, 0.0, 3.1);
+    }
+    pool_rect(&t[T_PWALL], 0, 4, CROP_W, 10);
+    pool_rect(&t[T_FRONT], 16, 100, 240, 180);
+    pool_rect(&t[T_REAR], 16, 12, 240, 92);
+
+    const struct {
+        const char *key;
+        float       v;
+    } scalars[] = {
+            {"decknet.t_change", 0.2f},
+            {"decknet.g_change", 3.0f},
+            {"decknet.t_wall", 0.3f},
+            {"decknet.g_wall", 4.0f},
+            {"decknet.t_tip", 0.02f},
+            {"decknet.t_dark", 0.02f},
+            {"decknet.t_tube", 0.02f},
+            {"decknet.g_unit", 8.0f},
+            {"decknet.t_white", 0.3f},
+            {"decknet.g_white", 6.0f},
+            {"decknet.gain_min", 0.7f},
+            {"decknet.gain_max", 1.4f},
+            {"decknet.bg_rest_max", 0.05f},
+            {"decknet.occ", 0.4f},
+            {"decknet.smooth", 0.45f},
+    };
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } sizes[] = {
+            {"decknet.image.width", (uint32_t) img_w},
+            {"decknet.image.height", (uint32_t) img_h},
+            {"decknet.crop.width", (uint32_t) CROP_W},
+            {"decknet.crop.height", (uint32_t) CROP_H},
+            {"decknet.bg.width", (uint32_t) BG_W},
+            {"decknet.bg.height", (uint32_t) BG_H},
+    };
+    constexpr size_t n_scalars = sizeof scalars / sizeof scalars[0];
+    constexpr size_t n_sizes   = sizeof sizes / sizeof sizes[0];
+
+    struct buf o = {0};
+    put(&o, "GGUF", 4);
+    put_u32(&o, 3);
+    put_u64(&o, N_T);
+    put_u64(&o, 2 + n_sizes + n_scalars);
+    put_str(&o, "general.architecture");
+    put_u32(&o, 8);
+    put_str(&o, "decknet");
+    put_str(&o, "decknet.slots");
+    put_u32(&o, 8);
+    put_str(&o, "ABCDEF");
+    for (size_t i = 0; i < n_sizes; i++) {
+        put_str(&o, sizes[i].key);
+        put_u32(&o, 4);
+        put_u32(&o, sizes[i].v);
+    }
+    for (size_t i = 0; i < n_scalars; i++) {
+        put_str(&o, scalars[i].key);
+        put_u32(&o, 6);
+        put(&o, &scalars[i].v, 4);
+    }
+    uint64_t offset = 0;
+    for (size_t i = 0; i < N_T; i++) {
+        put_str(&o, t[i].name);
+        put_u32(&o, t[i].n_dims);
+        for (uint32_t k = 0; k < t[i].n_dims; k++) {
+            put_u64(&o, t[i].dims[k]);
+        }
+        put_u32(&o, 0); /* F32 */
+        put_u64(&o, offset);
+        offset += (t[i].v.n + 31) / 32 * 32;
+    }
+    put_pad(&o);
+    for (size_t i = 0; i < N_T; i++) {
+        put(&o, t[i].v.b, t[i].v.n);
+        put_pad(&o);
+        free(t[i].v.b);
+    }
+    return o;
+}
+
+/* ---- frames ----------------------------------------------------------- */
+
+static uint8_t byte_of(double v) {
+    return v < 0.0 ? 0 : (v > 255.0 ? 255 : (uint8_t) v);
+}
+
+/* The static scene, RGB8 without padding: a gradient, dots on a grid and
+ * noise, around mid grey so that the brightness check passes. */
+static void scene(size_t w, size_t h, uint8_t *rgb) {
+    uint32_t lcg = 533;
+    for (size_t y = 0; y < h; y++) {
+        for (size_t x = 0; x < w; x++) {
+            lcg                = lcg * 1664525u + 1013904223u;
+            const double noise = (double) (lcg >> 24) / 255.0 * 24.0 - 12.0;
+            const bool   dot   = (x / 6 + y / 6) % 5 == 0 && x % 6 < 4 && y % 6 < 4;
+            const double base =
+                    128.0 + 30.0 * (double) x / (double) w - 20.0 * (double) y / (double) h;
+            uint8_t *p = rgb + (y * w + x) * 3;
+            p[0]       = byte_of(base + noise + (dot ? 70.0 : 0.0));
+            p[1]       = byte_of(base - noise * 0.5 + (dot ? -60.0 : 0.0));
+            p[2]       = byte_of(base + noise * 0.25 + (dot ? 40.0 : -6.0));
+        }
+    }
+}
+
+/* Frame k of the ring: the scene with a checkered block somewhere on the
+ * slots, never on the worktable strip. */
+static void moving(size_t w, size_t h, size_t k, const uint8_t *still, uint8_t *rgb) {
+    memcpy(rgb, still, w * h * 3);
+    const size_t side = h / 6;
+    const size_t x0   = w / 8 + k * (w - w / 8 - side) / RING;
+    const size_t y0   = h / 10 + k * (h - h / 10 - side) / RING;
+    for (size_t y = y0; y < y0 + side; y++) {
+        for (size_t x = x0; x < x0 + side; x++) {
+            const uint8_t v = ((x - x0) / 8 + (y - y0) / 8) % 2 == 0 ? 235 : 20;
+            uint8_t      *p = rgb + (y * w + x) * 3;
+            p[0]            = v;
+            p[1]            = (uint8_t) (255 - v);
+            p[2]            = v;
+        }
+    }
+}
+
+static void rgb_yuv(const uint8_t *p, uint8_t yuv[static 3]) {
+    const double r = p[0], g = p[1], b = p[2];
+    yuv[0] = byte_of(16.5 + 0.257 * r + 0.504 * g + 0.098 * b);
+    yuv[1] = byte_of(128.5 - 0.148 * r - 0.291 * g + 0.439 * b);
+    yuv[2] = byte_of(128.5 + 0.439 * r - 0.368 * g - 0.291 * b);
+}
+
+/* The bytes a w x h frame of `format` takes with rows of `stride`. */
+static size_t frame_bytes(enum geist_decknet_format format, size_t h, size_t stride) {
+    return format == GEIST_DECKNET_FORMAT_NV12 ? stride * (h + h / 2) : stride * h;
+}
+
+/* An RGB8 image as a camera would deliver it in `format`: the chroma of a
+ * block is that of its first pixel. */
+static void to_format(enum geist_decknet_format format,
+                      size_t                    w,
+                      size_t                    h,
+                      size_t                    stride,
+                      const uint8_t            *rgb,
+                      uint8_t                  *out) {
+    memset(out, 0, frame_bytes(format, h, stride));
+    for (size_t y = 0; y < h; y++) {
+        for (size_t x = 0; x < w; x++) {
+            const uint8_t *p = rgb + (y * w + x) * 3;
+            uint8_t        yuv[3];
+            rgb_yuv(p, yuv);
+            switch (format) {
+            case GEIST_DECKNET_FORMAT_RGB8:
+                memcpy(out + y * stride + x * 3, p, 3);
+                break;
+            case GEIST_DECKNET_FORMAT_NV12:
+                out[y * stride + x] = yuv[0];
+                if (x % 2 == 0 && y % 2 == 0) {
+                    out[(h + y / 2) * stride + x]     = yuv[1];
+                    out[(h + y / 2) * stride + x + 1] = yuv[2];
+                }
+                break;
+            case GEIST_DECKNET_FORMAT_YUYV:
+                out[y * stride + x * 2] = yuv[0];
+                if (x % 2 == 0) {
+                    out[y * stride + x * 2 + 1] = yuv[1];
+                    out[y * stride + x * 2 + 3] = yuv[2];
+                }
+                break;
+            }
+        }
+    }
+}
+
+static uint8_t clip8(int32_t v) {
+    return v < 0 ? 0 : (v > 255 * 256 ? 255 : (uint8_t) (v / 256));
+}
+
+/* What the still path needs first: the whole frame as RGB8 without padding,
+ * by the formula of docs/DECKNET.md. */
+static void to_rgb8(enum geist_decknet_format format,
+                    size_t                    w,
+                    size_t                    h,
+                    size_t                    stride,
+                    const uint8_t            *in,
+                    uint8_t                  *rgb) {
+    for (size_t y = 0; y < h; y++) {
+        const uint8_t *row = in + y * stride;
+        const uint8_t *uv  = in + (h + y / 2) * stride; /* NV12 */
+        uint8_t       *o   = rgb + y * w * 3;
+        for (size_t x = 0; x < w; x++, o += 3) {
+            const size_t even = x & ~(size_t) 1;
+            int32_t      luma, u, v;
+            if (format == GEIST_DECKNET_FORMAT_NV12) {
+                luma = row[x];
+                u    = uv[even];
+                v    = uv[even + 1];
+            } else {
+                luma = row[x * 2];
+                u    = row[even * 2 + 1];
+                v    = row[even * 2 + 3];
+            }
+            const int32_t c = 298 * (luma - 16) + 128;
+            o[0]            = clip8(c + 409 * (v - 128));
+            o[1]            = clip8(c - 100 * (u - 128) - 208 * (v - 128));
+            o[2]            = clip8(c + 516 * (u - 128));
+        }
+    }
+}
+
+/* ---- measuring -------------------------------------------------------- */
+
+static double now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double) ts.tv_sec * 1e3 + (double) ts.tv_nsec * 1e-6;
+}
+
+static int by_value(const void *a, const void *b) {
+    const double x = *(const double *) a, y = *(const double *) b;
+    return (x > y) - (x < y);
+}
+
+/* FNV-1a over the bits of every output of the last pass. */
+static uint64_t hash_bytes(uint64_t hash, size_t n, const void *p) {
+    const uint8_t *b = p;
+    for (size_t i = 0; i < n; i++) {
+        hash = (hash ^ b[i]) * 0x100000001B3ull;
+    }
+    return hash;
+}
+static uint64_t hash_outputs(uint64_t                           hash,
+                             const struct geist_decknet_info   *info,
+                             const struct geist_decknet_result *res,
+                             const struct geist_decknet        *d,
+                             const struct geist_decknet_stream *s) {
+    if (!res->checkable) {
+        die("the bench frames are not checkable: no slot was evaluated");
+    }
+    hash = hash_bytes(hash, sizeof res->gain, res->gain);
+    hash = hash_bytes(hash, sizeof res->bg_changed, &res->bg_changed);
+    for (size_t i = 0; i < info->n_slots; i++) {
+        struct geist_decknet_slot slot;
+        const enum geist_status   st = s != nullptr ? geist_decknet_stream_slot(s, i, &slot)
+                                                    : geist_decknet_slot(d, i, &slot);
+        if (st != GEIST_OK) {
+            die("a slot could not be read");
+        }
+        const float scalars[8] = {slot.occ_front,
+                                  slot.occ_rear,
+                                  slot.wall_front,
+                                  slot.rack,
+                                  slot.plate,
+                                  slot.deep,
+                                  slot.tube_n,
+                                  slot.tube_r};
+        hash                   = hash_bytes(hash, sizeof scalars, scalars);
+        hash                   = hash_bytes(hash, info->n_tips * sizeof(float), slot.tips);
+        hash                   = hash_bytes(hash, info->n_tubes * sizeof(float), slot.tubes);
+        hash                   = hash_bytes(hash, info->n_tubes * sizeof(float), slot.tubes_rot);
+    }
+    return hash;
+}
+
+struct timing {
+    double   fps, p50, p99;
+    uint64_t hash;
+};
+
+static void report(const char    *way,
+                   size_t         w,
+                   size_t         h,
+                   const char    *format,
+                   size_t         n,
+                   double        *ms,
+                   struct timing *t) {
+    double total = 0.0;
+    for (size_t i = 0; i < n; i++) {
+        total += ms[i];
+    }
+    qsort(ms, n, sizeof ms[0], by_value);
+    t->fps = (double) n * 1e3 / total;
+    t->p50 = ms[n / 2];
+    t->p99 = ms[n * 99 / 100];
+    printf("%4zux%-4zu  %-4s  %-6s  %8.1f frames/s   p50 %7.3f ms   p99 %7.3f ms\n",
+           w,
+           h,
+           format,
+           way,
+           t->fps,
+           t->p50,
+           t->p99);
+    fflush(stdout);
+}
+
+static const char *const format_names[3] = {"rgb8", "nv12", "yuyv"};
+
+/* One size and format, both ways. False when the two disagree. */
+static bool
+measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, const char *only) {
+    struct buf            file = network(w, h);
+    struct geist_decknet *d    = nullptr;
+    if (geist_decknet_load_from_memory(file.n, file.b, &d) != GEIST_OK) {
+        die(geist_last_create_error());
+    }
+    free(file.b);
+    struct geist_decknet_info info;
+    if (geist_decknet_info(d, &info) != GEIST_OK) {
+        die("geist_decknet_info");
+    }
+
+    /* Rows padded to 64 bytes, as capture buffers are. */
+    const size_t row    = format == GEIST_DECKNET_FORMAT_RGB8   ? w * 3
+                          : format == GEIST_DECKNET_FORMAT_NV12 ? w
+                                                                : w * 2;
+    const size_t stride = (row + 63) / 64 * 64;
+    const size_t n_cam  = frame_bytes(format, h, stride);
+    const size_t n_rgb  = w * h * 3;
+    uint8_t     *still  = must_alloc(n_rgb);
+    uint8_t     *tmp    = must_alloc(n_rgb);
+    uint8_t     *ref    = must_alloc(n_cam);
+    uint8_t     *ref8   = must_alloc(n_rgb); /* the empty deck as the still path takes it */
+    uint8_t     *cur8   = must_alloc(n_rgb);
+    uint8_t     *ring[RING];
+    scene(w, h, still);
+    to_format(format, w, h, stride, still, ref);
+    for (size_t k = 0; k < RING; k++) {
+        ring[k] = must_alloc(n_cam);
+        moving(w, h, k, still, tmp);
+        to_format(format, w, h, stride, tmp, ring[k]);
+    }
+    if (format == GEIST_DECKNET_FORMAT_RGB8) {
+        memcpy(ref8, still, n_rgb);
+    } else {
+        to_rgb8(format, w, h, stride, ref, ref8);
+    }
+
+    double       *ms      = must_alloc(n_frames * sizeof(double));
+    struct timing t_still = {0}, t_stream = {0};
+    const char   *name = format_names[format];
+
+    if (only == nullptr || strcmp(only, "still") == 0) {
+        for (size_t i = 0; i < WARMUP + n_frames; i++) {
+            const uint8_t              *cam = ring[i % RING];
+            struct geist_decknet_result res;
+            const double                t0 = now_ms();
+            const uint8_t              *in = cam;
+            if (format != GEIST_DECKNET_FORMAT_RGB8) {
+                to_rgb8(format, w, h, stride, cam, cur8);
+                in = cur8;
+            } else if (stride != w * 3) {
+                for (size_t y = 0; y < h; y++) { /* the still path takes no padding */
+                    memcpy(cur8 + y * w * 3, cam + y * stride, w * 3);
+                }
+                in = cur8;
+            }
+            if (geist_decknet_run(d, n_rgb, in, ref8, &res) != GEIST_OK) {
+                die("geist_decknet_run");
+            }
+            const double t1 = now_ms();
+            if (i >= WARMUP) {
+                ms[i - WARMUP] = t1 - t0;
+                t_still.hash   = hash_outputs(t_still.hash, &info, &res, d, nullptr);
+            }
+        }
+        report("still", w, h, name, n_frames, ms, &t_still);
+    }
+    if (only == nullptr || strcmp(only, "stream") == 0) {
+        struct geist_decknet_stream *s = nullptr;
+        if (geist_decknet_stream_create(d, &s) != GEIST_OK) {
+            die("geist_decknet_stream_create");
+        }
+        struct geist_decknet_frame f = {.format  = format,
+                                        .width   = w,
+                                        .height  = h,
+                                        .stride  = stride,
+                                        .n_bytes = n_cam,
+                                        .data    = ref};
+        if (geist_decknet_stream_set_reference(s, &f) != GEIST_OK) {
+            die("geist_decknet_stream_set_reference");
+        }
+        for (size_t i = 0; i < WARMUP + n_frames; i++) {
+            f.data          = ring[i % RING];
+            f.timestamp     = i;
+            const double t0 = now_ms();
+            if (geist_decknet_stream_push_frame(s, &f) != GEIST_OK) {
+                die("geist_decknet_stream_push_frame");
+            }
+            const double t1 = now_ms();
+            if (i >= WARMUP) {
+                struct geist_decknet_stream_result res;
+                if (geist_decknet_stream_result(s, &res) != GEIST_OK || res.timestamp != i) {
+                    die("geist_decknet_stream_result");
+                }
+                ms[i - WARMUP] = t1 - t0;
+                t_stream.hash  = hash_outputs(t_stream.hash, &info, &res.image, d, s);
+            }
+        }
+        report("stream", w, h, name, n_frames, ms, &t_stream);
+        geist_decknet_stream_destroy(s);
+    }
+    bool same = true;
+    if (only == nullptr) {
+        same = t_still.hash == t_stream.hash;
+        printf("%4zux%-4zu  %-4s  stream / still %.2fx frames/s, outputs %s (hash %016llx)\n",
+               w,
+               h,
+               name,
+               t_stream.fps / t_still.fps,
+               same ? "bit-identical" : "DIFFER",
+               (unsigned long long) t_stream.hash);
+    }
+    for (size_t k = 0; k < RING; k++) {
+        free(ring[k]);
+    }
+    free(ms);
+    free(cur8);
+    free(ref8);
+    free(ref);
+    free(tmp);
+    free(still);
+    geist_decknet_destroy(d);
+    return same;
+}
+
+int main(int argc, char **argv) {
+    size_t      n_frames = 300;
+    const char *only     = nullptr;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
+            n_frames = (size_t) strtoul(argv[++i], nullptr, 10);
+        } else if (strcmp(argv[i], "--only") == 0 && i + 1 < argc &&
+                   (strcmp(argv[i + 1], "still") == 0 || strcmp(argv[i + 1], "stream") == 0)) {
+            only = argv[++i];
+        } else {
+            fprintf(stderr, "usage: bench_stream [--frames N] [--only still|stream]\n");
+            return 2;
+        }
+    }
+    if (n_frames < 1 || n_frames > 1000000) {
+        die("--frames: 1 to 1000000");
+    }
+    printf("bench_stream: invented network, %zu slots, %zu homographies, crop %zu x %zu; "
+           "%zu frames per row after %zu warm-up, one thread\n",
+           N_SLOTS,
+           1 + 5 * N_SLOTS,
+           CROP_W,
+           CROP_H,
+           n_frames,
+           WARMUP);
+    const size_t sizes[2][2] = {{1280, 720}, {1920, 1080}};
+    bool         same        = true;
+    for (size_t i = 0; i < 2; i++) {
+        for (uint32_t f = 0; f < 3; f++) {
+            same = measure(sizes[i][0],
+                           sizes[i][1],
+                           (enum geist_decknet_format) f,
+                           n_frames,
+                           only) &&
+                   same;
+        }
+    }
+    if (!same) {
+        fprintf(stderr, "bench_stream: the stream is not bit-identical to the still path\n");
+        return 1;
+    }
+    return 0;
+}

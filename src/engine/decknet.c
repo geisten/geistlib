@@ -124,6 +124,7 @@ enum geist_status geist_decknet_set_homographies(struct geist_decknet    *d,
         }
     }
     memcpy(image == GEIST_DECKNET_IMAGE_CURRENT ? d->h_cur : d->h_ref, h, n * 9 * sizeof h[0]);
+    d->h_gen++; /* a stream's tables are stale from here on */
     return GEIST_OK;
 }
 
@@ -157,4 +158,72 @@ geist_decknet_slot(const struct geist_decknet *d, size_t slot, struct geist_deck
     }
     *out = d->slot_out[slot];
     return GEIST_OK;
+}
+
+/* ---- stream (#533) ---------------------------------------------------- */
+
+enum geist_status geist_decknet_stream_create(struct geist_decknet         *d,
+                                              struct geist_decknet_stream **out) {
+    if (out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out = nullptr;
+    if (d == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_create(d, out);
+}
+
+void geist_decknet_stream_destroy(struct geist_decknet_stream *s) {
+    decknet_stream_destroy(s);
+}
+
+enum geist_status geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
+                                                     const struct geist_decknet_frame *ref) {
+    if (s == nullptr || ref == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_set_reference(s, ref);
+}
+
+enum geist_status geist_decknet_stream_push_frame(struct geist_decknet_stream      *s,
+                                                  const struct geist_decknet_frame *frame) {
+    if (s == nullptr || frame == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_push_frame(s, frame);
+}
+
+enum geist_status geist_decknet_stream_result(const struct geist_decknet_stream  *s,
+                                              struct geist_decknet_stream_result *out) {
+    if (out != nullptr) {
+        *out = (struct geist_decknet_stream_result) {0};
+    }
+    if (s == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (!s->have_result) {
+        return GEIST_E_INVALID_STATE;
+    }
+    *out = (struct geist_decknet_stream_result) {
+            .image     = s->d->result,
+            .timestamp = s->timestamp,
+            .n_frames  = s->n_frames,
+    };
+    return GEIST_OK;
+}
+
+enum geist_status geist_decknet_stream_slot(const struct geist_decknet_stream *s,
+                                            size_t                             slot,
+                                            struct geist_decknet_slot         *out) {
+    if (out != nullptr) {
+        *out = (struct geist_decknet_slot) {0};
+    }
+    if (s == nullptr || out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (!s->have_result) {
+        return GEIST_E_INVALID_STATE;
+    }
+    return geist_decknet_slot(s->d, slot, out);
 }
