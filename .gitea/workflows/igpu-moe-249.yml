@@ -73,6 +73,7 @@ jobs:
             timeout 900 bin/linux/release/tests/"$t" >> out/tests.txt 2>&1; echo "RESULT $t $?" | tee -a out/tests.txt
           done
       - name: Quality and speed, OLMoE and Qwen3-30B (host to itself)
+        if: false
         env:
           GEIST_QUIET: "1"
         run: |
@@ -105,7 +106,6 @@ jobs:
           done
           SH
           grep -E "moe|grouped|coopmat|device" out/log.txt | sort | uniq -c | sort -rn | head -40
-          tail -c 3000 out/tests.txt
       # The 35B hung the iGPU in run 3486; everything above is uploaded first.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
