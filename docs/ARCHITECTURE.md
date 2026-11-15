@@ -17,6 +17,8 @@ src/archs/               architectures: how a model's forward pass is wired
   │                        forward/ (shared blocks, layer loop), weight_load/
   │   audio_conformer/     Conformer audio tower (mel → encoder → soft tokens)
   │   vision_siglip/       SigLIP vision tower (image/video → soft tokens)
+  │   decknet/             decknet image network (two camera images → deck state;
+  │                        DECKNET=1 only, docs/DECKNET.md)
 src/backends/            compute: the kernels that actually run the ops
       common/              shared compute library (GEMM facade, gemma4 kernels, KIVI)
       cpu_neon/            Apple Silicon + ARM64, OpenMP-parallel
@@ -83,10 +85,13 @@ shrinks.
 | transformer | `src/archs/transformer/` | base, public, quant, io, formats, sampling, backend_common | arch: the decoder stack, families, forward blocks, weight loading |
 | audio_conformer | `src/archs/audio_conformer/` | base, public, quant, io, formats, backend_common | arch: the Conformer audio tower |
 | vision_siglip | `src/archs/vision_siglip/` | base, public, quant, io, formats, backend_common, third_party | arch: the SigLIP vision tower |
+| decknet | `src/archs/decknet/` | base, public, quant, io | arch: the decknet image network, built with DECKNET=1 (#532) |
 | engine | `src/engine/` | base, public, quant, io, formats, sampling, backend_common | orchestration: model load, sessions, tokenizers, registries |
 | third_party | `third_party/` | nothing | vendored stb image headers |
 
 Composition point `src/engine/arch_registry.c` may also use transformer, audio_conformer, vision_siglip.
+
+Composition point `src/engine/decknet.c` may also use decknet.
 
 Composition point `src/engine/backend_registry.c` may also use cpu_neon, cpu_scalar, cpu_x86, metal, vulkan.
 <!-- layers:end -->
@@ -97,9 +102,11 @@ In words:
 - `src/quant/` is the quantization contract: block layouts and the codec
   declarations. `src/formats/` implements it; `src/io/` reads its block sizes.
 - `src/engine/` uses the layers below the archs. It never reaches into an arch
-  or backend implementation, with exactly **two composition points**:
+  or backend implementation, with exactly **three composition points**:
   `arch_registry.c` and `backend_registry.c`, the only files that name
-  concrete archs/backends.
+  the concrete archs/backends a model runs on, and `decknet.c`, the entry
+  points of the optional decknet arch, which is not a model and has no
+  registry entry ([DECKNET.md](DECKNET.md)).
 - `src/archs/` never uses a concrete backend (`cpu_*`, `metal`, `vulkan`).
   Ops reach compute through the backend vtbl. The one sanctioned shortcut is
   `src/backends/common/`: the shared compute library (GEMM facade, gemma4

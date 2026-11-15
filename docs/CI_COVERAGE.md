@@ -321,8 +321,8 @@ Evaluated and not adopted (#342, measured on main 13cb783e):
 
 ## Fuzzing (parsers)
 
-Two harnesses in `tests/`, ordered by attack surface — both need neither a
-model nor the network, because the input *is* the format:
+Three harnesses in `tests/`, ordered by attack surface — none needs a
+model or the network, because the input *is* the format:
 
 - `fuzz_gguf.c` → `gguf_open_memory` plus every accessor on the result
   (tensor list, dtype names, metadata getters, one index past the end) and it
@@ -334,13 +334,22 @@ model nor the network, because the input *is* the format:
   pointer becomes a use-after-free instead of a silent success. Vocab, scores,
   `token_type` and merges are all attacker-controlled arrays.
 
-Both are entry points for libFuzzer *and* carry a deterministic PRNG driver
+- `fuzz_decknet.c` (built with `DECKNET=1` only, #532) →
+  `geist_decknet_load_from_memory`, and for every file the loader accepts a
+  forward pass on two images, the slots read back, the homographies replaced
+  by bytes of the input and a second pass. The sparse pooling rows carry
+  array indices as F32; one the loader let through would show as a bad read
+  in the pass. The deterministic driver fails when fewer than 50 of its
+  inputs get as far as the pass.
+
+All are entry points for libFuzzer *and* carry a deterministic PRNG driver
 behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
 
 | Target | Job | Cost |
 | :-- | :-- | :-- |
 | `make MODE=asan fuzz` (3000 runs/harness, fixed seed) | `asan-x86_64` | < 1 s, reuses that job's sanitizer tree |
-| `make fuzz-libfuzzer FUZZ_SECONDS=30` (coverage-guided) | `build-test-x86_64-scalar-clang` | ~1 min run, ~7 M execs per target |
+| `make fuzz-libfuzzer FUZZ_SECONDS=30 DECKNET=1` (coverage-guided) | `build-test-x86_64-scalar-clang` | ~1.5 min run, ~7 M execs per parser target |
+| `make MODE=asan test-decknet` (decknet tests + 3000 fuzz runs) | `asan-x86_64`, the build-test legs | a few seconds after the DECKNET=1 objects are built |
 
 `MODE=fuzz` (asan + ubsan + `-fsanitize=fuzzer-no-link`) instruments the
 library in its own build tree. Do not substitute

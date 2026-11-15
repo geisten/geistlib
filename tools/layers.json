@@ -31,6 +31,8 @@
    "what": "arch: the Conformer audio tower"},
   {"name": "vision_siglip", "paths": ["src/archs/vision_siglip/"], "may_use": ["base", "public", "quant", "io", "formats", "backend_common", "third_party"],
    "what": "arch: the SigLIP vision tower"},
+  {"name": "decknet", "paths": ["src/archs/decknet/"], "may_use": ["base", "public", "quant", "io"],
+   "what": "arch: the decknet image network, built with DECKNET=1 (#532)"},
   {"name": "engine", "paths": ["src/engine/"], "may_use": ["base", "public", "quant", "io", "formats", "sampling", "backend_common"],
    "what": "orchestration: model load, sessions, tokenizers, registries"},
   {"name": "third_party", "paths": ["third_party/"], "may_use": [],
@@ -38,6 +40,7 @@
  ],
  "composition": {
   "src/engine/arch_registry.c": ["transformer", "audio_conformer", "vision_siglip"],
+  "src/engine/decknet.c": ["decknet"],
   "src/engine/backend_registry.c": ["cpu_neon", "cpu_scalar", "cpu_x86", "metal", "vulkan"]
  },
  "header_defines": ["GEIST_INTERNAL_ENGINE_LAYER", "GEIST_INTERNAL_ARCH_LAYER", "GEIST_INTERNAL_BACKEND_LAYER"],

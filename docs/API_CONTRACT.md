@@ -177,6 +177,20 @@ silently fall back to another execution path. Prefix scoring
 `DECISION_CONTEXT=1` as well and is EXPERIMENTAL; its architecture hook
 `prefill_geometry` is appended to the end of the decoder vtable.
 
+### Optional decknet image network (experimental)
+
+All declarations in `include/geist_decknet.h` are EXPERIMENTAL and outside
+the agent-runtime contract. The default-off `DECKNET=1` feature adds a
+second kind of model, the geistbox deck-check network (#532): a fixed
+convolutional net that takes two RGB8 camera images and returns one state
+vector per deck position, with its own load / run / read / destroy entry
+points and no tokenizer, session or backend handle. Unlike the decision API
+it leaves no stubs behind: a library built without `DECKNET=1` has none of
+the `geist_decknet_*` symbols and is byte for byte the library without the
+arch. `geist_model_load` refuses a decknet file with `GEIST_E_UNSUPPORTED`
+in either build. File contract, forward pass, statuses and calibration:
+[DECKNET.md](DECKNET.md).
+
 ## The geist-runtime contract
 
 [geist-runtime](https://github.com/geisten/geist-runtime) is the chat layer over
