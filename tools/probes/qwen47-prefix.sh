@@ -4,6 +4,11 @@ set -eu
 diag=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repo=$(git rev-parse --show-toplevel)
 out="$1"
+experiment=${2:-simd}
+case "$experiment" in
+  simd | causal) ;;
+  *) exit 2 ;;
+esac
 host=$(/usr/sbin/sysctl -n hw.model)
 if [ "$host" != "Mac18,5" ]; then
   printf '%s\n' "This probe requires the Mac mini M6." >&2
@@ -73,6 +78,23 @@ for file in default tensor-off trace; do
 done
 awk '$1 == "logits"' "$out/trace.txt" > "$out/trace-logits.txt"
 diff -u "$out/default.txt" "$out/trace-logits.txt"
+if [ "$experiment" = causal ]; then
+  mkdir -p "$out/patched-vectors"
+  replay QWEN47_TRACE=1 QWEN47_PATCH_QKV=1 QWEN47_RAW_DIR="$out/patched-vectors" > "$out/patched.txt"
+  shader="$engine/src/backends/metal/metal_shaders.h"
+  cp "$shader" "$engine/metal_shaders.template"
+  for variant in precise-rsqrt precise-exp-log; do
+    cp "$engine/metal_shaders.template" "$shader"
+    /usr/bin/python3 "$diag/qwen47-deltanet-variant.py" "$engine" "$variant"
+    build
+    mkdir -p "$out/$variant-vectors"
+    replay QWEN47_TRACE=1 QWEN47_PATCH_QKV=1 QWEN47_RAW_DIR="$out/$variant-vectors" > "$out/$variant.txt"
+  done
+  for file in default patched precise-rsqrt precise-exp-log; do
+    awk '$1 == "logits" && $2 == 0 {print FILENAME, $0}' "$out/$file.txt"
+  done
+  exit 0
+fi
 shader="$engine/src/backends/metal/metal_shaders.h"
 cp "$shader" "$engine/metal_shaders.template"
 for order in descending ascending; do
