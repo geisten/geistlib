@@ -31,6 +31,18 @@ void   q6k_gemm(size_t         M,
                 void          *scratch,
                 float         *y);
 
+/* q6k_gemm with the tiled int8 GEMM's activation quantizer and summation
+ * order (q6k_tiled_gemm_avx512_vnni): a row's output is the same bits
+ * whatever M, and the bits the tiled GEMM gives that row, which are not
+ * q6k_gemv_m1's (#527). For the rows the tiled GEMM leaves. Same scratch. */
+void q6k_gemm_tiled_order(size_t         M,
+                          size_t         N,
+                          size_t         K,
+                          const float   *x,
+                          const uint8_t *q6k_raw,
+                          void          *scratch,
+                          float         *y);
+
 /* The same two entry points over native Q3_K weights (N rows x K/256
  * block_q3_K_t), with the same contracts. */
 void   q3k_gemv_m1(size_t N, size_t K, const float *x, const uint8_t *q3k_raw, float y[static N]);
