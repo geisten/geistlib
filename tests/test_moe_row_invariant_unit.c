@@ -201,15 +201,8 @@ static int check_shape(struct geist_backend *be, const char *bname, const struct
     snprintf(what, sizeof what, "%s %s %s: kernels installed", bname, s->model, dname);
     int    fails = geist_expect(expert_call(be, &w0.w, p1, M_MAX, x, ref0, ref1), what);
     size_t bad   = 0;
-    /* cpu_neon has no native Q5_0 kernel: it dequantizes tiles for the
-     * BLAS, which routes a one-row product through its gemv, summing in
-     * another order than its gemm. A two-row sgemm gives the one row the
-     * gemm's bits, but Accelerate's small sgemm made that call 3x slower,
-     * so m = 1 is left out there until the format has a kernel of its own
-     * (#528). */
-    const size_t m_first = strcmp(bname, "cpu_neon") == 0 && s->dt == GEIST_DTYPE_Q5_0 ? 2 : 1;
     /* Each m starts at another row of x, so the rows compared differ. */
-    for (size_t m = m_first; m <= M_MAX && fails == 0; m++) {
+    for (size_t m = 1; m <= M_MAX && fails == 0; m++) {
         const size_t r0 = (m * 7) % (M_MAX - m + 1);
         geist_par_set_max_threads(m % 2 == 1 ? 1 : team);
         (void) expert_call(be, &w0.w, p1, m, x + r0 * n_in, y0, y1);
