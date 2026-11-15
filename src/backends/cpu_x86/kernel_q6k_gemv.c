@@ -479,7 +479,7 @@ static void quantize_q8k_act_tiled(size_t n_super, const float *x, struct q8k_ac
         __m256i q[4];
         blk_unpack(KF_Q6K, b, j, q);
         for (int k = 0; k < 4; k++) {
-            const __m256i q8k = _mm256_loadu_si256((const __m256i *) (q8 + 32 * k));
+            const __m256i q8k = _mm256_loadu_si256((const __m256i *) (q8 + 32 * (size_t) k));
             const __m128i s   = _mm_shuffle_epi8(scales, scale_shuffle(is + k));
             q[k] = _mm256_madd_epi16(_mm256_cvtepi8_epi16(s), _mm256_maddubs_epi16(q[k], q8k));
         }
@@ -549,7 +549,8 @@ static void dot_rows_q6k_tiled(size_t                n_super,
                     p[k] = _mm256_madd_epi16(
                             s[k],
                             _mm256_maddubs_epi16(
-                                    q[k], _mm256_loadu_si256((const __m256i *) (q8 + 32 * k))));
+                                    q[k],
+                                    _mm256_loadu_si256((const __m256i *) (q8 + 32 * (size_t) k))));
                 }
                 sumi[r] = _mm256_add_epi32(sumi[r], _mm256_add_epi32(p[0], p[1]));
                 sumi[r] = _mm256_add_epi32(sumi[r], _mm256_add_epi32(p[2], p[3]));
