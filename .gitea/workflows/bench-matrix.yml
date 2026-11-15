@@ -86,7 +86,6 @@ jobs:
           - {column: nvidia_2080ti_vulkan, model: bitnet-large-tq2, runner: geist-vulkan, weekly: true}
           - {column: nvidia_2080ti_vulkan, model: qwen3-0.6b-q8, runner: geist-vulkan, weekly: true}
           - {column: nvidia_2080ti_vulkan, model: qwen35-4b-q4, runner: geist-vulkan, weekly: true}
-          - {column: apple_m1max, model: qwen35-0.8b-q8, runner: apple-m1max, weekly: false}
           - {column: apple_m1max, model: gemma4-e2b-q4km, runner: apple-m1max, weekly: false}
           - {column: apple_m1max, model: gemma4-e4b-q4km, runner: apple-m1max, weekly: true}
           - {column: apple_m1max, model: llama32-3b-q4km, runner: apple-m1max, weekly: true}

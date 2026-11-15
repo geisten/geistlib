@@ -51,7 +51,7 @@
       "build": "make TARGET=mac-omp bin",
       "llama": "cpu",
       "prefix": "~/bin/with-mac-lock",
-      "nightly": ["qwen35-0.8b-q8", "gemma4-e2b-q4km"],
+      "nightly": ["gemma4-e2b-q4km"],
       "weekly": ["gemma4-e4b-q4km", "llama32-3b-q4km", "bitnet-large-tq2", "qwen3-0.6b-q8", "qwen35-4b-q4", "qwen38-27b-q4", "bonsai2-27b-pq2"]
     },
     "apple_m1max_metal": {
