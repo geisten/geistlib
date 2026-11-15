@@ -68,6 +68,25 @@ test-decision:
 	    echo "test-decision: DECISION=0 DECISION_CONTEXT=1 must be rejected"; exit 1; \
 	fi
 
+# decknet (#532) is built only with DECKNET=1, so the default targets neither
+# compile nor test it. This builds it into the same output directories, runs
+# its tests and its deterministic fuzz driver, then goes back to DECKNET=0
+# and proves the way back: no decknet symbol is left in the archive.
+.PHONY: test-decknet
+DECKNET_TESTS := $(BIN_DIR)/tests/test_decknet_unit $(BIN_DIR)/tests/test_decknet_malformed_unit \
+                 $(BIN_DIR)/tests/fuzz_decknet
+test-decknet:
+	@$(MAKE) DECKNET=1 $(DECKNET_TESTS)
+	@$(BIN_DIR)/tests/test_decknet_unit
+	@$(BIN_DIR)/tests/test_decknet_malformed_unit
+	@$(BIN_DIR)/tests/fuzz_decknet $(FUZZ_RUNS)
+	@rm -f $(DECKNET_TESTS)  # mk/run-tests.sh runs whatever test binary it finds
+	@$(MAKE) DECKNET=0 lib
+	@if nm $(LIB_FILE) 2>/dev/null | grep -q decknet; then \
+	    echo "test-decknet: a DECKNET=0 library still has decknet symbols"; exit 1; \
+	fi
+	@echo "test-decknet: OK (and the DECKNET=0 library has no decknet symbol)"
+
 # Agent-runtime API contract (docs/API_CONTRACT.md). An out-of-tree agent
 # runtime links these symbols across a release boundary, so a signature change
 # must fail HERE, not in the consumer's build. Compiling pins the signatures,
@@ -220,6 +239,10 @@ FUZZ_RUNS    ?= 3000
 FUZZ_SECONDS ?= 30
 FUZZ_CC      ?= clang
 FUZZ_TARGETS := gguf tokenizer
+# The decknet loader and forward pass (#532), where the arch is built.
+ifeq ($(DECKNET),1)
+FUZZ_TARGETS += decknet
+endif
 FUZZ_BINS    := $(addprefix $(TEST_BIN_DIR)/fuzz_,$(FUZZ_TARGETS))
 
 fuzz: $(FUZZ_BINS)
@@ -649,6 +672,7 @@ help:
 	"  make lib | bin             only the static lib | only the binaries" \
 	"  make shared                the shared library for FFI callers (examples/ffi)" \
 	"  make DECISION=1            enable experimental numeric candidate scoring" \
+	"  make DECKNET=1             build the experimental decknet image network (#532)" \
 	"  make check-static          clang-tidy ratchet, wiring cases, family matrix (no models, no GPU)" \
 	"  make check-layers          layer table: includes, symbols, headers alone, #ifs (#344)" \
 	"  make DECISION=1 DECISION_CONTEXT=1  add snapshot-backed prefix scoring (#5)" \
@@ -662,6 +686,7 @@ help:
 	"  make test                  unit + int + py  (auto-fetches model; AUTO_FETCH_MODEL=0 to skip)" \
 	"  make test-unit|test-int|test-e2e|test-all   [FILTER=substr]" \
 	"  make [MODE=asan] test-decision            check feature on/off without cleaning" \
+	"  make [MODE=asan] test-decknet             build DECKNET=1, run its tests and fuzz driver, go back" \
 	"  make fetch-model [HF_TOKEN=..]              download reference GGUF (~3.1 GB, SHA-pinned)" \
 	"  make fetch-llama-model                      download SmolLM2 fixture (~369 MB, SHA-pinned)" \
 	"  make fetch-qwen3-model                      download Qwen3-0.6B fixture (~609 MB, SHA-pinned)" \

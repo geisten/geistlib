@@ -330,6 +330,24 @@ ifeq ($(TOWERS),1)
 LIB_SOURCES += $(TOWER_SOURCES)
 endif
 
+# Optional decknet image network (#532, include/geist_decknet.h). Off, the
+# default: none of its sources is compiled and none of its tests or fuzz
+# harnesses is built, so the library and every binary are what they were
+# before the arch existed. On: three objects join the archive.
+DECKNET ?= 0
+ifneq ($(DECKNET),0)
+ifneq ($(DECKNET),1)
+$(error DECKNET must be 0 or 1)
+endif
+endif
+DECKNET_SOURCES := \
+    src/engine/decknet.c \
+    src/archs/decknet/load.c \
+    src/archs/decknet/run.c
+ifeq ($(DECKNET),1)
+LIB_SOURCES += $(DECKNET_SOURCES)
+endif
+
 # src/backends/common/ above is the shared compute library (GEMM, gemma4
 # kernels, KIVI) — used by every backend AND by the arch layer, so it is
 # always compiled. host_buffer.c, host_ops.c, cpu_threads.c and
@@ -413,10 +431,18 @@ ifeq ($(filter cpu_x86,$(BACKENDS)),)
     TEST_SOURCES := $(filter-out $(X86_KERNEL_TESTS),$(TEST_SOURCES))
 endif
 
+# The decknet tests link geist_decknet_*, which only a DECKNET=1 library has.
+ifneq ($(DECKNET),1)
+    TEST_SOURCES := $(filter-out $(wildcard tests/test_decknet_*.c),$(TEST_SOURCES))
+endif
+
 # Fuzz harnesses. Deliberately not tests/test_*.c: mk/run-tests.sh globs that
 # prefix, and a fuzzer is not a pass/fail test. They still build like any other
 # binary so `make bin` keeps them compiling.
 FUZZ_SOURCES := $(wildcard tests/fuzz_*.c)
+ifneq ($(DECKNET),1)
+    FUZZ_SOURCES := $(filter-out tests/fuzz_decknet.c,$(FUZZ_SOURCES))
+endif
 
 BIN_SOURCES  := $(TEST_SOURCES) $(DEMO_SOURCES) $(FUZZ_SOURCES)
 
@@ -484,6 +510,18 @@ DECISION_CONFIG := $(DECISION) $(DECISION_CONTEXT)
 # Only this translation unit depends on the flag; callers query the linked
 # capability.
 $(eval $(call config_stamp,decision-config,$(DECISION_CONFIG),$(BUILD_DIR)/src/engine/decision.o))
+# DECKNET: the archive and the binaries follow the flag in both directions.
+DECKNET_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(DECKNET_SOURCES))
+$(eval $(call config_stamp,decknet-config,$(DECKNET),$(DECKNET_OBJS)))
+# With DECKNET=0 none of those objects is built, so the archive carries the
+# stamp: it is rewritten on the way back to 0 as well.
+$(LIB_FILE): $(BUILD_DIR)/decknet-config
+# The decknet loader rejects NaN and Inf and its resampler clamps them; the
+# pass follows the numpy reference operation by operation (no reassociation,
+# no fused multiply-add), which is what keeps it within rounding of it.
+$(DECKNET_OBJS): CFLAGS_STRICT += -fno-fast-math -ffp-contract=off
+$(BUILD_DIR)/tests/test_decknet_unit.o $(BUILD_DIR)/tests/test_decknet_malformed_unit.o $(BUILD_DIR)/tests/fuzz_decknet.o: CFLAGS += -fno-finite-math-only
+
 # GCC's target-wide -ffast-math otherwise folds isfinite to true. These
 # numeric API guards must observe NaN/Inf; leave the inference kernels alone.
 $(BUILD_DIR)/src/engine/decision.o: CFLAGS_STRICT += -DGEIST_ENABLE_DECISION=$(DECISION) -DGEIST_ENABLE_DECISION_CONTEXT=$(DECISION_CONTEXT) -fno-finite-math-only
@@ -511,6 +549,7 @@ $(BUILD_DIR)/tests/test_session_penalties_int.o: CFLAGS += -fno-fast-math -ffp-c
 # index or geometry arithmetic on non-negative ints that only a cast would
 # silence, and none was a bug (numbers in #343).
 CONVERSION_DIRS := src/base src/io src/engine src/sampling src/archs/vision_siglip \
+                   src/archs/decknet \
                    src/backends/cpu_scalar src/backends/metal src/backends/vulkan
 $(foreach d,$(CONVERSION_DIRS),$(BUILD_DIR)/$(d)/%.o): CFLAGS_STRICT += -Wconversion -Wsign-conversion
 $(BUILD_DIR)/tools/%.o: CFLAGS += -Wconversion -Wsign-conversion

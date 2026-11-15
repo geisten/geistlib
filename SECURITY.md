@@ -53,8 +53,10 @@ window for a fix before public disclosure. There is no bug-bounty program.
   counts.
 - **No `system()`, no shell, no network.** The library opens files the caller
   names and computes; it starts no processes and makes no connections.
-- **Malformed-input tests** (`tests/test_io_malformed_unit.c`) plus two fuzz
-  harnesses (`tests/fuzz_gguf.c`, `tests/fuzz_tokenizer.c`) that run on every
+- **Malformed-input tests** (`tests/test_io_malformed_unit.c`,
+  `tests/test_decknet_malformed_unit.c`) plus fuzz harnesses
+  (`tests/fuzz_gguf.c`, `tests/fuzz_tokenizer.c`, and `tests/fuzz_decknet.c`
+  for the optional decknet arch) that run on every
   PR — deterministically under ASan/UBSan, and coverage-guided under libFuzzer
   for 30 s per target. See [docs/CI_COVERAGE.md](docs/CI_COVERAGE.md).
 - **`src/io` holds a hard 35 % line-coverage floor** in the coverage gate,

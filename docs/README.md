@@ -25,6 +25,7 @@ architecture decisions for the reasons behind the design.
 | [Offload](OFFLOAD.md) | Current layer planning, prefill routing and expert placement |
 | [BitNet embeddings](BITNET_EMBEDDINGS_PLAN.md) | Conversion, pooling, API, verified behavior and remaining limits |
 | [Decision scoring](DECISION.md) | Optional numeric candidate scoring (`DECISION=1`) |
+| [decknet](DECKNET.md) | Optional image network for the geistbox deck check (`DECKNET=1`): API, file contract, forward pass |
 | [Tuning](TUNING.md) | Forward-only fine-tuning with per-tensor gains |
 
 The embeddings document keeps its historical filename to preserve existing

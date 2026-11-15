@@ -9,6 +9,8 @@ __pycache__/
 # trailing slash: a worktree's gguf_artifacts symlink must be ignored too.
 gguf_artifacts
 *.gguf
+# ... except the invented decknet test network (#532, 8 kB, no device in it).
+!tests/data/decknet_synth/synth.gguf
 *.safetensors
 *.part
 

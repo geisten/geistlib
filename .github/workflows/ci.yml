@@ -192,6 +192,14 @@ jobs:
       - name: Decision feature on/off (same build directory)
         run: make test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
+      # decknet (#532) is built only with DECKNET=1: its parity test against
+      # the numpy reference, the malformed-file test and the deterministic
+      # fuzz driver run here, and the way back to a library without it.
+      - name: decknet (DECKNET=1, same build directory)
+        env:
+          GEIST_DECKNET_FIXTURE: ${{ vars.GEIST_DECKNET_FIXTURE }}
+        run: make test-decknet TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
       # Hermetic Python suite (algorithm reference impls). Part of `make test` (#146).
       # The job's compiler: test_switch_enum_py.py compiles the library with it.
       - name: Python tests
@@ -333,6 +341,12 @@ jobs:
         if: matrix.unit
         run: make test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
+      - name: decknet (DECKNET=1, same build directory)
+        if: matrix.unit
+        env:
+          GEIST_DECKNET_FIXTURE: ${{ vars.GEIST_DECKNET_FIXTURE }}
+        run: make test-decknet TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
       # Sanitizers on macOS, both arches: the asan legs are Linux+gcc only, and
       # clang fails differently at -O1 (an `omp simd` the sanitizer instrumentation
       # cannot satisfy is a -Wpass-failed error under -Werror). Model-free suite,
@@ -343,6 +357,9 @@ jobs:
 
       - name: Decision feature on/off (ASan + UBSan)
         run: make MODE=asan test-decision TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
+
+      - name: decknet (DECKNET=1, ASan + UBSan)
+        run: make MODE=asan test-decknet TARGET=${{ matrix.target }} CC="ccache ${{ matrix.cc }}" ${{ matrix.bflags }}
 
       # Mandatory GPU gate (#181): on macos-15 a Metal device is expected,
       # so a SKIP (exit 77) from either binary fails the step — a skipped
@@ -776,7 +793,7 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30
+        run: make fuzz-libfuzzer TARGET=linux CC=clang-19 FUZZ_CC=clang-19 BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native FUZZ_SECONDS=30 DECKNET=1
 
   # Audio harness smoke (#234): runs bench_audio_encode and
   # test_audio_latency_e2e, which SKIP elsewhere for missing fixtures. The
@@ -1234,6 +1251,14 @@ jobs:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
           ASAN_OPTIONS: detect_leaks=1
         run: make MODE=asan fuzz TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
+
+      # decknet under ASan/UBSan with LeakSanitizer: parity, malformed files
+      # (every allocation of a load failing once) and its fuzz driver.
+      - name: decknet (DECKNET=1, ASan/UBSan/LSan)
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+          ASAN_OPTIONS: detect_leaks=1
+        run: make MODE=asan test-decknet TARGET=linux CC="ccache gcc-14" BACKENDS="cpu_x86 cpu_scalar" GEMM_PROVIDER=native
 
   # The concurrent-session contract (#183): distinct sessions of one model may
   # run from different threads. This leg proves it on the x86 backend. Only
