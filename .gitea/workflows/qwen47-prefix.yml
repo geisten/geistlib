@@ -1,0 +1,32 @@
+name: Trace Qwen pilot case 47 on Mac mini
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macmini-m6
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macmini-m6
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Replay the pinned case 47 prompt
+        run: /bin/sh tools/probes/qwen47-prefix.sh "$RUNNER_TEMP/qwen47-prefix"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: qwen47-prefix-${{ github.run_id }}
+          path: ${{ runner.temp }}/qwen47-prefix/
+          retention-days: 14
+          if-no-files-found: ignore
