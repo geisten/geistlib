@@ -51,6 +51,14 @@ struct [[gnu::packed]] block_q8_Kx4 {
 
 static_assert(sizeof(struct block_q8_Kx4) == Q8_KX4_BLOCK_BYTES, "block_q8_Kx4 size mismatch");
 
+/* One Q8_K super-block of one row: *d = max|x| / 127 (1 for an all-zero
+ * block) and qs[k] = lrintf(x[k] / *d). Every x86 Q8_K activation goes
+ * through this one function (quantize_q8_Kx4 per row, the Q4_Kx8 and Q6_K
+ * GEMVs, the raw Q6_K GEMM): compiled once, so a token gets the same codes
+ * and scale on every path, whatever -ffast-math lets the compiler do with
+ * the arithmetic at each call site (#527). */
+void quantize_q8_K_superblock(const float x[static 256], int8_t qs[static 256], float *d);
+
 /* Quantize 4 contiguous fp32 activation rows into one block_q8_Kx4 per
  * super-block. Each row has n_in fp32 elements; n_in must be a multiple
  * of 256. Output buffer must hold (n_in / 256) blocks.

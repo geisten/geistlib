@@ -84,11 +84,15 @@ static bool q6k_reads_raw(void) {
     return geist_env_flag("GEIST_Q6K_RAW", !w8a8_isa_is_vnni());
 }
 
-static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
-                                      const float               *x,
-                                      const struct geist_weight *w,
-                                      struct geist_backend      *be,
-                                      float                     *y) {
+/* The raw GEMM over m rows: q6k_gemm, whose rows have the M=1 GEMV's bits,
+ * or (tiled) q6k_gemm_tiled_order, whose rows have the tiled GEMM's.
+ * Without a workspace, the M=1 kernel per row. */
+static void q6k_raw_rows(size_t                     m,
+                         bool                       tiled,
+                         const float               *x,
+                         const struct geist_weight *w,
+                         struct geist_backend      *be,
+                         float                     *y) {
     const size_t              n_in  = (size_t) w->n_in;
     const size_t              n_out = (size_t) w->n_out;
     struct cpu_x86_workspace *ws    = nullptr;
@@ -102,7 +106,16 @@ static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
         }
         return;
     }
-    q6k_gemm(m, n_out, n_in, x, (const uint8_t *) w->raw, ws->mN_acts, y);
+    (tiled ? q6k_gemm_tiled_order
+           : q6k_gemm)(m, n_out, n_in, x, (const uint8_t *) w->raw, ws->mN_acts, y);
+}
+
+static void cpu_x86_linear_q6k_raw_mN(size_t                     m,
+                                      const float               *x,
+                                      const struct geist_weight *w,
+                                      struct geist_backend      *be,
+                                      float                     *y) {
+    q6k_raw_rows(m, false, x, w, be, y);
 }
 
 /* The tiled int8 GEMM (#18) on hosts with AVX-512 VNNI reads the GGUF
@@ -121,8 +134,10 @@ static bool q6k_tiled_on(void) {
 }
 
 /* Prefill from the GGUF bytes: whole Q8_Kx4 groups of rows through the
- * tiled GEMM, the m % 4 tail through the M=1 GEMV; below TILED_MIN_ROWS,
- * or when a workspace is missing, the raw Q6_K GEMM. */
+ * tiled GEMM; its m % 4 tail, and every row below TILED_MIN_ROWS or
+ * without a workspace, through the raw GEMM in the tiled GEMM's order. So
+ * a row has the same bits for every m (#527): an MoE expert's m is how
+ * many of a prefill chunk's tokens chose it. */
 static void cpu_x86_linear_q6k_tiled_mN(size_t                     m,
                                         const float               *x,
                                         const struct geist_weight *w,
@@ -138,7 +153,7 @@ static void cpu_x86_linear_q6k_tiled_mN(size_t                     m,
         ws = cpu_x86_ws_acquire_mN((struct cpu_x86_state *) be->state, 0, 0, 0, acts_bytes);
     }
     if (ws == nullptr) {
-        cpu_x86_linear_q6k_raw_mN(m, x, w, be, y);
+        q6k_raw_rows(m, true, x, w, be, y);
         return;
     }
     struct block_q8_Kx4 *acts = (struct block_q8_Kx4 *) ws->mN_aux;
@@ -150,10 +165,10 @@ static void cpu_x86_linear_q6k_tiled_mN(size_t                     m,
                                     (const struct block_q6_K_t *) w->raw,
                                     y,
                                     (struct cpu_x86_state *) be->state)) {
-        cpu_x86_linear_q6k_raw_mN(m4, x, w, be, y);
+        q6k_raw_rows(m4, true, x, w, be, y);
     }
-    for (size_t row = m4; row < m; row++) {
-        cpu_x86_linear_q6k_m1(x + row * n_in, w, be, y + row * n_out);
+    if (m4 < m) {
+        q6k_raw_rows(m - m4, true, x + m4 * n_in, w, be, y + m4 * n_out);
     }
 }
 

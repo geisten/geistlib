@@ -5,7 +5,7 @@
  * A prefill chunk holds (prompt length mod 64) tokens, so its m is rarely a
  * multiple of 16. The Q4_K M>1 path runs the AVX-512 16x16 panel on the
  * first m16 = m rounded down to 16 rows, the AVX2 GEMV on rows [m16, m4)
- * (m4 = m rounded down to 4), and the M=1 GEMV on the last m % 4 rows. For
+ * (m4 = m rounded down to 4), and a one-row GEMV on the last m % 4 rows. For
  * every m from 1 to 64 (and N with and without a 16-wide panel, and one
  * that is not a multiple of 8, where the weight is kept as W4A8 and every
  * row takes the M=1 path):
@@ -14,8 +14,9 @@
  *     file builds with -ffast-math) and within the int8-activation tolerance
  *     of the cpu_scalar reference;
  *   - rows [0, m16) are bit-identical to a call with exactly m16 rows, and
- *     rows [m4, m) to the M=1 path, row by row: a split that reads the wrong
- *     Q8_Kx4 group or writes the wrong output row cannot pass.
+ *     rows [m4, m) to a one-row call of the M>1 entry, row by row: a split
+ *     that reads the wrong Q8_Kx4 group or writes the wrong output row
+ *     cannot pass. (The M=1 decode GEMV sums in another order, #527.)
  *
  * On a host without AVX-512 the first property still holds for every row
  * and the second for the tail; the panel rows then come from the AVX2 GEMV
@@ -177,12 +178,13 @@ static int check_shape(size_t                k,
                 ok = false;
             }
         }
-        /* Tail rows: the same bits as the M=1 path on that row. */
+        /* Tail rows: the same bits as a one-row call of the M>1 entry on
+         * that row (the M=1 decode GEMV sums in another order, #527). */
         for (size_t r = m4; ok && m > 1 && r < m; r++) {
-            w_x86.linear_m1(b->x + r * k, &w_x86, be_x86, b->y_aux);
+            w_x86.linear_mN(1, b->x + r * k, &w_x86, be_x86, b->y_aux);
             if (!same_bits(n_out, b->y + r * n_out, b->y_aux)) {
                 fprintf(stderr,
-                        "FAIL: K=%zu N=%zu m=%zu: tail row %zu differs from M=1\n",
+                        "FAIL: K=%zu N=%zu m=%zu: tail row %zu differs from a one-row call\n",
                         k,
                         n_out,
                         m,

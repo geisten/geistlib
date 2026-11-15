@@ -22,7 +22,8 @@
 #define GEIST_INTERNAL_BACKEND_LAYER
 
 #include "kernel_q6k_gemv.h"
-#include "linear_util.h"
+#include "linear_util.h" /* hsum_ps_hadd, hsum_epi32 */
+#include "q8_kx4.h"      /* quantize_q8_K_superblock */
 
 #include "quant.h" /* fp16_to_fp32 */
 #include "quant_blocks.h"
@@ -435,4 +436,187 @@ void q3k_gemm(size_t         M,
               void          *scratch,
               float         *y) {
     gemm(KF_Q3K, M, N, K, x, q3k_raw, scratch, y);
+}
+
+/* ---- The GEMM in the tiled int8 GEMM's order (#527) ----
+ *
+ * q6k_gemm above gives a row q6k_gemv_m1's bits: the same quantizer, and 8
+ * lane-partial float sums reduced at the end. The tiled GEMM
+ * (kernel_q4k_tiled_avx512_vnni.c) reads Q8_Kx4 activations and reduces
+ * each super-block's integer dot exactly before one fused multiply-add per
+ * super-block. Where the tiled GEMM takes the whole groups of rows of a
+ * call, the rows it leaves (m % 4, and calls below its minimum) need that
+ * quantizer and that order, or a token's output depends on how many rows
+ * came with it. */
+
+/* One fp32 activation row to q8_K through quantize_q8_K_superblock, the
+ * quantizer of the Q8_Kx4 groups, with the codes summed per 16. */
+static void quantize_q8k_act_tiled(size_t n_super, const float *x, struct q8k_act *out) {
+    for (size_t s = 0; s < n_super; s++) {
+        quantize_q8_K_superblock(x + s * 256, out[s].qs, &out[s].d);
+        for (size_t g = 0; g < 16; g++) {
+            int32_t sum = 0;
+            for (size_t i = 0; i < 16; i++) {
+                sum += out[s].qs[g * 16 + i];
+            }
+            out[s].bsums[g] = (int16_t) sum;
+        }
+    }
+}
+
+/* The exact integer dot of Q6_K super-block b against the activation's
+ * super-block a, offset included, as 8 int32 lanes to sum. */
+[[gnu::always_inline]] static inline __m256i sb_dot_q6k(const uint8_t *b, const struct q8k_act *a) {
+    const int8_t *q8       = a->qs;
+    const __m256i q8sums   = _mm256_loadu_si256((const __m256i *) a->bsums);
+    const __m128i scales   = blk_scales(KF_Q6K, b);
+    const __m256i scales16 = _mm256_cvtepi8_epi16(scales);
+    const __m256i q8sclsub =
+            _mm256_slli_epi32(_mm256_madd_epi16(q8sums, scales16), kfmt_offset_shift(KF_Q6K));
+    __m256i sumi = _mm256_setzero_si256();
+    int     is   = 0;
+    for (size_t j = 0; j < 2; j++) { /* QK_K/128 = 2 */
+        __m256i q[4];
+        blk_unpack(KF_Q6K, b, j, q);
+        for (int k = 0; k < 4; k++) {
+            const __m256i q8k = _mm256_loadu_si256((const __m256i *) (q8 + 32 * (size_t) k));
+            const __m128i s   = _mm_shuffle_epi8(scales, scale_shuffle(is + k));
+            q[k] = _mm256_madd_epi16(_mm256_cvtepi8_epi16(s), _mm256_maddubs_epi16(q[k], q8k));
+        }
+        q8 += 128;
+        is += 4;
+        sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(q[0], q[1]));
+        sumi = _mm256_add_epi32(sumi, _mm256_add_epi32(q[2], q[3]));
+    }
+    return _mm256_sub_epi32(sumi, q8sclsub);
+}
+
+/* One output row's dot in the tiled GEMM's order (micro_8x16 for Q6_K):
+ *   acc = fma((float) s * d_w, d_a, acc)
+ * per super-block, s the exact integer dot. */
+static float dot_q6k_tiled(size_t n_super, const uint8_t *w, const struct q8k_act *y) {
+    float acc = 0.0f;
+    for (size_t i = 0; i < n_super; i++) {
+        const uint8_t *b = w + i * kfmt_bytes(KF_Q6K);
+        const float    r = (float) hsum_epi32(sb_dot_q6k(b, &y[i])) * blk_d(KF_Q6K, b);
+        acc              = fmaf(r, y[i].d, acc);
+    }
+    return acc;
+}
+
+/* Four exact lane sums in the lanes of one vector (integer adds: any
+ * order gives the same sums). */
+static inline __m128i hsum4_epi32(__m256i v0, __m256i v1, __m256i v2, __m256i v3) {
+    const __m256i h = _mm256_hadd_epi32(_mm256_hadd_epi32(v0, v1), _mm256_hadd_epi32(v2, v3));
+    return _mm_add_epi32(_mm256_castsi256_si128(h), _mm256_extracti128_si256(h, 1));
+}
+
+/* KQ_NR activation rows against one weight row: the codes and scales
+ * unpacked once per tile, then dot_q6k_tiled's integer dot and float
+ * epilogue per row, the KQ_NR rows' in the lanes of one vector
+ * (bit-identical per output). */
+static_assert(KQ_NR == 4, "dot_rows_q6k_tiled reduces four rows into one __m128");
+static void dot_rows_q6k_tiled(size_t                n_super,
+                               const uint8_t        *w,
+                               const struct q8k_act *y,
+                               float                 out[static KQ_NR]) {
+    __m128 acc = _mm_setzero_ps();
+
+    for (size_t i = 0; i < n_super; i++) {
+        const uint8_t *b        = w + i * kfmt_bytes(KF_Q6K);
+        const float    dw       = blk_d(KF_Q6K, b);
+        const __m128i  scales   = blk_scales(KF_Q6K, b);
+        const __m256i  scales16 = _mm256_cvtepi8_epi16(scales);
+
+        __m256i sumi[KQ_NR];
+        for (size_t r = 0; r < KQ_NR; r++) {
+            sumi[r] = _mm256_setzero_si256();
+        }
+        int is = 0;
+        for (size_t j = 0; j < 2; j++) { /* QK_K/128 = 2 */
+            __m256i q[4];
+            blk_unpack(KF_Q6K, b, j, q);
+            __m256i s[4];
+            for (int k = 0; k < 4; k++) {
+                s[k] = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales, scale_shuffle(is + k)));
+            }
+            is += 4;
+
+            for (size_t r = 0; r < KQ_NR; r++) {
+                const int8_t *q8 = y[r * n_super + i].qs + j * 128;
+                __m256i       p[4];
+                for (int k = 0; k < 4; k++) {
+                    p[k] = _mm256_madd_epi16(
+                            s[k],
+                            _mm256_maddubs_epi16(
+                                    q[k],
+                                    _mm256_loadu_si256((const __m256i *) (q8 + 32 * (size_t) k))));
+                }
+                sumi[r] = _mm256_add_epi32(sumi[r], _mm256_add_epi32(p[0], p[1]));
+                sumi[r] = _mm256_add_epi32(sumi[r], _mm256_add_epi32(p[2], p[3]));
+            }
+        }
+        for (size_t r = 0; r < KQ_NR; r++) {
+            const struct q8k_act *a      = &y[r * n_super + i];
+            const __m256i         q8sums = _mm256_loadu_si256((const __m256i *) a->bsums);
+            const __m256i         sub    = _mm256_slli_epi32(_mm256_madd_epi16(q8sums, scales16),
+                                                             kfmt_offset_shift(KF_Q6K));
+            sumi[r]                      = _mm256_sub_epi32(sumi[r], sub);
+        }
+        const __m128i s4 = hsum4_epi32(sumi[0], sumi[1], sumi[2], sumi[3]);
+        const __m128  r4 = _mm_mul_ps(_mm_cvtepi32_ps(s4), _mm_set1_ps(dw));
+        const __m128  a4 =
+                _mm_setr_ps(y[i].d, y[n_super + i].d, y[2 * n_super + i].d, y[3 * n_super + i].d);
+        acc = _mm_fmadd_ps(r4, a4, acc);
+    }
+    _mm_storeu_ps(out, acc);
+}
+
+static void gemm_quant_rows_tiled(void *ctx, size_t i0, size_t i1) {
+    const struct kq_call c = *(const struct kq_call *) ctx;
+    for (size_t i = i0; i < i1; i++) {
+        quantize_q8k_act_tiled(c.n_super, c.x + i * c.K, c.a + i * c.n_super);
+    }
+}
+
+/* Output rows [r0, r1), KQ_NR activation rows at a time. */
+static void gemm_rows_q6k_tiled(void *ctx, size_t r0, size_t r1) {
+    const struct kq_call  c       = *(const struct kq_call *) ctx;
+    const size_t          n_super = c.n_super;
+    const size_t          m_til   = c.M - c.M % KQ_NR;
+    const struct q8k_act *a       = c.a;
+    for (size_t r = r0; r < r1; r++) {
+        const uint8_t *wr = c.raw + r * c.row_bytes;
+        float          out[KQ_NR];
+        for (size_t i = 0; i < m_til; i += KQ_NR) {
+            dot_rows_q6k_tiled(n_super, wr, a + i * n_super, out);
+            for (size_t t = 0; t < KQ_NR; t++) {
+                c.y[(i + t) * c.N + r] = out[t];
+            }
+        }
+        for (size_t i = m_til; i < c.M; i++) {
+            c.y[i * c.N + r] = dot_q6k_tiled(n_super, wr, a + i * n_super);
+        }
+    }
+}
+
+void q6k_gemm_tiled_order(size_t         M,
+                          size_t         N,
+                          size_t         K,
+                          const float   *x,
+                          const uint8_t *q6k_raw,
+                          void          *scratch,
+                          float         *y) {
+    const size_t   n_super = K / 256;
+    struct kq_call c       = {.M         = M,
+                              .N         = N,
+                              .K         = K,
+                              .n_super   = n_super,
+                              .row_bytes = n_super * kfmt_bytes(KF_Q6K),
+                              .raw       = q6k_raw,
+                              .x         = x,
+                              .a         = scratch,
+                              .y         = y};
+    geist_par_for(M, gemm_quant_rows_tiled, &c);
+    geist_par_for(N, gemm_rows_q6k_tiled, &c);
 }

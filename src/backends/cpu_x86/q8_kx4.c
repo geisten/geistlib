@@ -21,10 +21,26 @@
 #include <stdint.h>
 #include <string.h>
 
+void quantize_q8_K_superblock(const float x[static 256], int8_t qs[static 256], float *d) {
+    /* One scale per row and super-block, as Q8_K has: a row-wide max-abs
+     * lets one outlier coarsen the quantization of every other super-block
+     * in the row (#694). */
+    float amax = 0.0f;
+    for (size_t k = 0; k < 256; k++) {
+        amax = fmaxf(amax, fabsf(x[k]));
+    }
+    const float scale = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
+    const float inv   = 1.0f / scale;
+    *d                = scale;
+    for (size_t k = 0; k < 256; k++) {
+        qs[k] = (int8_t) lrintf(x[k] * inv);
+    }
+}
+
 void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct block_q8_Kx4 *out) {
     const size_t n_super = n_in / 256;
 
-    /* Per super-block: quantize + interleave + compute bsums.
+    /* Per super-block: quantize each row, interleave, compute bsums.
      *
      * qs layout per super-block (offset within out[s].qs[]):
      *   - 4 sub-blocks of 64 K-elements each (sb = 0..3)
@@ -37,58 +53,23 @@ void quantize_q8_Kx4(size_t n_in, const float x_rows[static 4 * n_in], struct bl
      */
     for (size_t s = 0; s < n_super; s++) {
         struct block_q8_Kx4 *b = &out[s];
-        /* One scale per row and super-block, as Q8_K has: a row-wide
-         * max-abs lets one outlier coarsen the quantization of every other
-         * super-block in the row (#694). */
-        float scale_x[4];
         for (int r = 0; r < 4; r++) {
-            const float *row  = x_rows + (size_t) r * n_in + s * 256;
-            float        amax = 0.0f;
-            for (size_t k = 0; k < 256; k++) {
-                amax = fmaxf(amax, fabsf(row[k]));
-            }
-            scale_x[r] = (amax == 0.0f) ? 1.0f : (amax / 127.0f);
-            b->d[r]    = scale_x[r];
-        }
-
-        for (int sb = 0; sb < 4; sb++) {
-            uint8_t *sb_dst = (uint8_t *) (b->qs + (size_t) sb * 256);
-            for (int stripe = 0; stripe < 8; stripe++) {
-                uint8_t *stripe_dst = sb_dst + (size_t) stripe * 32;
-                for (int r = 0; r < 4; r++) {
-                    int8_t      *row_dst = (int8_t *) (stripe_dst + r * 8);
-                    const float *row_src = x_rows + (size_t) r * n_in + s * 256 + (size_t) sb * 64 +
-                                           (size_t) stripe * 8;
-                    const float  inv     = 1.0f / scale_x[r];
-                    for (int i = 0; i < 8; i++) {
-                        row_dst[i] = (int8_t) lrintf(row_src[i] * inv);
-                    }
+            int8_t q[256];
+            float  d;
+            quantize_q8_K_superblock(x_rows + (size_t) r * n_in + s * 256, q, &d);
+            b->d[r] = d;
+            for (int sb = 0; sb < 4; sb++) {
+                for (int stripe = 0; stripe < 8; stripe++) {
+                    memcpy(b->qs + (size_t) sb * 256 + (size_t) stripe * 32 + (size_t) r * 8,
+                           q + sb * 64 + stripe * 8,
+                           8);
                 }
             }
-        }
-
-        /* bsums[r*16 + g] = sum of 16 quantized elements for row r,
-         * sub-block 16-elem group g. There are 16 groups of 16 per row
-         * (256 / 16 = 16). */
-        for (int r = 0; r < 4; r++) {
+            /* bsums[r*16 + g] = sum of the 16 codes of group g. */
             for (int g = 0; g < 16; g++) {
                 int32_t sum = 0;
-                /* Group g covers K positions g*16 .. g*16+15 within the
-                 * super-block. With our 8-byte-stripe layout, K positions
-                 * g*16..g*16+15 are split across two 8-byte stripes in the
-                 * same sub-block (sb = g / 4). */
-                const int sb     = g / 4;
-                const int sb_pos = (g % 4) * 16; /* K-offset within sb */
-                /* sb_pos covers stripes [sb_pos/8, sb_pos/8 + 2) i.e. two
-                 * consecutive 8-byte stripes within sub-block sb. */
-                const uint8_t *sb_src = (const uint8_t *) (b->qs + (size_t) sb * 256);
-                for (int half = 0; half < 2; half++) {
-                    const int     stripe_idx = sb_pos / 8 + half;
-                    const int8_t *row_stripe =
-                            (const int8_t *) (sb_src + (size_t) stripe_idx * 32 + r * 8);
-                    for (int i = 0; i < 8; i++) {
-                        sum += row_stripe[i];
-                    }
+                for (int k = 0; k < 16; k++) {
+                    sum += q[g * 16 + k];
                 }
                 b->bsums[r * 16 + g] = (int16_t) sum;
             }
