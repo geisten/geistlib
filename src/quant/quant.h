@@ -781,4 +781,23 @@ void linear_q8_0_w8a8_prefill_pre(size_t        m,
                                   const void   *w_q8,
                                   float        *y);
 
+/* W5A8 decode and prefill (m <= GEIST_QUANT_M_CAP) for Q5_0 (32 elements:
+ * fp16 scale, 32 fifth bits, 16 nibble bytes; value = d * (code - 16)),
+ * with the Q8_0 kernels' contract: x_q8 / x_scales from
+ * quantize_x_q8_groups with GEIST_ACT_Q8_0_ELEMS groups. The blocks are
+ * unpacked in registers; a row's output is the same bits for every m. */
+void linear_q5_0_decode_w5a8_pre(size_t       n_in,
+                                 size_t       n_out,
+                                 const float *x_scales,
+                                 const int8_t x_q8[static n_in],
+                                 const void  *w_q5,
+                                 float        y[static n_out]);
+void linear_q5_0_w5a8_prefill_pre(size_t        m,
+                                  size_t        n_in,
+                                  size_t        n_out,
+                                  const int8_t *x_q8,
+                                  const float  *x_scales,
+                                  const void   *w_q5,
+                                  float        *y);
+
 #endif

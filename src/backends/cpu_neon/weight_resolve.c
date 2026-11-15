@@ -873,6 +873,38 @@ static void cpu_neon_w_q5k_mN(size_t                     m,
     linear_q5k_w5a8_prefill_pre(m, n_in, n_out, xq, sc, s32, w->raw, y);
 }
 
+/* Native Q5_0 W5A8 kernels (#528): the block unpacked in registers, then
+ * the Q8_0 kernels' int8 dot. Past the M cap, the reference. */
+static void cpu_neon_w_q5_0_m1(const float               *x,
+                               const struct geist_weight *w,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, 1, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q5_0_decode_w5a8_pre(n_in, n_out, sc, xq, w->raw, y);
+}
+
+static void cpu_neon_w_q5_0_mN(size_t                     m,
+                               const float               *x,
+                               const struct geist_weight *w,
+                               struct geist_backend      *be,
+                               float                     *y) {
+    if (ref_past_m_cap(m, x, w, y)) {
+        return;
+    }
+    const size_t  n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
+    float        *sc = nullptr;
+    const int8_t *xq = ws_quantize_act(be, m, n_in, GEIST_ACT_Q8_0_ELEMS, x, w, y, &sc, nullptr);
+    if (xq == nullptr) {
+        return;
+    }
+    linear_q5_0_w5a8_prefill_pre(m, n_in, n_out, xq, sc, w->raw, y);
+}
+
 /* Native Q8_0 W8A8 prefill kernel (M>1), the default on every host
  * (q8_0_native_mn); GEIST_Q8_0_NATIVE_MN=0 takes dequant + SGEMM. */
 static void cpu_neon_w_q8_0_mN(size_t                     m,
@@ -1277,8 +1309,14 @@ static const struct cpu_neon_kernel_entry CPU_NEON_KERNELS[] = {
          "bf16/trampoline"},
         {GEIST_DTYPE_Q4_0, CPU_NEON_ISA_NEON, cpu_neon_w_q4_0_m1, cpu_neon_w_q4_0_mN, "q4_0/w4a8"},
         {GEIST_DTYPE_Q4_1, CPU_NEON_ISA_NEON, cpu_neon_w_q4_1_m1, cpu_neon_w_q4_1_mN, "q4_1/w4a8"},
-        /* Q5_0: the odd tensors llama-quantize keeps in Q4_K_M models; no
-         * native kernel yet, so both paths dequantize. */
+        /* Q5_0: what llama-quantize leaves a K-quant model's tensors in when
+         * n_in is no multiple of 256. Native W5A8 with dotprod; without it
+         * both paths dequantize. */
+        {GEIST_DTYPE_Q5_0,
+         CPU_NEON_ISA_NEON | CPU_NEON_ISA_DOTPROD,
+         cpu_neon_w_q5_0_m1,
+         cpu_neon_w_q5_0_mN,
+         "q5_0/w5a8"},
         {GEIST_DTYPE_Q5_0,
          CPU_NEON_ISA_NEON,
          cpu_neon_w_dequant_trampoline_m1,

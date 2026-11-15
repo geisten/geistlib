@@ -14,6 +14,15 @@
  *   4. Every CPU backend's resolved m = 1 and m > 1 kernels against a
  *      dequantize + double-dot reference, at n_in 32 / 4096 / 5120 (one
  *      block; whole and partial cpu_scalar tiles) and an odd n_out.
+ *      cpu_scalar and cpu_x86 keep fp32 activations: 1e-5 of the largest
+ *      output. cpu_neon quantizes the activation to int8 with one scale
+ *      d_x = max|x| / 127 per 32-element block (W5A8, #528), so every
+ *      activation element moves by at most d_x / 2 and the 5-bit x int8
+ *      products are summed exactly; hence, per output,
+ *        |y - y_ref| <= sum_b sum_i |w_i| * d_x,b / 2   (activation rounding)
+ *                     + 2e-5 * sum_i |w_i x_i|          (fp32 accumulation)
+ *      a bound derived, not tuned: a wrong fifth bit, nibble half, scale or
+ *      row blows past it.
  *
  * Deterministic, no model needed.
  */
@@ -227,6 +236,38 @@ static void ref_fp32(size_t n_out, size_t n_in, const uint8_t *W, const float *x
     free(row);
 }
 
+/* The W5A8 bound of the header, per output row: whether every |y - yf| is
+ * within it. worst gets the largest |y - yf| / bound seen. */
+static bool within_a8_bound(size_t         n_out,
+                            size_t         n_in,
+                            const uint8_t *W,
+                            const float   *x,
+                            const float   *y,
+                            const float   *yf,
+                            double        *worst) {
+    float       *row       = xmalloc(n_in * sizeof(float));
+    const size_t row_bytes = n_in / Q5_0_BLOCK_ELEMS * Q5_0_BLOCK_BYTES;
+    bool         ok        = true;
+    for (size_t r = 0; r < n_out; r++) {
+        dequant_q5_0_row(n_in, W + r * row_bytes, row);
+        double bound = 0.0;
+        for (size_t b = 0; b < n_in / Q5_0_BLOCK_ELEMS; b++) {
+            double amax = 0.0, wsum = 0.0, wx = 0.0;
+            for (size_t i = b * Q5_0_BLOCK_ELEMS; i < (b + 1) * Q5_0_BLOCK_ELEMS; i++) {
+                amax = fmax(amax, fabs((double) x[i]));
+                wsum += fabs((double) row[i]);
+                wx += fabs((double) row[i] * (double) x[i]);
+            }
+            bound += wsum * (amax / 127.0) / 2.0 + 2e-5 * wx;
+        }
+        const double d = fabs((double) y[r] - (double) yf[r]);
+        ok             = ok && d <= bound;
+        *worst         = fmax(*worst, d / fmax(bound, 1e-30));
+    }
+    free(row);
+    return ok;
+}
+
 /* max |a - b| over max |b|. */
 static double rel_err(size_t n, const float *a, const float *b) {
     double d = 0.0, m = 0.0;
@@ -258,27 +299,34 @@ static int check_backend(const char *name) {
         for (size_t i = 0; i < ms[1] * n_in; i++) {
             x[i] = frand() * (float) (1 + (i / n_in) % 4);
         }
-        struct geist_weight w = {.raw        = W,
-                                 .raw_nbytes = bytes,
-                                 .n_in       = (int32_t) n_in,
-                                 .n_out      = (int32_t) n_out,
-                                 .dtype      = GEIST_DTYPE_Q5_0};
+        double              worst_a8 = 0.0;
+        struct geist_weight w        = {.raw        = W,
+                                        .raw_nbytes = bytes,
+                                        .n_in       = (int32_t) n_in,
+                                        .n_out      = (int32_t) n_out,
+                                        .dtype      = GEIST_DTYPE_Q5_0};
         snprintf(what, sizeof what, "%s n_in=%zu: resolve", name, n_in);
         fails += geist_expect(be->desc->vtbl->resolve_weight(be, &w) == GEIST_OK, what);
         if (w.linear_m1 == nullptr || w.linear_mN == nullptr) {
             fails += geist_expect(false, "kernels installed");
         } else {
+            const bool a8 = strcmp(name, "cpu_neon") == 0;
             ref_fp32(n_out, n_in, W, x, yf);
             w.linear_m1(x, &w, be, y);
             snprintf(what, sizeof what, "%s n_in=%zu: m1 == dequant + fp32", name, n_in);
-            fails += geist_expect(rel_err(n_out, y, yf) < 1e-5, what);
+            fails += geist_expect(a8 ? within_a8_bound(n_out, n_in, W, x, y, yf, &worst_a8)
+                                     : rel_err(n_out, y, yf) < 1e-5,
+                                  what);
             for (size_t mi = 0; mi < sizeof ms / sizeof ms[0]; mi++) {
                 const size_t m = ms[mi];
                 w.linear_mN(m, x, &w, be, y);
                 bool ok = true;
                 for (size_t t = 0; t < m; t++) {
                     ref_fp32(n_out, n_in, W, x + t * n_in, yf);
-                    ok = ok && rel_err(n_out, y + t * n_out, yf) < 1e-5;
+                    ok = ok &&
+                         (a8 ? within_a8_bound(
+                                       n_out, n_in, W, x + t * n_in, y + t * n_out, yf, &worst_a8)
+                             : rel_err(n_out, y + t * n_out, yf) < 1e-5);
                 }
                 snprintf(what,
                          sizeof what,
@@ -288,6 +336,9 @@ static int check_backend(const char *name) {
                          m);
                 fails += geist_expect(ok, what);
             }
+        }
+        if (strcmp(name, "cpu_neon") == 0) {
+            printf("  %s n_in=%zu: worst |dy| / bound %.3f\n", name, n_in, worst_a8);
         }
         if ((w.flags & GEIST_W_AUX_HEAP_OWNED) != 0) {
             void *aux = (void *) w.aux_fp32;
