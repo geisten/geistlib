@@ -20,10 +20,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Environment
         run: |
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
           mkdir -p out
-          { echo "== icd"; ls -la /usr/share/vulkan/icd.d /etc/vulkan/icd.d 2>&1; echo "== dri"; ls -la /dev/dri 2>&1; echo "== amdgpu"; lsmod 2>&1 | grep -E "amdgpu|nvidia" ; ls /sys/class/drm 2>&1; for c in /sys/class/drm/card*/device/vendor; do echo "$c $(cat $c)"; done; echo "== host"; hostname; cat /proc/1/comm; id; echo "== all devices"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType'; dmesg 2>/dev/null | grep -i amdgpu | tail -5; } 2>&1 | tee out/diag.txt
-          { echo "== SELECT"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES VK_LOADER_DRIVERS_SELECT='*radeon*' vulkaninfo --summary 2>&1 | grep -E 'deviceName'; echo "== DISABLE"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES VK_LOADER_DRIVERS_DISABLE='*nvidia*' vulkaninfo --summary 2>&1 | grep -E 'deviceName'; echo "== DRIVER_FILES only"; env -u VK_ICD_FILENAMES vulkaninfo --summary 2>&1 | grep -E 'deviceName'; echo "== debug"; VK_LOADER_DEBUG=error,warn,driver vulkaninfo --summary 2>&1 | grep -iE "driver|icd|env|elevat|ignor" | head -30; env | grep -iE "^VK_|NV_|PRIME|GGML|GEIST_VK" ; cat /usr/share/vulkan/icd.d/radeon_icd.json; ls /usr/share/vulkan/implicit_layer.d /etc/vulkan/implicit_layer.d 2>&1; } 2>&1 | tee out/diag2.txt
-          exit 1
           { git rev-parse HEAD; vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType|driverInfo'; free -g; } 2>&1 | tee out/env.txt
           grep -q RADV out/env.txt
       - name: Build
@@ -34,6 +32,7 @@ jobs:
         env:
           GEIST_VK_VERBOSE: "1"
         run: |
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
           set +e
           . scripts/gpu-lock.sh
           fail=""
@@ -64,6 +63,7 @@ jobs:
           GEIST_QWEN35_GGUF_PATH: ${{ vars.GEIST_QWEN35_GGUF_PATH }}
           GEIST_STRICT_FIXTURES: gguf
         run: |
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
           set +e
           . scripts/gpu-lock.sh
           for t in test_known_answer_e2e test_prefill_determinism_int test_qwen35_vulkan_e2e_int; do
@@ -74,6 +74,7 @@ jobs:
         env:
           GEIST_QUIET: "1"
         run: |
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
           set +e
           LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock bash <<'SH'
           . scripts/gpu-lock.sh
@@ -115,6 +116,7 @@ jobs:
         env:
           GEIST_QUIET: "1"
         run: |
+          export VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.json VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
           set +e
           LOCK_PRIO=batch LOCK_MAX=120 ~/bin/with-desktop-lock bash <<'SH'
           . scripts/gpu-lock.sh
