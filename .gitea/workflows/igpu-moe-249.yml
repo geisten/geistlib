@@ -21,6 +21,7 @@ jobs:
       - name: Environment
         run: |
           mkdir -p out
+          { echo "== icd"; ls -la /usr/share/vulkan/icd.d /etc/vulkan/icd.d 2>&1; echo "== dri"; ls -la /dev/dri 2>&1; echo "== amdgpu"; lsmod 2>&1 | grep -E "amdgpu|nvidia" ; ls /sys/class/drm 2>&1; for c in /sys/class/drm/card*/device/vendor; do echo "$c $(cat $c)"; done; echo "== host"; hostname; cat /proc/1/comm; id; echo "== all devices"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType'; dmesg 2>/dev/null | grep -i amdgpu | tail -5; } 2>&1 | tee out/diag.txt
           { git rev-parse HEAD; vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType|driverInfo'; free -g; } 2>&1 | tee out/env.txt
           grep -q RADV out/env.txt
       - name: Build
