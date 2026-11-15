@@ -34,6 +34,9 @@ path.write_text(source)
 
 path = forward / "layer_deltanet.c"
 source = add_header(path.read_text())
+source = insert(source, "    struct geist_tensor t_qkv = view_2d(sess->dn_scratch_qkv, ctx->SEQ, (int64_t) convd);\n"
+                "    s                         = linear_w_or_legacy(be,",
+                '    qwen47_trace(ctx, "dn_qkv_input", st->d_model, sess->scratch_normed);\n')
 for key, traces in (
     ("NORM", [("norm", "st->d_model", "sess->scratch_normed")]),
     ("BETA_ALPHA", [("beta", "n_vh", "sess->dn_scratch_b"),
