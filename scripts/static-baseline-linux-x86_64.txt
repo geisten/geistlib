@@ -61,9 +61,8 @@
 2	src/backends/cpu_x86/kernel_q4kx8_gemm_scalar.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 2	src/backends/cpu_x86/kernel_q6k_gemv.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 1	src/backends/cpu_x86/linear_pq2_0.c	bugprone-casting-through-void	do not cast 'uint8_t *' (aka 'unsigned char *') to 'float *' through 'void *'; use reinterpret_cast instead
-1	src/backends/cpu_x86/linear_q4k.c	clang-analyzer-core.NullDereference	Access to field 'state' results in a dereference of a null pointer (loaded from variable 'be')
 1	src/backends/cpu_x86/q4k_to_q4kx8.h	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type 'size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
-2	src/backends/cpu_x86/q8_kx4.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
+1	src/backends/cpu_x86/q8_kx4.c	bugprone-implicit-widening-of-multiplication-result	result of multiplication in type 'int' is used as a pointer offset after an implicit widening conversion to type 'ptrdiff_t'
 2	src/backends/cpu_x86/q8_kx4.h	bugprone-implicit-widening-of-multiplication-result	performing an implicit widening conversion to type '__size_t' (aka 'unsigned long') of a multiplication performed in type 'int'
 1	src/backends/vulkan/lifecycle.c	bugprone-macro-parentheses	macro argument should be enclosed in parentheses
 3	src/backends/vulkan/ops.c	bugprone-branch-clone	switch has 2 consecutive identical branches
