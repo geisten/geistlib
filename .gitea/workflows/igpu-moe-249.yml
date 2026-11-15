@@ -22,6 +22,8 @@ jobs:
         run: |
           mkdir -p out
           { echo "== icd"; ls -la /usr/share/vulkan/icd.d /etc/vulkan/icd.d 2>&1; echo "== dri"; ls -la /dev/dri 2>&1; echo "== amdgpu"; lsmod 2>&1 | grep -E "amdgpu|nvidia" ; ls /sys/class/drm 2>&1; for c in /sys/class/drm/card*/device/vendor; do echo "$c $(cat $c)"; done; echo "== host"; hostname; cat /proc/1/comm; id; echo "== all devices"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType'; dmesg 2>/dev/null | grep -i amdgpu | tail -5; } 2>&1 | tee out/diag.txt
+          { echo "== SELECT"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES VK_LOADER_DRIVERS_SELECT='*radeon*' vulkaninfo --summary 2>&1 | grep -E 'deviceName'; echo "== DISABLE"; env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES VK_LOADER_DRIVERS_DISABLE='*nvidia*' vulkaninfo --summary 2>&1 | grep -E 'deviceName'; echo "== DRIVER_FILES only"; env -u VK_ICD_FILENAMES vulkaninfo --summary 2>&1 | grep -E 'deviceName'; echo "== debug"; VK_LOADER_DEBUG=error,warn,driver vulkaninfo --summary 2>&1 | grep -iE "driver|icd|env|elevat|ignor" | head -30; env | grep -iE "^VK_|NV_|PRIME|GGML|GEIST_VK" ; cat /usr/share/vulkan/icd.d/radeon_icd.json; ls /usr/share/vulkan/implicit_layer.d /etc/vulkan/implicit_layer.d 2>&1; } 2>&1 | tee out/diag2.txt
+          exit 1
           { git rev-parse HEAD; vulkaninfo --summary 2>&1 | grep -E 'GPU[0-9]|deviceName|deviceType|driverInfo'; free -g; } 2>&1 | tee out/env.txt
           grep -q RADV out/env.txt
       - name: Build
