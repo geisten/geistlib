@@ -54,7 +54,7 @@ pp512 / tg64 at depth 512, tok/s:
 | gemma4-e4b-q4km | 172 / 35.5 | 1356 / 45.7 | 81 / 21.1 ¹ | — | 500 / 26.1 | 2944 / 96.8 | — |
 | llama32-3b-q4km | 236 / 53.1 | 2067 / 69.0 | — | — | 735 / 37.2 | 4877 / 150.9 | 23 / 5.3 |
 | qwen3-0.6b-q8 | 967 / 141.4 | 9336 / 193.7 | — | — | 1996 / 111.5 | 18380 / 323.4 | 158 / 14.3 |
-| qwen35-0.8b-q8 | 967 / 137.4 | 7182 / 153.4 | — | — | 1743 / 82.1 | 15257 / 327.5 | 106 / 13.3 |
+| qwen35-0.8b-q8 | 967 / 137.4 | 7182 / 153.4 | n/m ⁴ | — | 1743 / 82.1 | 15257 / 327.5 | 106 / 13.3 |
 | qwen35-4b-q4 | 147 / 40.8 | 1533 / 49.4 | 164 / 33.8 ¹ | — | 561 / 26.2 | 3495 / 122.4 | 17 / 4.3 |
 | qwen38-27b-q4 | — | 220 / 9.0 | — | — | 98 / 4.8 | — | — |
 
@@ -64,11 +64,13 @@ pp512 / tg64 at depth 512, tok/s:
 
 ³ measured by hand for #444 at 6642260d on 2026-11-14 with this cell's own gate: start at 55 °C or cooler and a repeat spread of up to 15 % (`model_host_gate`). llama.cpp throttles the GPU inside one 512- or 1024-token measurement of this model (its repeats spread 10–20 %, geist's 0.2 %), so its values there, 125 ± 11 tok/s prefill at 512, are throttled ones. Record in `benchmark/results/raw/c23-m1max-2026-11-14/`.
 
+⁴ not measurable on this host (#444, owner decision 2026-11-15): 6 tries failed the 5 % repeat-spread gate, with outliers while other processes of the shared desktop filled the efficiency cores. See *Not measured* below.
+
 Every cell's other lengths (128, 256, 1024), its ratio to llama.cpp and the archive file are in the JSON.
 
 **Not measured:**
 
-- apple_m1max (CPU): cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents). Fourth attempt 2026-11-11/12 (#444): gemma4-e2b-q4km passed (²); qwen35-0.8b-q8 failed 6 tries.
+- apple_m1max (CPU): cells from 2026-10-18/25 only; the dispatched nightly set at 6642260d (run 2818) failed 'host did not become quiet' (load/core 45, 0 % idle from other agents). Fourth attempt 2026-11-11/12 (#444): gemma4-e2b-q4km passed (²); qwen35-0.8b-q8 failed 6 tries. Owner decision 2026-11-15: not measurable on a shared desktop (its outliers coincide with other processes filling the efficiency cores); the cell stays out of the baseline, and the model's Apple CPU value is the `apple_m6_mini` cell.
 - apple_m1max_metal: gemma4-e2b-q4km recorded 2026-11-13 (²); bonsai2-27b-pq2 recorded 2026-11-14 with its own gate (³) after 8 failed tries under the 5 % limit.
 
 ## MoE rows of #333 (Qwen3-30B-A3B, Qwen3.6-35B-A3B)
