@@ -261,6 +261,29 @@ static bool kernel_parts(struct loader *l, size_t crop_w, struct decknet_kernel 
         k->part[k->n_parts++] = (struct decknet_part) {.n_taps = 1, .value = k->w[tap]};
     }
     k->part[k->n_parts - 1].last = true;
+    /* The spans: within a part the taps go row by row and from right to
+     * left, so neighbours of a row follow each other. */
+    k->span = heap_alloc_array_aligned(struct decknet_span, n);
+    if (k->span == nullptr) {
+        return oom(l);
+    }
+    size_t                    n_spans = 0;
+    const struct decknet_tap *tap     = k->tap;
+    for (size_t i = 0; i < k->n_parts; i++) {
+        struct decknet_part *part = &k->part[i];
+        for (size_t j = 0; j < part->n_taps; j++) {
+            if (j > 0 && tap[j].dy == tap[j - 1].dy && tap[j].dx == tap[j - 1].dx - 1) {
+                k->span[n_spans - 1].lo = tap[j].off;
+                continue;
+            }
+            k->span[n_spans++] = (struct decknet_span) {.lo = tap[j].off, .hi = tap[j].off + 1};
+            part->n_spans++;
+        }
+        tap += part->n_taps;
+    }
+    if (n_spans * DECKNET_SPAN_TAPS > n) {
+        heap_freep(&k->span);
+    }
     return true;
 }
 
@@ -473,8 +496,9 @@ bool decknet_ws_alloc(const struct geist_decknet *d, struct decknet_ws *ws) {
         ckd_mul(&tube_sums, d->n_tube_px, 3)) {
         return false;
     }
-    /* Zeroed: a stream fills a crop only where the pass reads it. */
-    ws->crop      = heap_calloc_array_aligned(uint32_t, crop_q);
+    /* Zeroed: a stream fills a crop only where the pass reads it. A pixel
+     * more than the crop has, for the prefix sums (decknet_work.prefix). */
+    ws->crop      = heap_calloc_array_aligned(uint32_t, crop_q + DECKNET_CROP_CH);
     ws->mix       = heap_alloc_array_aligned(float, d->n_mix);
     ws->sums      = heap_alloc_array_aligned(double, blob_sums);
     ws->tube_sums = heap_alloc_array_aligned(double, tube_sums);
@@ -560,9 +584,11 @@ void decknet_destroy(struct geist_decknet *d) {
     heap_freep(&d->blob.w);
     heap_freep(&d->blob.part);
     heap_freep(&d->blob.tap);
+    heap_freep(&d->blob.span);
     heap_freep(&d->tube_kernel.w);
     heap_freep(&d->tube_kernel.part);
     heap_freep(&d->tube_kernel.tap);
+    heap_freep(&d->tube_kernel.span);
     pool_free(&d->on);
     pool_free(&d->off);
     pool_free(&d->tube);

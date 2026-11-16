@@ -27,6 +27,12 @@
  * what decknet_run gives for the frame in which each tile within the
  * threshold is the kept one (tests/test_decknet_stream_unit.c).
  *
+ *   spans           a plane whose kernels have few weights is sampled as
+ *                   prefix sums along its runs of crop pixels, and a kernel
+ *                   takes the sum of a row of equal weights from two of
+ *                   them (decknet_work.prefix; not where gating keeps the
+ *                   crop).
+ *
  *   two threads     optional (decknet_stream_set_threads): the slots are
  *                   independent of each other, so one half of them is
  *                   computed on a second thread, in a second workspace.
@@ -417,24 +423,23 @@ static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
                             v, zero, 0, z, z, z, 1, z, z, z, 2, z, z, z, z, z, z, z);
 }
 
-/* One sample of an image into the crop pixel o: run.c's resample() with the
+/* One sample of an image, a crop pixel: run.c's resample() with the
  * coordinates and the weights from the table, and decknet_blend for the
  * three colours at once. With w00 = 2^24 - w0 - w1 - w2 its sum is
  *   2^24 b00 + w0 (b01 - b00) + w1 (b10 - b00) + w2 (b11 - b00)
  * which in 32 bits, where the differences wrap, is the same number: the sum
  * itself is below 2^32. */
-[[gnu::always_inline]] static inline void
-sample_one(const struct decknet_sample *t, const struct pixels *img, uint32_t *o) {
+[[gnu::always_inline]] static inline q4 sample_one(const struct decknet_sample *t,
+                                                   const struct pixels         *img) {
     const size_t   off = t->y * img->stride + (size_t) t->x * 3;
     const uint8_t *r0  = img->rgb + off;
     const uint8_t *r1  = r0 + img->stride;
     if (off >= img->wide) {
         /* At the end of a frame that has nothing behind its last pixels. */
-        for (size_t c = 0; c < 3; c++) {
-            o[c] = decknet_blend(t->w, r0[c], r0[3 + c], r1[c], r1[3 + c]);
-        }
-        o[3] = 0;
-        return;
+        return (q4) {decknet_blend(t->w, r0[0], r0[3], r1[0], r1[3]),
+                     decknet_blend(t->w, r0[1], r0[4], r1[1], r1[4]),
+                     decknet_blend(t->w, r0[2], r0[5], r1[2], r1[5]),
+                     0};
     }
     b16 row0, row1;
     q4  w;
@@ -446,20 +451,28 @@ sample_one(const struct decknet_sample *t, const struct pixels *img, uint32_t *o
     sum += (rgb_lanes(row0, true) - b00) * (q4) {w[0], w[0], w[0], w[0]};
     sum += (rgb_lanes(row1, false) - b00) * (q4) {w[1], w[1], w[1], w[1]};
     sum += (rgb_lanes(row1, true) - b00) * (q4) {w[2], w[2], w[2], w[2]};
-    sum >>= 8;
-    memcpy(o, &sum, sizeof sum);
+    return sum >> 8;
 }
 
-/* out[px] for every sample of the table, whose crop pixels are the runs. */
+/* out[px] for every sample of the table, whose crop pixels are the runs.
+ * With `sums` not the samples but their prefix sums along each run
+ * (decknet_work.prefix), which takes a pixel more behind a run. */
 static void sample(size_t                       n_runs,
+                   bool                         sums,
                    const struct decknet_run     run[static n_runs],
                    const struct decknet_sample *table,
                    const struct pixels         *img,
                    uint32_t                    *out) {
     for (size_t r = 0; r < n_runs; r++) {
-        uint32_t *o = out + (size_t) run[r].px * DECKNET_CROP_CH;
+        uint32_t *o   = out + (size_t) run[r].px * DECKNET_CROP_CH;
+        q4        sum = {0, 0, 0, 0};
         for (size_t i = 0; i < run[r].n; i++) {
-            sample_one(table++, img, o + i * DECKNET_CROP_CH);
+            const q4 v = sample_one(table++, img);
+            memcpy(o + i * DECKNET_CROP_CH, sums ? &sum : &v, sizeof v);
+            sum += v;
+        }
+        if (sums) {
+            memcpy(o + (size_t) run[r].n * DECKNET_CROP_CH, &sum, sizeof sum);
         }
     }
 }
@@ -517,7 +530,8 @@ static size_t sample_changed(const struct geist_decknet_stream *s,
                 if (s->changed[t->y / DECKNET_TILE * s->tiles_w + t->x / DECKNET_TILE] == 0) {
                     continue;
                 }
-                sample_one(t, &img, out + px * DECKNET_CROP_CH);
+                const q4 v = sample_one(t, &img);
+                memcpy(out + px * DECKNET_CROP_CH, &v, sizeof v);
                 taken++;
                 if (plane == DECKNET_PLANE_FLOOR) {
                     stale[px] = 1;
@@ -598,6 +612,7 @@ enum geist_status decknet_stream_create(struct geist_decknet         *d,
     }
     s->d         = d;
     s->n_threads = 1;
+    s->spans     = d->blob.span != nullptr && d->tube_kernel.span != nullptr;
     atomic_init(&s->offered, nullptr);
     atomic_init(&s->n_dropped, 0);
     s->tiles_w                              = (d->img_w + DECKNET_TILE - 1) / DECKNET_TILE;
@@ -709,7 +724,7 @@ enum geist_status decknet_stream_set_reference(struct geist_decknet_stream      
     /* The empty deck through its own homographies; the tables are the
      * current image's again below. */
     build_table(d, d->bg_w, 1, d->h_ref, &strip, s->bg);
-    sample(1, &strip, s->bg, &img, d->bg_q);
+    sample(1, false, &strip, s->bg, &img, d->bg_q);
     decknet_strip(d, d->bg_q, s->bg_ref);
     decknet_gain(d, s->bg_ref, gb);
     const double scale[3] = {decknet_scale(gb[0]), decknet_scale(gb[1]), decknet_scale(gb[2])};
@@ -717,7 +732,7 @@ enum geist_status decknet_stream_set_reference(struct geist_decknet_stream      
         const float *h   = d->h_ref + (1 + DECKNET_PLANES * slot) * 9;
         float       *out = s->floor_ref + slot * d->crop_px * 3;
         build_table(d, d->crop_w, n_floor, h, floor, s->tab);
-        sample(n_floor, floor, s->tab, &img, d->ws.crop);
+        sample(n_floor, false, floor, s->tab, &img, d->ws.crop);
         for (size_t r = 0; r < n_floor; r++) {
             for (size_t px = floor[r].px; px < (size_t) floor[r].px + floor[r].n; px++) {
                 for (size_t c = 0; c < 3; c++) {
@@ -791,8 +806,13 @@ static void slots(void *ctx, size_t begin, size_t end) {
             for (size_t p = 0; p < DECKNET_PLANES; p++) {
                 const enum decknet_plane plane = (enum decknet_plane) p;
                 size_t                   taken = s->n_px[p];
+                /* A plane with kernels, and both have spans: its crop as
+                 * prefix sums, unless the stream keeps the crop. */
+                const bool sums = !job->keep && plane != DECKNET_PLANE_FLOOR && s->spans;
+                work.crop       = sums ? nullptr : ws->crop;
+                work.prefix     = sums ? ws->crop : nullptr;
                 if (!job->keep) {
-                    sample(s->n_runs[p], s->run[p], t, &job->img, ws->crop);
+                    sample(s->n_runs[p], sums, s->run[p], t, &job->img, ws->crop);
                 } else {
                     uint32_t *crop =
                             s->crop + (slot * DECKNET_PLANES + p) * d->crop_px * DECKNET_CROP_CH;
@@ -812,7 +832,7 @@ static void slots(void *ctx, size_t begin, size_t end) {
                                                     crop);
                         work.stale = taken > 0 ? stale : nullptr;
                     } else {
-                        sample(s->n_runs[p], s->run[p], t, &job->img, crop);
+                        sample(s->n_runs[p], false, s->run[p], t, &job->img, crop);
                     }
                 }
                 decknet_plane(d, ws, slot, plane, job->ga, &work);
@@ -848,7 +868,7 @@ enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
         on_threads(s, s->tiles_h, tiles_convert, &job);
     }
     float ga[3], gb[3];
-    sample(1, &strip, s->bg, &img, d->bg_q);
+    sample(1, false, &strip, s->bg, &img, d->bg_q);
     decknet_strip(d, d->bg_q, d->bg_a);
     decknet_gains(d, d->bg_a, s->bg_ref, ga, gb);
     s->n_samples = d->bg_px;
