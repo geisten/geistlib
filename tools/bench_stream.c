@@ -456,7 +456,7 @@ static void to_format(enum geist_decknet_format format,
 }
 
 static uint8_t clip8(int32_t v) {
-    return v < 0 ? 0 : (v > 255 * 256 ? 255 : (uint8_t) (v / 256));
+    return (uint8_t) (v < 0 ? 0 : (v > 255 * 256 ? 255 : v / 256));
 }
 
 /* What the still path needs first: the whole frame as RGB8 without padding,
