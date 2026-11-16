@@ -23,7 +23,9 @@
  *   mix         1x1 convolution on a pixel pair, ReLU, sum, saturation
  *   kernel_at   a small dense 2D kernel, evaluated only at the crop pixels
  *               a pooling row reads (about 1 pixel in 16 for the shipped
- *               file), which gives the same pooled values as a full map
+ *               file), which gives the same pooled values as a full map;
+ *               for a stream that hands it prefix sums instead of a crop,
+ *               from two of them per row of equal weights
  *   pool_*      sparse weighted pooling
  *
  * No allocation: every buffer is part of the handle (load.c).
@@ -165,6 +167,14 @@ static inline q4 q4_at(const uint32_t *p) {
     return v;
 }
 
+/* Crop pixel px, from the crop or, with `prefix` (decknet_work.prefix),
+ * from the two prefix sums around it. */
+static inline q4 pixel_at(size_t px, const uint32_t *crop, const uint32_t *prefix) {
+    return prefix != nullptr ? q4_at(prefix + (px + 1) * DECKNET_CROP_CH) -
+                                       q4_at(prefix + px * DECKNET_CROP_CH)
+                             : q4_at(crop + px * DECKNET_CROP_CH);
+}
+
 /* out[c]: the convolution of colour c of an h x w crop with kernel k at
  * pixel (x, y), "same" size with the edge pixels repeated, in crop units
  * (the gain is the caller's). A convolution, as the reference's FFT computes
@@ -173,26 +183,54 @@ static inline q4 q4_at(const uint32_t *p) {
  *
  * Computed as the sum over the kernel's distinct weights of weight times the
  * sum of the pixels that have it. The pixel sums are integers, in 32 bits
- * within a part (k->part) and in 64 across the parts of a weight. */
+ * within a part (k->part) and in 64 across the parts of a weight.
+ *
+ * The crop is `crop`, or with `prefix` its prefix sums
+ * (decknet_work.prefix). From those a part's sum inside the crop is taken
+ * span by span where the kernel has spans, as the difference of two prefix
+ * sums: the same integer, from two reads per row of neighbours instead of
+ * one per pixel. */
 static void kernel_at(size_t                       w,
                       size_t                       h,
                       const struct decknet_kernel *k,
                       const uint32_t              *crop,
+                      const uint32_t              *prefix,
                       size_t                       x,
                       size_t                       y,
                       double                       out[static 3]) {
-    const size_t              n        = k->k / 2;
-    const bool                interior = y >= n && y + n < h && x >= n && x + n < w;
-    const uint32_t *const     at       = crop + (y * w + x) * DECKNET_CROP_CH;
-    const struct decknet_tap *tap      = k->tap;
-    uint64_t                  sum[3]   = {0, 0, 0};
-    double                    s[3]     = {0.0, 0.0, 0.0};
+    const size_t               n        = k->k / 2;
+    const bool                 interior = y >= n && y + n < h && x >= n && x + n < w;
+    const bool                 spans    = interior && prefix != nullptr && k->span != nullptr;
+    const bool                 taps     = interior && prefix == nullptr;
+    const uint32_t *const      at       = taps ? crop + (y * w + x) * DECKNET_CROP_CH : nullptr;
+    const uint32_t *const      sum_at   = spans ? prefix + (y * w + x) * DECKNET_CROP_CH : nullptr;
+    const struct decknet_tap  *tap      = k->tap;
+    const struct decknet_span *span     = k->span;
+    uint64_t                   sum[3]   = {0, 0, 0};
+    double                     s[3]     = {0.0, 0.0, 0.0};
     for (size_t i = 0; i < k->n_parts; i++) {
         const struct decknet_part *part = &k->part[i];
         /* Four sums side by side: an integer sum is the same in any order,
          * and one chain of adds would wait for itself. */
         q4 a0 = {0, 0, 0, 0}, a1 = a0, a2 = a0, a3 = a0;
-        if (interior) {
+        if (spans) {
+            size_t j = 0;
+            for (; j + 2 <= part->n_spans; j += 2) {
+                a0 += q4_at(sum_at + (ptrdiff_t) span[j].hi * (ptrdiff_t) DECKNET_CROP_CH);
+                a1 += q4_at(sum_at + (ptrdiff_t) span[j].lo * (ptrdiff_t) DECKNET_CROP_CH);
+                a2 += q4_at(sum_at + (ptrdiff_t) span[j + 1].hi * (ptrdiff_t) DECKNET_CROP_CH);
+                a3 += q4_at(sum_at + (ptrdiff_t) span[j + 1].lo * (ptrdiff_t) DECKNET_CROP_CH);
+            }
+            if (j < part->n_spans) {
+                a0 += q4_at(sum_at + (ptrdiff_t) span[j].hi * (ptrdiff_t) DECKNET_CROP_CH);
+                a1 += q4_at(sum_at + (ptrdiff_t) span[j].lo * (ptrdiff_t) DECKNET_CROP_CH);
+            }
+            span += part->n_spans;
+            a0 = a0 - a1; /* wraps as the prefix sums do */
+            a1 = (q4) {0, 0, 0, 0};
+            a2 = a2 - a3;
+            a3 = a1;
+        } else if (taps) {
             size_t j = 0;
             for (; j + 4 <= part->n_taps; j += 4) {
                 a0 += q4_at(at + (ptrdiff_t) tap[j].off * (ptrdiff_t) DECKNET_CROP_CH);
@@ -210,7 +248,7 @@ static void kernel_at(size_t                       w,
                 const ptrdiff_t xx = (ptrdiff_t) x + tap[j].dx;
                 const size_t    ya = yy < 0 ? 0 : ((size_t) yy < h ? (size_t) yy : h - 1);
                 const size_t    xb = xx < 0 ? 0 : ((size_t) xx < w ? (size_t) xx : w - 1);
-                a0 += q4_at(crop + (ya * w + xb) * DECKNET_CROP_CH);
+                a0 += pixel_at(ya * w + xb, crop, prefix);
             }
         }
         tap += part->n_taps;
@@ -263,7 +301,7 @@ static void kernel_sums(const struct geist_decknet  *d,
         const size_t y = px[i] / crop_w;
         const size_t x = px[i] % crop_w;
         if (!w->kept || window_stale(d->crop_w, d->crop_h, k->k / 2, w->stale, x, y)) {
-            kernel_at(d->crop_w, d->crop_h, k, w->crop, x, y, sums + i * 3);
+            kernel_at(d->crop_w, d->crop_h, k, w->crop, w->prefix, x, y, sums + i * 3);
         }
     }
 }
@@ -478,9 +516,9 @@ void decknet_plane(struct geist_decknet      *d,
         units(d, ws, d->t_tip, ws->e_bright, ws->unit);
         memset(ws->acc_on, 0, d->n_tips * sizeof ws->acc_on[0]);
         for (size_t r = 0; r < d->on.n_rows; r++) {
-            const uint32_t *q  = w->crop + (size_t) d->on.px[r] * DECKNET_CROP_CH;
-            const float     p0 = decknet_unit(q[0], scale[0]), p1 = decknet_unit(q[1], scale[1]);
-            const float     p2 = decknet_unit(q[2], scale[2]);
+            const q4    q  = pixel_at(d->on.px[r], w->crop, w->prefix);
+            const float p0 = decknet_unit(q[0], scale[0]), p1 = decknet_unit(q[1], scale[1]);
+            const float p2 = decknet_unit(q[2], scale[2]);
             ws->acc_on[d->on.unit[r]] += (double) (d->on.w[r] * fminf(fminf(p0, p1), p2));
         }
         double rack = 0.0;

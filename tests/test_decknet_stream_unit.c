@@ -42,6 +42,12 @@
  *                   any four bytes to within two units of 1/65536 of the
  *                   exact value;
  *   two threads     the same bits, with and without gating;
+ *   spans           kernels of few weights, which a stream sums from prefix
+ *                   sums along the runs of a crop where the still path and
+ *                   a stream that keeps its crops sum tap by tap: the same
+ *                   bits at the crop's corners and edges, one pixel inside
+ *                   them and in the middle, on one thread and two, and in a
+ *                   gated stream that goes both ways;
  *   the frame's end a sample at the last pixels of a frame is computed from
  *                   those pixels alone when the buffer ends with them, and
  *                   from 16 bytes of each row when it does not: the same
@@ -1104,6 +1110,150 @@ static void test_conversion_reference(void) {
     }
 }
 
+/* ---- kernels by spans -------------------------------------------------- */
+
+/* A kernel of few weights is summed from prefix sums along the runs of a
+ * crop, span by span, where a stream samples a plane whole; the still path
+ * and a stream that keeps its crops sum it tap by tap. A network whose two
+ * kernels have spans (7 x 7 with a 3 x 3 centre, 5 x 5 of one weight), with
+ * units in the corners and on the edges of the crop (taps clamped, a pixel
+ * taken from two prefix sums), one pixel inside the edge (the first window
+ * that is all spans) and in the middle, on frames of noise. A gated stream
+ * computes the first frame and every frame that changed all over whole, and
+ * the one after it from its kept crops: both ways in one stream. */
+static void test_spans(size_t threads, bool gated) {
+    constexpr size_t w     = 64;
+    constexpr size_t h     = 48;
+    constexpr size_t cw    = 40;
+    constexpr size_t ch    = 30;
+    constexpr size_t n_rgb = w * h * 3;
+    struct tiny      m;
+    tiny_default(&m);
+    m.img_w  = (uint32_t) w;
+    m.img_h  = (uint32_t) h;
+    m.crop_w = (uint32_t) cw;
+    m.crop_h = (uint32_t) ch;
+    float hm[11 * 9];
+    for (size_t i = 0; i < 11; i++) {
+        /* The strip as it is; crop pixel (x, y) reads the image at
+         * (1.5 x + 1.25, 1.5 y + 0.75), between its pixels. */
+        const float strip[9] = {1, 0, 0.5f, 0, 1, 0.5f, 0, 0, 1};
+        const float crop[9]  = {1.5f, 0, 1.75f, 0, 1.5f, 1.25f, 0, 0, 1};
+        memcpy(hm + i * 9, i == 0 ? strip : crop, sizeof strip);
+    }
+    tiny_set(&m.t[TINY_T_HOMOGRAPHY], "decknet.homography", 3, 11, 3, 3, 99, hm);
+    m.scalars[TINY_S_T_TUBE] = 1.2f; /* the mean of a window, three colours: about 1.5 */
+    float blob[49], tube_k[25];
+    for (size_t i = 0; i < 49; i++) {
+        const bool centre = i / 7 >= 2 && i / 7 <= 4 && i % 7 >= 2 && i % 7 <= 4;
+        blob[i]           = centre ? 1.0f / 9.0f : -1.0f / 40.0f;
+    }
+    for (size_t i = 0; i < 25; i++) {
+        tube_k[i] = 0.04f;
+    }
+    tiny_set(&m.t[TINY_T_BLOB], "decknet.conv.blob", 2, 7, 7, 0, 49, blob);
+    tiny_set(&m.t[TINY_T_TUBE], "decknet.conv.tube", 2, 5, 5, 0, 25, tube_k);
+    /* (unit, crop pixel y * 40 + x, weight) */
+    const float on[5][3] = {
+            {0, 0, 0.4f}, {0, 620, 0.3f}, {0, 1199, 0.3f}, {1, 290, 0.5f}, {1, 291, 0.5f}};
+    const float off[6][3]  = {{0, 123, 0.25f},
+                              {0, 402, 0.25f},
+                              {0, 636, 0.25f},
+                              {0, 637, 0.25f},
+                              {1, 39, 0.5f},
+                              {1, 825, 0.5f}};
+    const float tube[4][3] = {{0, 41, 0.5f}, {0, 82, 0.5f}, {1, 1030, 0.5f}, {1, 1158, 0.5f}};
+    tiny_pool(&m.t[TINY_T_POOL_ON], "decknet.pool.on", 5, &on[0][0]);
+    tiny_pool(&m.t[TINY_T_POOL_OFF], "decknet.pool.off", 6, &off[0][0]);
+    tiny_pool(&m.t[TINY_T_POOL_TUBE], "decknet.pool.tube", 4, &tube[0][0]);
+    static struct tiny_buf buf;
+    tiny_write(&m, &buf);
+    struct geist_decknet *still = nullptr, *d = nullptr;
+    if (geist_decknet_load_from_memory(buf.n, buf.b, &still) != GEIST_OK ||
+        geist_decknet_load_from_memory(buf.n, buf.b, &d) != GEIST_OK) {
+        broken(geist_last_create_error(), "decknet_tiny, kernels with spans");
+    }
+    /* Otherwise this test compares the taps with the taps. */
+    CHECK(d->blob.span != nullptr && d->tube_kernel.span != nullptr);
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+
+    /* The empty deck and two frames: noise, the same on the worktable strip
+     * (the image's first pixels) so that the pair is checkable. */
+    static uint8_t ref[n_rgb], img[2][n_rgb];
+    uint32_t       lcg = 20261116;
+    for (size_t i = 0; i < n_rgb; i++) {
+        const bool strip = i / 3 % w < 8 && i / 3 / w < 8;
+        lcg              = lcg * 1664525u + 1013904223u;
+        ref[i]           = (uint8_t) (110 + (lcg >> 24) % 31);
+        for (size_t k = 0; k < 2; k++) {
+            lcg       = lcg * 1664525u + 1013904223u;
+            img[k][i] = strip ? ref[i] : (uint8_t) (60 + (lcg >> 24) % 140);
+        }
+    }
+    struct geist_decknet_frame   f = {.format  = GEIST_DECKNET_FORMAT_RGB8,
+                                      .width   = w,
+                                      .height  = h,
+                                      .stride  = w * 3,
+                                      .n_bytes = n_rgb,
+                                      .data    = ref};
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_gate(s, gated, 0) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    const size_t order[]   = {0, 0, 1, 1, 0, 0, 0};
+    size_t       n_outputs = 0, n_live = 0, n_whole = 0, n_kept = 0, whole = 0;
+    for (size_t k = 0; k < sizeof order / sizeof order[0]; k++) {
+        struct geist_decknet_result        want;
+        struct geist_decknet_stream_result got;
+        f.data = img[order[k]];
+        CHECK(geist_decknet_run(still, n_rgb, f.data, ref, &want) == GEIST_OK && want.checkable);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr,
+                    "FAIL kernels by spans (%zu thread%s%s): frame %zu differs from the still "
+                    "path\n",
+                    threads,
+                    threads == 1 ? "" : "s",
+                    gated ? ", gated" : "",
+                    k);
+            g_fail = 1;
+        }
+        /* A frame computed from kept crops samples nothing new. */
+        whole = k == 0 ? got.n_samples : whole;
+        n_whole += got.n_samples == whole;
+        n_kept += got.n_samples < whole;
+        for (size_t i = 0; i < info.n_slots; i++) {
+            struct geist_decknet_slot slot;
+            CHECK(geist_decknet_stream_slot(s, i, &slot) == GEIST_OK);
+            n_live += slot.plate > 0.0f && slot.plate < 1.0f;
+            n_live += slot.deep > 0.0f && slot.deep < 1.0f;
+            for (size_t u = 0; u < info.n_tubes; u++) {
+                n_live += slot.tubes[u] > 0.0f && slot.tubes[u] < 1.0f;
+                n_live += slot.tubes_rot[u] > 0.0f && slot.tubes_rot[u] < 1.0f;
+            }
+        }
+    }
+    /* Outputs that are neither 0 nor 1, so a wrong sum would show (the blob
+     * kernel in the plate and deep-well units, the other in the tubes); and
+     * a gated stream went both ways. */
+    CHECK(n_live == 4 * info.n_slots * (sizeof order / sizeof order[0]));
+    CHECK(gated ? (n_whole >= 3 && n_kept >= 1) : n_kept == 0);
+    printf("kernels by spans, %zu thread%s%s: %zu outputs bit-identical to the still path, %zu "
+           "frames sampled whole and %zu from kept crops\n",
+           threads,
+           threads == 1 ? "" : "s",
+           gated ? ", gated" : "",
+           n_outputs,
+           n_whole,
+           n_kept);
+    geist_decknet_stream_destroy(s);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
 /* ---- the end of a frame ----------------------------------------------- */
 
 /* A sample is computed from 16 bytes of each of its rows where the frame has
@@ -1788,6 +1938,10 @@ int main(void) {
     test_conversion_range(GEIST_DECKNET_FORMAT_YUYV);
     test_sample();
     test_kernel_sum();
+    test_spans(1, false);
+    test_spans(2, false);
+    test_spans(1, true);
+    test_spans(2, true);
     test_gate_edges(false);
     test_gate_edges(true);
     test_gate_threshold();

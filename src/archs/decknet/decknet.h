@@ -83,11 +83,18 @@ struct decknet_tap {
     int16_t dy, dx;
 };
 
+/* Neighbouring taps of one kernel row, whose sum is the prefix sum `hi`
+ * pixels from (y, x) less the one `lo` pixels from it
+ * (decknet_work.prefix). */
+struct decknet_span {
+    int32_t lo, hi;
+};
+
 /* `n_taps` taps of one weight whose pixels sum in 32 bits. A weight with
  * more than DECKNET_SUM_PIXELS taps has several parts; `last` ends it, and
- * `value` is the weight. */
+ * `value` is the weight. The same taps are `n_spans` spans. */
 struct decknet_part {
-    uint32_t n_taps;
+    uint32_t n_taps, n_spans;
     bool     last;
     float    value;
 };
@@ -102,7 +109,15 @@ struct decknet_kernel {
     size_t               n_parts;
     struct decknet_part *part;
     struct decknet_tap  *tap; /* k x k */
+    /* The taps as rows of neighbours, part by part; nullptr for a kernel
+     * that has too few neighbours of one weight for that to be less work
+     * (DECKNET_SPAN_TAPS). */
+    struct decknet_span *span;
 };
+
+/* A span is two reads, and a tap one; a kernel is evaluated by its spans
+ * from this many taps per span on. */
+constexpr size_t DECKNET_SPAN_TAPS = 3;
 
 /* A 1x1 convolution of `rows` units on the six channels of a pixel pair. */
 struct decknet_mix {
@@ -118,7 +133,7 @@ struct decknet_mix {
  * 6 derive from it on the way to the units. The handle has one; a stream
  * that computes its slots on two threads has a second. */
 struct decknet_ws {
-    uint32_t *crop;                           /* crop_px x DECKNET_CROP_CH */
+    uint32_t *crop;                           /* (crop_px + 1) x DECKNET_CROP_CH */
     float    *mix;                            /* a 1x1 value per floor pooling row (n_mix) */
     double   *sums, *tube_sums;               /* 3 kernel sums per blob_px / tube_px */
     double   *e_bright, *e_dark, *e_tube;     /* crop_px, written at blob_px / tube_px */
@@ -282,7 +297,17 @@ constexpr size_t DECKNET_CELL = 16;
  * stream keeps them per slot and plane and has only the stale ones
  * recomputed. */
 struct decknet_work {
-    const uint32_t *crop;     /* d->crop_px x DECKNET_CROP_CH, of the current image */
+    /* The crop of the current image, d->crop_px x DECKNET_CROP_CH; nullptr
+     * with `prefix`. */
+    const uint32_t *crop;
+    /* nullptr, or the same crop as a stream samples it for a plane whose
+     * kernels have spans (never with `kept`): per run of crop pixels the
+     * plane reads, at each pixel the sum of the run's pixels before it, and
+     * at the pixel behind the run the sum of all of it; d->crop_px + 1
+     * pixels. In 32 bits that wrap: the difference of two of them is the
+     * sum of the pixels between, which fits, and a pixel is the difference
+     * of the two around it. */
+    const uint32_t *prefix;
     const float    *crop_ref; /* floor: the empty deck's crop x 3, with its gain */
     float          *mix;      /* floor: d->n_mix values, a 1x1 unit per pooling row */
     double         *sums;     /* other planes: 3 kernel sums per d->blob_px */
@@ -417,6 +442,7 @@ struct geist_decknet_stream {
 
     /* ---- two threads (decknet_stream_set_threads) ---- */
     size_t            n_threads; /* 1 or DECKNET_STREAM_THREADS */
+    bool              spans;     /* both kernels have spans: their planes are sampled as sums */
     struct decknet_ws ws2;       /* what the second one computes in; the first has d->ws */
 };
 
