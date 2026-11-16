@@ -222,6 +222,12 @@ void geist_decknet_stream_destroy(struct geist_decknet_stream *s);
  * geist_decknet_stream_set_reference and after a frame of another format is
  * taken whole.
  *
+ * A frame in which more than 7 of 8 of the tiles the network reads were
+ * taken is computed as a frame of a stream without gating, from the kept
+ * tiles: the same bits, at about the cost of such a frame. What was
+ * computed from earlier frames is not valid after it; the next frame that
+ * mostly stands still is sampled whole to fill it again.
+ *
  * The first call that turns gating on allocates what it keeps (the tiles,
  * and per slot and plane what it reuses); no frame allocates. GEIST_E_OOM
  * leaves the stream as it was. GEIST_E_INVALID_ARG for a null stream. */

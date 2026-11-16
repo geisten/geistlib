@@ -1112,7 +1112,9 @@ static void test_conversion_reference(void) {
  * in buffers with 0 to 20 bytes behind the last pixel: the same bits as the
  * still path each time, and ASan sees a read behind an exact buffer. */
 static void test_frame_end(void) {
-    constexpr size_t w = TINY_IMG_W, h = TINY_IMG_H, n_rgb = w * h * 3;
+    constexpr size_t w     = TINY_IMG_W;
+    constexpr size_t h     = TINY_IMG_H;
+    constexpr size_t n_rgb = w * h * 3;
     struct tiny      m;
     tiny_default(&m);
     float hm[11 * 9];
