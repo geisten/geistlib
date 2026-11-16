@@ -40,17 +40,27 @@
  * frames were computed and how many dropped because the pass was not done
  * when the next one came, and the time from the offer of a frame to its
  * result. The still path is not run, and nothing is hashed: which frames
- * are computed depends on the clock.
+ * are computed depends on the clock. With --trace also each pass that took
+ * more than a tenth longer than the median one, with what the system did
+ * since the pass before: the minor page faults and the involuntary context
+ * switches of this process (getrusage), and on Linux the pages the kernel
+ * migrated (pgmigrate_success in /proc/vmstat; memory compaction moves the
+ * pages of a running process, and a pass that touches one waits for it).
+ * That is how docs/DECKNET.md ("The tail behind a camera") tells a slow
+ * pass of the library from one the board made slow.
  *
  * Run it under the host lock like every timing (CONTRIBUTING.md):
  *   make DECKNET=1 bin/<target>/release/tools/bench_stream
  *   bench_stream [--frames N] [--threads 1|2] [--scene block|all|half|burst]
  *                [--only still|stream|gated] [--size 720|1080] [--camera FPS]
+ *                [--trace]
  */
 #define _POSIX_C_SOURCE 200809L
+#define _DARWIN_C_SOURCE 1 /* macOS hides the counters of struct rusage under strict POSIX */
 #include <geist.h>
 #include <geist_decknet.h>
 
+#include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdatomic.h>
@@ -58,7 +68,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <time.h>
+#include <unistd.h>
 
 constexpr size_t N_SLOTS  = 6;
 constexpr size_t CROP_W   = 256;
@@ -647,6 +659,86 @@ static void *camera_run(void *arg) {
     return nullptr;
 }
 
+/* --trace: one pass behind the camera, and the counters when it was done. */
+struct pass {
+    size_t   frame;
+    double   at_s, ms, waited_ms; /* offered at; the pass; offer to the start of the pass */
+    long     minor_faults, switches;
+    uint64_t migrated; /* UINT64_MAX: the system does not say */
+};
+
+/* The pages the kernel has migrated since boot, where /proc/vmstat says. */
+static uint64_t pages_migrated(void) {
+    static const char key[] = "\npgmigrate_success ";
+    static int        fd    = -2;
+    static char       text[16384];
+    if (fd == -2) {
+        fd = open("/proc/vmstat", O_RDONLY);
+    }
+    const ssize_t n = fd < 0 ? -1 : pread(fd, text, sizeof text - 1, 0);
+    if (n <= 0) {
+        return UINT64_MAX;
+    }
+    text[n]        = '\0';
+    const char *at = strstr(text, key);
+    return at == nullptr ? UINT64_MAX : strtoull(at + sizeof key - 1, nullptr, 10);
+}
+
+static void pass_counters(struct pass *p) {
+    struct rusage ru = {0};
+    getrusage(RUSAGE_SELF, &ru);
+    p->minor_faults = ru.ru_minflt;
+    p->switches     = ru.ru_nivcsw;
+    p->migrated     = pages_migrated();
+}
+
+/* The passes that took more than a tenth longer than the median one, each
+ * with what happened since the pass before it. */
+static void report_slow(size_t n, const struct pass *pass, double *scratch) {
+    constexpr size_t max_lines = 24;
+    for (size_t i = 0; i < n; i++) {
+        scratch[i] = pass[i].ms;
+    }
+    qsort(scratch, n, sizeof scratch[0], by_value);
+    const double median = scratch[n / 2];
+    size_t       n_slow = 0, n_migrated = 0, n_faults = 0;
+    for (size_t i = 1; i < n; i++) {
+        const struct pass *p = &pass[i], *q = &pass[i - 1];
+        if (p->ms <= median * 1.1) {
+            continue;
+        }
+        const bool     known    = p->migrated != UINT64_MAX && q->migrated != UINT64_MAX;
+        const uint64_t migrated = known ? p->migrated - q->migrated : 0;
+        n_slow++;
+        n_migrated += migrated > 0;
+        n_faults += p->minor_faults > q->minor_faults;
+        if (n_slow > max_lines) {
+            continue;
+        }
+        printf("    frame %4zu at %6.3f s: pass %6.2f ms after %5.2f ms in the queue, %ld minor "
+               "faults, %ld involuntary switches",
+               p->frame,
+               p->at_s,
+               p->ms,
+               p->waited_ms,
+               p->minor_faults - q->minor_faults,
+               p->switches - q->switches);
+        if (known) {
+            printf(", %llu pages migrated", (unsigned long long) migrated);
+        }
+        printf("\n");
+    }
+    printf("    %zu of %zu passes took more than 1.1 x the median %.2f ms%s: %zu while the "
+           "kernel migrated pages, %zu with minor faults of this process\n",
+           n_slow,
+           n,
+           median,
+           n_slow > max_lines ? " (the first 24 above)" : "",
+           n_migrated,
+           n_faults);
+    fflush(stdout);
+}
+
 static const char *const format_names[3] = {"rgb8", "nv12", "yuyv"};
 
 /* Which frame of the two rings is pushed i-th. */
@@ -662,6 +754,7 @@ static bool measure(size_t                    w,
                     size_t                    threads,
                     enum scene                scene,
                     double                    camera_fps,
+                    bool                      trace,
                     const char               *only) {
     struct buf            file = network(w, h);
     struct geist_decknet *d    = nullptr;
@@ -766,11 +859,15 @@ static bool measure(size_t                    w,
             if (pthread_create(&thread, nullptr, camera_run, &c) != 0) {
                 die("pthread_create");
             }
-            size_t n_computed = 0, n_late = 0;
-            double worst = 0.0;
+            size_t       n_computed = 0, n_late = 0;
+            double       worst   = 0.0;
+            struct pass *pass    = trace ? must_alloc(c.n * sizeof pass[0]) : nullptr;
+            size_t       n_pass  = 0;
+            uint64_t     t_first = 0;
             for (;;) {
                 const bool                        done = atomic_load(&c.done);
                 const struct geist_decknet_frame *got  = nullptr;
+                const uint64_t                    t0   = now_ns();
                 if (geist_decknet_stream_push_offered(s, &got) != GEIST_OK) {
                     die("geist_decknet_stream_push_offered");
                 }
@@ -781,11 +878,21 @@ static bool measure(size_t                    w,
                     nanosleep(&(struct timespec) {.tv_nsec = 50000}, nullptr);
                     continue;
                 }
-                const double latency = (double) (now_ns() - got->timestamp) * 1e-6;
+                const uint64_t t1      = now_ns();
+                const double   latency = (double) (t1 - got->timestamp) * 1e-6;
                 if (got >= c.frames + WARMUP) {
                     ms[n_computed++] = latency;
                     n_late += latency > 1e3 / camera_fps;
                     worst = latency > worst ? latency : worst;
+                    if (trace) {
+                        t_first = n_pass == 0 ? got->timestamp : t_first;
+                        pass[n_pass] =
+                                (struct pass) {.frame = (size_t) (got - c.frames),
+                                               .at_s  = (double) (got->timestamp - t_first) * 1e-9,
+                                               .ms    = (double) (t1 - t0) * 1e-6,
+                                               .waited_ms = (double) (t0 - got->timestamp) * 1e-6};
+                        pass_counters(&pass[n_pass++]);
+                    }
                 }
             }
             pthread_join(thread, nullptr);
@@ -809,6 +916,10 @@ static bool measure(size_t                    w,
                    worst,
                    n_late);
             fflush(stdout);
+            if (trace) {
+                report_slow(n_pass, pass, ms);
+                free(pass);
+            }
             free(c.frames);
             geist_decknet_stream_destroy(s);
             continue;
@@ -908,6 +1019,7 @@ int main(int argc, char **argv) {
     const char *only     = nullptr;
     size_t      height   = 0;   /* both sizes */
     double      camera   = 0.0; /* frames per second; 0: as fast as the pass */
+    bool        trace    = false;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             n_frames = (size_t) strtoul(argv[++i], nullptr, 10);
@@ -928,11 +1040,13 @@ int main(int argc, char **argv) {
             if (!(camera >= 1.0 && camera <= 1000.0)) {
                 die("--camera: 1 to 1000 frames per second");
             }
+        } else if (strcmp(argv[i], "--trace") == 0) {
+            trace = true;
         } else {
             fprintf(stderr,
                     "usage: bench_stream [--frames N] [--threads 1|2] [--scene "
                     "block|all|half|burst] "
-                    "[--only still|stream|gated] [--size 720|1080] [--camera FPS]\n");
+                    "[--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace]\n");
             return 2;
         }
     }
@@ -941,6 +1055,9 @@ int main(int argc, char **argv) {
     }
     if (threads < 1 || threads > 2) {
         die("--threads: 1 or 2");
+    }
+    if (trace && camera <= 0.0) {
+        die("--trace: with --camera");
     }
     printf("bench_stream: invented network, %zu slots, %zu homographies, crop %zu x %zu; "
            "%zu frames per row after %zu warm-up; %s; the streams on %zu thread%s, the still "
@@ -968,6 +1085,7 @@ int main(int argc, char **argv) {
                            threads,
                            scene,
                            camera,
+                           trace,
                            only) &&
                    same;
         }
