@@ -168,10 +168,21 @@ the frame). MJPEG is decoded by the caller.
 A stream divides a frame into **tiles** of 16 x 16 pixels
 (`GEIST_DECKNET_TILE`) from its top left corner and touches only the tiles a
 sample reads. An RGB8 frame is sampled in place. Of an NV12 or YUYV frame
-those tiles are converted to RGB8 first, each pixel once, into memory the
-stream owns, and sampled there: a bilinear sample reads four pixels, and a
-frame's pixels are read by several samples, so converting per sample (the
-first step of #533 did) converts each pixel several times over.
+those tiles are converted to RGB8 first, into memory the stream owns, and
+sampled there: a bilinear sample reads four pixels, and a frame's pixels
+are read by several samples, so converting per sample (the first step of
+#533 did) converts each pixel several times over.
+
+A stream that is not gated converts **slot by slot, and packed**: the
+thread that computes a slot converts the tiles that slot reads right before
+it samples them, into an image that holds the rectangle of those tiles and
+nothing else, and its next slot goes into the same memory. What a slot
+reads of a 1920 x 1080 frame is then 0.8 MB that the core has just written,
+instead of a part of a 6 MB image of the frame that another region wrote
+before (see "Where the conversion's 2 ms went"). A tile that two slots read
+is converted once for each; the worktable strip's tiles are converted before
+the slots. A gated stream converts the tiles it takes into an image of the
+whole frame, which is what it keeps.
 
 NV12 and YUYV are read as BT.601 limited range, the chroma of a pixel taken
 from its block without interpolation. In integers, for the bytes `Y`, `U`,
@@ -184,11 +195,16 @@ G = clamp((c - 100 * (U - 128) - 208 * (V - 128)) >> 8)
 B = clamp((c + 516 * (U - 128)) >> 8)          clamp to 0..255
 ```
 
-`stream.c` evaluates this in 16 bits, so that a compiler makes vectors of
-it: the multiples of 256 are taken out of the shift (298 = 256 + 42,
-409 = 256 + 153, 208 = 256 - 48, 516 = 512 + 4), which leaves sums between
--20128 and 29597. All 2^24 values of (Y, U, V) give the bytes of the
-formula above (checked once, exhaustively, outside the tree;
+`stream.c` evaluates this in 16 bits, 16 pixels at a time in the compiler's
+vector types (no intrinsics; the last pixels of a row whose length is not a
+multiple of 16 in pairs): the multiples of 256 are taken out of the shift
+(298 = 256 + 42, 409 = 256 + 153, 208 = 256 - 48, 516 = 512 + 4), which
+leaves sums between -20128 and 29597; the offsets of a term are gathered
+into one constant; what depends on the chroma alone is computed once for
+the two pixels that share it; and a colour is clamped as bytes, by the sign
+of its high byte. All 2^24 values of (Y, U, V) give the bytes of the
+formula above, in every lane and in the pairs (checked exhaustively outside
+the tree, with clang on arm64 and gcc 14 on arm64 and x86-64;
 `test_decknet_stream_unit` runs frames of arbitrary bytes against its own
 copy of the formula).
 
@@ -270,15 +286,17 @@ The slots of a frame do not depend on each other. With
 `geist_decknet_stream_set_threads(s, 2)` one half of them is computed on a
 second thread of the library's pool (`src/base/par.h`) in a second
 workspace, while `push_frame` computes the other half and waits. The result
-is the same bits. The conversion of an NV12 or YUYV frame is split the
-same way, by rows of tiles; the tile comparison of a gated stream and the
-worktable check stay on the calling thread.
+is the same bits. The conversion of an NV12 or YUYV frame goes with the
+slots: each thread converts what its slots read (see "Frames"); the tile
+comparison of a gated stream, with the conversion of the tiles it takes,
+and the worktable check stay on the calling thread.
 
 The second thread is the pool's, and between two frames of a camera it has
 nothing to do. Waking it is not what a frame waits for: behind a camera at
 60 frames per second on a Raspberry Pi 5 (libgomp) its half of a frame
-starts 2 to 20 µs after the first thread's, in the conversion's region and
-in the slots'. With OpenMP, `OMP_WAIT_POLICY=active` in the environment
+starts 2 to 20 µs after the first thread's (measured at the fourth step of
+#533, when the conversion was a region of its own before the slots', in
+both). With OpenMP, `OMP_WAIT_POLICY=active` in the environment
 keeps it spinning instead, at the price of a core that is busy all the
 time; in five runs per format it changed nothing (see "The tail behind a
 camera"), and the library does not set it.
@@ -375,7 +393,8 @@ What a stream does not repeat (`src/archs/decknet/stream.c`):
   around the pixels a convolution is evaluated at on the others. Nothing
   else of a frame is touched.
 - **Tiles.** RGB8 is sampled in place; of an NV12 or YUYV frame only the
-  tiles a sample reads are converted, each pixel once.
+  tiles a sample reads are converted, 16 pixels at a time, per slot and
+  packed, by the thread that samples them.
 - **The empty deck** is sampled once, when it is set.
 - **A kernel's taps one by one.** Where both kernels have few weights (see
   "Integer crops"), a plane is sampled as prefix sums along its runs of crop
@@ -411,24 +430,29 @@ frame. One thread:
 
 | size | format | still frames/s | p50 | p99 | stream frames/s | p50 | p99 | gated frames/s | p50 | p99 |
 | :-- | :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
-| 1280 x 720 | RGB8 | 16.1 | 62.0 | 62.3 | 60.6 | 16.5 | 16.7 | 205.7 | 4.9 | 5.3 |
-| 1280 x 720 | NV12 | 15.2 | 65.6 | 66.4 | 57.3 | 17.4 | 17.8 | 213.8 | 4.7 | 5.0 |
-| 1280 x 720 | YUYV | 15.2 | 65.7 | 66.1 | 56.7 | 17.6 | 17.8 | 214.0 | 4.6 | 5.0 |
-| 1920 x 1080 | RGB8 | 16.0 | 62.5 | 65.0 | 58.7 | 17.0 | 17.4 | 167.5 | 5.9 | 6.4 |
-| 1920 x 1080 | NV12 | 13.9 | 71.8 | 73.2 | 51.6 | 19.4 | 19.5 | 185.1 | 5.4 | 5.7 |
-| 1920 x 1080 | YUYV | 13.8 | 72.6 | 73.9 | 49.0 | 20.4 | 21.5 | 183.1 | 5.5 | 5.9 |
+| 1280 x 720 | RGB8 | 16.1 | 62.1 | 62.5 | 61.4 | 16.3 | 16.5 | 202.5 | 5.0 | 5.5 |
+| 1280 x 720 | NV12 | 15.2 | 65.8 | 66.6 | 60.6 | 16.5 | 16.6 | 213.8 | 4.7 | 5.0 |
+| 1280 x 720 | YUYV | 15.2 | 65.9 | 66.0 | 59.7 | 16.7 | 16.9 | 212.8 | 4.7 | 5.1 |
+| 1920 x 1080 | RGB8 | 15.8 | 63.5 | 63.8 | 56.8 | 17.6 | 17.7 | 168.6 | 5.9 | 6.3 |
+| 1920 x 1080 | NV12 | 13.8 | 72.2 | 72.5 | 56.3 | 17.7 | 17.9 | 186.4 | 5.4 | 5.7 |
+| 1920 x 1080 | YUYV | 13.8 | 72.4 | 73.1 | 53.8 | 18.6 | 18.7 | 184.7 | 5.4 | 5.8 |
 
-The streams on two threads (`--threads 2`; the still path has no second
-thread):
+The streams on two threads (`--threads 2`, bound to two cores as under "Two
+threads"; the still path has no second thread). On this board NV12 at
+1920 x 1080 moves more from one session to the next than the others: 12.1
+to 12.4 ms in the three runs of the session these tables are from (this
+one and the two scenes below), 11.5 to 11.9 ms in eight runs of two other
+sessions of the same afternoon, in which the tree before, run in turn with
+it, took 13.0 to 13.2:
 
 | size | format | stream frames/s | p50 | p99 | gated frames/s | p50 | p99 |
 | :-- | :-- | --: | --: | --: | --: | --: | --: |
-| 1280 x 720 | RGB8 | 103.0 | 9.7 | 10.1 | 266.1 | 3.9 | 4.3 |
-| 1280 x 720 | NV12 | 95.1 | 10.5 | 10.9 | 278.7 | 3.7 | 4.1 |
-| 1280 x 720 | YUYV | 93.7 | 10.7 | 11.2 | 279.7 | 3.7 | 4.1 |
-| 1920 x 1080 | RGB8 | 86.0 | 11.6 | 12.0 | 203.3 | 5.0 | 5.5 |
-| 1920 x 1080 | NV12 | 75.0 | 13.2 | 17.6 | 229.7 | 4.5 | 4.7 |
-| 1920 x 1080 | YUYV | 72.7 | 13.6 | 16.8 | 226.7 | 4.5 | 4.9 |
+| 1280 x 720 | RGB8 | 103.1 | 9.7 | 10.5 | 267.3 | 3.9 | 4.3 |
+| 1280 x 720 | NV12 | 105.2 | 9.5 | 10.0 | 281.0 | 3.7 | 4.0 |
+| 1280 x 720 | YUYV | 103.8 | 9.6 | 9.9 | 280.4 | 3.7 | 4.0 |
+| 1920 x 1080 | RGB8 | 88.9 | 11.2 | 11.6 | 202.7 | 5.0 | 5.6 |
+| 1920 x 1080 | NV12 | 82.5 | 12.1 | 14.1 | 227.1 | 4.5 | 4.9 |
+| 1920 x 1080 | YUYV | 85.0 | 11.7 | 12.0 | 229.0 | 4.4 | 4.9 |
 
 What gating costs when it saves little or nothing, same board,
 1920 x 1080, p50 / p99 in ms. `--scene all`: every pixel of a frame differs
@@ -440,31 +464,33 @@ by the first thread:
 
 | | RGB8 | NV12 | YUYV |
 | :-- | --: | --: | --: |
-| all: stream, one thread | 17.6 / 17.9 | 20.2 / 20.4 | 20.6 / 20.8 |
-| all: gated, one thread | 19.1 / 19.9 | 20.7 / 26.7 | 21.3 / 21.5 |
-| all: stream, two threads | 11.2 / 11.6 | 13.0 / 13.6 | 13.5 / 17.4 |
-| all: gated, two threads | 12.6 / 13.2 | 15.0 / 16.3 | 16.0 / 16.8 |
-| burst: gated, one thread | 19.4 / 24.3 | 21.1 / 23.0 | 21.6 / 22.7 |
-| burst: gated, two threads | 13.2 / 17.4 | 15.0 / 16.5 | 16.1 / 18.2 |
-| half: stream, one thread | 17.2 / 19.2 | 19.5 / 19.8 | 20.1 / 20.3 |
-| half: gated, one thread | 17.1 / 18.1 | 17.6 / 18.7 | 18.0 / 19.1 |
-| half: stream, two threads | 11.1 / 11.7 | 12.5 / 13.2 | 13.5 / 14.5 |
-| half: gated, two threads | 14.0 / 14.4 | 14.5 / 15.0 | 15.2 / 15.6 |
+| all: stream, one thread | 17.3 / 17.4 | 17.9 / 18.2 | 18.3 / 19.0 |
+| all: gated, one thread | 19.0 / 19.1 | 19.8 / 20.2 | 20.2 / 20.4 |
+| all: stream, two threads | 11.3 / 16.1 | 12.4 / 12.8 | 11.8 / 12.3 |
+| all: gated, two threads | 13.2 / 13.7 | 15.1 / 15.8 | 14.9 / 15.1 |
+| burst: gated, one thread | 18.9 / 23.6 | 19.8 / 23.0 | 20.2 / 22.8 |
+| burst: gated, two threads | 13.0 / 17.4 | 14.9 / 16.7 | 14.6 / 16.5 |
+| half: stream, one thread | 17.3 / 19.1 | 17.9 / 18.7 | 18.3 / 18.5 |
+| half: gated, one thread | 17.2 / 18.6 | 17.4 / 18.6 | 17.5 / 18.6 |
+| half: stream, two threads | 11.6 / 11.9 | 12.3 / 12.6 | 11.6 / 12.2 |
+| half: gated, two threads | 14.0 / 14.4 | 14.4 / 14.9 | 14.3 / 15.0 |
 
 A gated frame that changed all over is computed whole (see "Gating"), so
 what it costs beyond a frame that is not gated is its tiles compared and
-copied: 0.5 to 1.5 ms on one thread (3 to 8 %), where it was a third
-before that rule (25.7, 28.3 and 29.0 ms against 19.2, 21.6 and 22.6, at
-the third step). On two threads it is 1.4 to 2.5 ms (12 to 18 %), because
-the comparison and the copy stay on the calling thread while the rest is
-halved. The frame that fills the caches again after such a stretch is the
-slowest of a burst: its p99 above. With half of the frame changing, a
-gated stream on one thread is ahead of one that is not gated for NV12 and
-YUYV and level with it for RGB8 (what it computes from kept crops sums its
-kernels tap by tap, and the other no longer does); on two threads it is
-behind here, because the three slots that change are the first thread's
-and the second has nothing to do: which slots change decides it, and the
-rule above looks at the frame, not at a slot.
+copied, and for NV12 and YUYV that it is converted and sampled as an image
+of the whole frame and not slot by slot and packed: 1.7 to 1.9 ms on one
+thread (10 %), where it was a third before that rule (25.7, 28.3 and 29.0 ms
+against 19.2, 21.6 and 22.6, at the third step). On two threads it is 1.9 to
+3.1 ms (17 to 26 %), because the comparison, the copy and the conversion
+stay on the calling thread while the rest is halved. The frame that fills
+the caches again after such a stretch is the slowest of a burst: its p99
+above. With half of the frame changing, a gated stream on one thread is
+ahead of one that is not gated for NV12 and YUYV and level with it for RGB8
+(what it computes from kept crops sums its kernels tap by tap, and the other
+no longer does); on two threads it is behind here, because the three slots
+that change are the first thread's and the second has nothing to do: which
+slots change decides it, and the rule above looks at the frame, not at a
+slot.
 
 Every row hashes every output of every frame, and the three ways agree in
 every bit.
@@ -491,7 +517,8 @@ On two threads the parts do not halve: summed over both threads, sampling
 takes 10.6 ms where it takes 7.7 on one (the two share the last cache level
 and the memory behind it), the floor plane 4.7 and the 9 x 9 kernel 6.2, and
 the conversion of an NV12 frame 1.8 ms of wall time where it takes 2.6 on
-one thread.
+one thread. The conversion is no longer a part of its own; "Where the
+conversion's 2 ms went" has the parts of a frame as they are now.
 
 With a camera (`--camera 60 --frames 600`: a second thread offers a frame
 every 16.7 ms, the pass takes what waits; see "A queue of one") the time
@@ -499,12 +526,12 @@ from the offer of a frame to its result is the pass at the median, and it
 has a tail that is not the pass's. The runs at 60 frames per second, not
 gated, and where their tail comes from are under "The tail behind a
 camera". Gated at threshold 0 with the block moving, the same camera, two
-runs (the third step's tree; what a gated stream computes from its kept
-crops has not changed since): 4.7 to 5.3 ms, p99 at most 6.7 ms, on two
-threads, two frames of 3600 later than a period; on one thread 6.1 to
-6.3 ms and at most 7.7 ms, one of 1800 late. At 30 frames per second on one
-thread, not gated (the third step's tree as well): 19.5 / 19.7, 21.7 / 26.6
-and 22.1 / 26.1 ms, none late and none dropped.
+runs per format (the tree as it is): 4.9 to 5.3 ms, p99 at most 6.5 ms, on
+two threads, one result of 3600 later than a period; on one thread 6.2 to
+6.6 ms and at most 7.5 ms, one of 3600 late. At 30 frames per second on one
+thread, not gated: 17.5 / 17.6, 18.0 / 18.3 and 18.6 / 18.8 ms, none
+dropped, and one result of 1800 later than a period of 33.3 ms (a pass of
+34.5 ms).
 
 What each part gained, same board, 1920 x 1080, p50 in ms, one thread
 unless the row says two (200 or 300 frames; each row is the tree at that
@@ -530,6 +557,11 @@ point of the work, measured then):
 | + a row of equal kernel weights from two prefix sums: one thread | 17.5 | 19.9 | 20.4 |
 | the same on two threads, before and after | 12.0, 11.2 | 13.9, 13.1 | 14.2, 13.7 |
 | the prefix sums next to the crop instead of in its place, two threads (not taken) | 16.4 | 18.7 | 19.5 |
+| the fifth step of #533 starts from: one thread, two threads | 17.6, 11.2 | 19.9, 13.1 | 20.3, 13.7 |
+| + NV12 and YUYV converted 16 pixels at a time: one thread, two | 17.6, 11.1 | 19.3, 12.8 | 19.3, 13.2 |
+| + converted per slot, packed, by the thread that samples: one thread, two | 17.3, 11.2 | 17.9, 11.6 | 18.2, 11.8 |
+| per slot, but into the image of the frame, two threads (not taken) | | 13.8 | 14.4 |
+| RGB8 copied into a packed image as well, two threads (not taken) | 11.9 | | |
 
 The still path gained from the integer crops as well (1920 x 1080 RGB8:
 106.5 to 62.9 ms). The rows of one step were measured in one session; the
@@ -549,28 +581,31 @@ crop) is the smaller part.
 **Against the target of #533** (a Pi 5, 1920 x 1080 at 60 frames per
 second, p99 below one frame period of 16.7 ms, on at most two cores, six
 slots), on the bench's network: a stream on two threads has its median
-inside it for all three formats, with 5.1 ms to spare for RGB8 and 3.1 to
-3.5 ms for NV12 and YUYV (11.6, 13.2 and 13.6 ms; they were 12.2, 14.1 and
-14.5 before the fourth step). Fed one frame after the other its p99 was
-12.0, 17.6 and 16.8 ms in the table above: a run of 300 frames has a slow
-pass or has none. Fed by a camera thread at 60 frames per second, which is
-the target as it is written, RGB8 is inside in all 20 runs of "The tail
-behind a camera" (p99 11.6 to 15.7 ms, at most 4 results of 600 late). NV12
-and YUYV are inside in most runs and not in every one: with the two threads
-bound to two cores p99 was below a frame period in 7 of 10 runs for NV12
-and in all 10 for YUYV (13.6 to 21.4 and 13.8 to 16.6 ms), not bound in 3
-and 4 of 5. What is missing is not in the pass: the worst result of five
-runs was 21.5 to 25.4 ms in every row, from the board's memory compaction
-and its other processes, and a format with 3 ms to spare is late two or
-three times after such a pass. So RGB8 meets the target; NV12 and YUYV
-meet it at the median and, on this board as it is, in most runs but not in
-all; a board that does neither of the two was not there to measure. On one
-thread a stream is not inside (17 to 20 ms) unless it is gated and the
-scene is mostly still: 5.4 to 5.9 ms, and 6.1 to 6.3 ms behind a camera at
-60 frames per second with p99 at most 7.7 ms. A gated stream on two
-threads whose every tile changes is at 12.6, 15.0 and 16.0 ms: inside for
-RGB8 and NV12, at the limit for YUYV. None of this is the device's network
-or a camera; see "Not covered".
+inside it for all three formats, with 5.5 ms to spare for RGB8 and 4.3 to
+5.2 ms for NV12 and YUYV (11.2 ms, and 11.5 to 12.4 ms over the sessions of
+the fifth step; they were 11.2, 13.1 and 13.7 before it, and 12.2, 14.1 and
+14.5 before the fourth). Fed by a camera thread at 60 frames per second,
+which is the target as it is written, and bound to two cores, **p99 was
+below a frame period in all 10 runs of 600 frames for each of the three
+formats** (the last table of "The tail behind a camera": p99 11.4 to
+15.2 ms for RGB8, 11.9 to 14.1 for NV12, 12.2 to 12.7 for YUYV; 10, 1 and 9
+results of 6000 late), where the tree before, in the same session and run
+in turn with it, was inside in 10, 9 and 4 of 10 runs. The slow passes are
+still there, and still the board's (memory compaction and the other
+services; a pass of 30 to 45 ms hit 9 of those 30 runs and made one to
+three results late in each): what changed is that a format with 5 ms to
+spare is late once or twice after such a pass and has caught up before the
+run's hundredth part is used up, where one with 3 ms was late five times
+or more.
+So on this board as it is, all three formats met the target in every run
+of that session; that is ten runs of ten seconds each, not a guarantee,
+and a board without the compaction and the other services was not there to
+measure. On one thread a stream is not inside (17 to 19 ms) unless it is
+gated and the scene is mostly still: 5.4 to 5.9 ms, and 6.2 to 6.6 ms
+behind a camera at 60 frames per second with p99 at most 7.5 ms. A gated
+stream on two threads whose every tile changes is at 13.2, 15.1 and
+14.9 ms: inside. None of this is the device's network or a camera; see
+"Not covered".
 
 ```sh
 make DECKNET=1 bin/<target>/release/tools/bench_stream
@@ -578,6 +613,84 @@ make DECKNET=1 bin/<target>/release/tools/bench_stream
     [--frames N] [--threads 1|2] [--scene block|all|half|burst] \
     [--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace]
 ```
+
+### Where the conversion's 2 ms went
+
+After the fourth step an NV12 or YUYV frame took 2 ms longer on two threads
+than an RGB8 one, and had 3 ms to spare below a frame period where RGB8 had
+5.5. The fifth step of #533 measured where the 2 ms go and took most of
+them away. Timers in the stream that are not in the tree, same board,
+1920 x 1080, two threads bound to two cores, 300 frames, ms per frame;
+where a cell has two numbers they are the two threads:
+
+| | RGB8 | NV12 before | NV12 | YUYV before | YUYV |
+| :-- | --: | --: | --: | --: | --: |
+| conversion, a region of its own before the slots | 0 | 1.80 | 0.04 | 1.97 | 0.05 |
+| worktable strip and gains | 0.15 | 0.16 | 0.13 | 0.16 | 0.13 |
+| in the slots: conversion of what the slot reads | 0 | 0 | 1.71, 1.80 | 0 | 1.62, 1.73 |
+| in the slots: sampling | 4.75, 5.40 | 5.20, 5.95 | 4.70, 4.75 | 4.97, 5.72 | 4.72, 4.71 |
+| in the slots: the planes | 5.43, 5.59 | 5.37, 5.29 | 5.10, 5.05 | 5.79, 5.81 | 5.44, 5.39 |
+| the slots of each thread | 10.2, 11.0 | 10.6, 11.2 | 11.5, 11.6 | 10.8, 11.5 | 11.8, 11.8 |
+| the frame | 11.2 | 13.2 | 11.8 | 13.7 | 12.0 |
+
+- **All of it was the conversion, and on two threads the conversion was
+  memory.** It took 1.8 and 2.0 ms of wall time with both threads busy for
+  all of it (1.73 to 1.97 ms each): 3.5 and 3.9 ms of processor time for
+  what one thread alone does in 2.6 and 3.1. It wrote an RGB image of the
+  frame's size, 4.8 MB of it, which the slots then read back; the board
+  does not give two threads twice the memory.
+- **The threads did not wait for each other there, and they do in the
+  slots.** The second thread's sampling is 0.6 to 0.8 ms slower than the
+  first's in every format (its slots are the lower half of the frame), and
+  the first waits that long at the end. With packed images it is not
+  (4.7 ms on both); for RGB8, which is sampled in the caller's frame, it
+  still is.
+- **The arithmetic was the smaller part.** The conversion alone, with
+  everything in the first-level cache, ns per pixel: as it was (loops over
+  small arrays for gcc to make vectors of) 1.37 for NV12 and 1.67 for YUYV;
+  16 pixels at a time in vector types 1.06 and 1.09. On one thread in the
+  stream that is 2.6 to 1.8 ms and 3.1 to 2.0 ms of a frame.
+
+What changed (`stream.c`):
+
+- **16 pixels at a time** (see "Frames" for the arithmetic). By itself,
+  on two threads, 0.2 to 0.4 ms of an NV12 frame and 0.4 to 0.6 ms of a
+  YUYV frame; on one thread 0.7 and 1.0 ms.
+- **Per slot, packed, on the thread that samples.** The thread that
+  computes a slot converts what that slot reads right before it samples
+  it, into an image of the rectangle of those tiles (0.8 MB for a slot of
+  the bench's network) that its next slot overwrites. Another 1.1 to
+  1.5 ms on two threads and 0.9 to 1.6 ms on one: the sampling reads what
+  the core has just written (one thread: 6.5 ms where sampling the caller's
+  RGB8 frame takes 7.5), nothing waits, and no image of the frame is
+  written and read back. A stream allocates a second image of the frame's
+  size for it, 6 MB at 1920 x 1080, of which the second thread uses the
+  first 0.8.
+
+What was tried and dropped, each measured on the same board (two threads,
+p50 of the frame in ms):
+
+- **Per slot on the sampling thread, but into the image of the frame's
+  size** (a tile given to the slot that reads it, tiles that two slots read
+  or the strip reads converted before the slots): NV12 13.8 and YUYV 14.4,
+  against 13.2 and 13.6 before. The conversion was no faster for being
+  next to its reader (2.0 ms per thread) and the sampling slower. It is the
+  packing that gains, not the place in the pass.
+- **Zeroing a row of the packed image before converting into it**, so that
+  the cache need not fetch what is about to be overwritten: 12.0 and 12.1
+  against 11.8 and 12.0.
+- **RGB8 copied into a packed image as well.** Sampling gets faster by 0.2
+  and 1.0 ms on the two threads, and the copy costs 1.6 and 2.0 ms: 11.9
+  against 11.2 (one thread: 17.6 against 17.3). So **a plain copy of what a
+  slot reads costs on two threads what the NV12 conversion now costs**, and
+  what is left between the YUV formats and RGB8, 0.4 to 0.7 ms, is the
+  price of bringing 0.8 MB per slot through the cache less what the
+  sampling gains from it. More arithmetic taken out of the conversion would
+  not show there.
+- **Two ways to write the 16 pixels** that gcc 14 makes slow code of: a
+  half vector widened with `__builtin_convertvector` goes through the
+  general registers (2.5 ns per pixel), and the three colours put side by
+  side by a loop over arrays instead of by six shuffles (1.8 ns).
 
 ### The tail behind a camera
 
@@ -688,7 +801,38 @@ of each row was between 21.5 and 29.4 ms.
   by itself: `vm.compact_unevictable_allowed` is 1. A real-time priority is
   not open either, and no core was taken away in the first place.
 
-What `--trace` prints for such a run (YUYV, the tree as it is; three
+**The fifth step: a shorter pass.** The slow passes are the board's, so
+what the library can add is room. With NV12 and YUYV converted 16 pixels at
+a time, and then per slot and packed (see "Where the conversion's 2 ms
+went"), a later session, the three trees in turn run by run, bound, 10 runs
+of 600 frames per row and format: the median of p50 in ms, the range of
+p99 over the ten runs (its median in brackets), the runs whose p99 is below
+a frame period, and the late results of 6000:
+
+| | RGB8 | NV12 | YUYV |
+| :-- | --: | --: | --: |
+| the fourth step's tree | 11.2, 11.1 to 15.0 (12.0), 10 of 10, 9 late | 13.1, 13.2 to 20.3 (13.7), 9 of 10, 21 late | 13.4, 13.9 to 23.4 (17.2), 4 of 10, 67 late |
+| + converted 16 pixels at a time | 11.2, 11.7 to 15.1 (11.9), 10 of 10, 11 late | 12.8, 13.1 to 15.8 (13.8), 10 of 10, 16 late | 13.1, 13.7 to 17.2 (13.8), 9 of 10, 16 late |
+| + per slot, packed | 11.2, 11.4 to 15.2 (12.0), 10 of 10, 10 late | 11.6, 11.9 to 14.1 (12.8), 10 of 10, 1 late | 11.9, 12.2 to 12.7 (12.5), 10 of 10, 9 late |
+
+A pass now catches up by 5.0 ms (NV12) and 4.7 ms (YUYV) of what a slow one
+before it lost, where it was 3.6 and 3.2, and 5.5 for RGB8. That session's
+board also had one pass of 30 to 45 ms in 5 of the 10 RGB8 runs and in 4 of
+the 10 YUYV runs of every tree, in the same rounds for all three (a round is
+the three trees within two minutes), so it follows the clock and not the
+tree: it makes one to three results late, which is all of the late results
+RGB8 has in the table and all of YUYV's in its last row, and it mostly drops
+a frame (of the 26 frames dropped in these 90 runs, 25 were dropped in the
+27 runs that had such a pass); the 15 ms in the range of RGB8's p99 are
+those runs. `--trace` on two later runs per format of the tree as it is
+caught two such passes, of 24.6 and 33.8 ms: each with 7 minor faults of the
+process while the kernel migrated 2652 and 2492 pages, which is the
+compaction of the fourth step moving more pages at once than it did then
+(160 to 1750); and one stretch of 30 passes of 13 to 19 ms with up to 23
+involuntary switches in a pass and no page migrated, which is another
+process on the stream's two cores.
+
+What `--trace` prints for such a run (YUYV, the fourth step's tree; three
 passes during a migration, and a group next to another process):
 
 ```
@@ -745,13 +889,35 @@ margin anyway: gated, a frame is 5 ms.
   need the tables rebuilt for each stride: not taken. A sample needs every
   bit of its three weights to give the bits it gives, so a table entry
   cannot be much smaller than its 16 bytes.
-- **The conversion of NV12 and YUYV** is 2.6 and 3.1 ms of a frame, 1.8 and
-  2.0 ms of wall time on two threads, in a region of its own before the
-  slots'. The region itself costs nothing that shows (the second thread is
-  in it 2 to 8 µs after the first), so converting the tiles of a slot on
-  the thread that samples them would save no waiting; whether tiles that
-  are sampled right after they are converted are cheaper to sample was not
+- **The rest of the conversion.** An NV12 or YUYV frame still takes 0.4
+  to 0.7 ms longer than an RGB8 one on two threads. Each thread spends
+  1.7 ms converting what its three slots read, where one thread alone
+  converts all six in 1.8 to 2.0 ms, and a plain copy of the same bytes
+  costs as much (see "Where the conversion's 2 ms went"): it is the 0.8 MB
+  per slot going through a cache that two threads share, not the
+  arithmetic. Smaller pieces were not tried: the five planes of a slot read
+  the same pixels, so converting per plane converts each pixel up to five
+  times, and converting a band of a slot for all five planes at once needs
+  their five crops alive together, which is what made "the prefix sums next
+  to the crop" slow. The arithmetic itself could be shorter with a
+  platform's instructions (NEON has a narrowing shift that saturates and a
+  store that interleaves three vectors, which the vector types cannot
+  say); on one thread, where it is what counts, that was not tried either.
+- **RGB8 on the second thread.** The second thread samples its three slots
+  of an RGB8 frame 0.65 ms slower than the first samples its own, and the
+  first waits. Packed images do not have that, but for RGB8 the copy costs
+  more than it gains. Handing out slots one by one instead of in halves
+  would not change three against three; splitting below a slot was not
   tried.
+- **A gated stream's conversion.** A gated stream converts the tiles it
+  takes on the calling thread, into the image of the whole frame, as
+  before; it has the 16 pixels at a time and not the packing. With every
+  tile changing that is 14.3 to 15.1 ms for NV12 and YUYV on two threads
+  where a stream that is not gated takes 11.5 to 12.4.
+- **The conversion on x86-64.** The 16 pixels at a time build and give the
+  right bytes with gcc 14 and `-march=x86-64-v3` (all 2^24 inputs, and the
+  unit tests, in an emulated container); how fast they are there was not
+  measured.
 - **The whole-frame rule per slot.** A gated frame is computed whole when
   7 of 8 of all its tiles changed. A frame in which one slot changes all
   over and the others stand still is computed from the caches, that slot
