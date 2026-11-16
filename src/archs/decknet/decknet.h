@@ -371,6 +371,7 @@ constexpr size_t DECKNET_GATE_WHOLE_NUM = 7;
 constexpr size_t DECKNET_GATE_WHOLE_DEN = 8;
 /* A stream computes its slots on one thread or on two. */
 constexpr size_t DECKNET_STREAM_THREADS = 2;
+static_assert(DECKNET_MAX_SLOTS <= 64, "geist_decknet_stream.slot_tiles has a bit per slot");
 
 /* A sample is computed from 16 bytes of each of its two rows, of which the
  * first six are its pixels, where that many are there to read. */
@@ -406,7 +407,12 @@ struct geist_decknet_stream {
     size_t   tiles_w, tiles_h;
     size_t   n_tiles; /* tiles a sample reads */
     uint8_t *used;    /* tiles_w x tiles_h: a sample reads the tile */
-    uint8_t *changed; /* tiles_w x tiles_h, gated: see tiles_gate */
+    /* tiles_w x tiles_h: bit i is set where a sample of slot i reads the
+     * tile. And n_slots + 1 rectangles: the tiles slot i reads lie in
+     * read_box[i], those of the worktable strip in read_box[n_slots]. */
+    uint64_t           *slot_tiles;
+    struct decknet_box *read_box;
+    uint8_t            *changed; /* tiles_w x tiles_h, gated: see tiles_gate */
     /* (tiles_w + 1) x (tiles_h + 1), gated: the number of `changed` tiles
      * left of and above a tile corner, so that "any in this rectangle" is
      * four reads. */
@@ -414,10 +420,15 @@ struct geist_decknet_stream {
     /* Per DECKNET_CHUNK samples of `tab`, the rectangle of tiles their first
      * pixels lie in: a chunk with no changed tile in it is not looked at. */
     struct decknet_box *box;
-    /* img_w x img_h x 3 and DECKNET_SAMPLE_BYTES behind them, written at the
-     * used tiles: an NV12 or YUYV frame as RGB8, and for a gated stream the
-     * kept tiles of any frame as RGB8. */
+    /* img_w x img_h x 3 and DECKNET_SAMPLE_BYTES behind them. For a gated
+     * stream the kept tiles of any frame as RGB8, written at the used
+     * tiles of an image of the frame's size. For an NV12 or YUYV frame that
+     * is not gated, what the worktable strip and then each slot of the
+     * first thread reads, as RGB8, packed (stream.c, pixels_box). */
     uint8_t *rgb;
+    /* As much again: the same for the slots of the second thread, which
+     * converts what its slots read while the first converts its own. */
+    uint8_t *rgb2;
 
     /* ---- gating: allocated by the first set_gate that turns it on ---- */
     bool                      gate;
