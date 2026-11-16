@@ -9,7 +9,7 @@
    "what": "__attribute__"
   },
   "__builtin": {
-   "max": 78,
+   "max": 80,
    "what": "__builtin_* calls and names"
   },
   "define_function": {

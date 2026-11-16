@@ -268,12 +268,14 @@ fuzz-libfuzzer:
 # -fsanitize=fuzzer supplies main, so GEIST_FUZZ_STANDALONE must stay off for
 # this TU. The corpus seed comes from the harness itself — the format knowledge
 # lives next to the parser it feeds, not in a checked-in blob.
+# $(LDFLAGS) as every other binary links with: fuzz_decknet_stream pulls in
+# par.o, which needs the target's OpenMP runtime (-lomp on macOS).
 fuzz-libfuzzer-run: $(LIB_FILE) $(FUZZ_BINS)
 	@mkdir -p $(BUILD_DIR)/fuzz
 	@for t in $(FUZZ_TARGETS); do \
 		mkdir -p $(BUILD_DIR)/fuzz/corpus-$$t; \
 		$(TEST_BIN_DIR)/fuzz_$$t --seed > $(BUILD_DIR)/fuzz/corpus-$$t/seed; \
-		$(CC) $(CFLAGS) -fsanitize=fuzzer tests/fuzz_$$t.c $(LIB_FILE) $(LDLIBS) \
+		$(CC) $(CFLAGS) $(LDFLAGS) -fsanitize=fuzzer tests/fuzz_$$t.c $(LIB_FILE) $(LDLIBS) \
 		    -o $(BUILD_DIR)/fuzz/fuzz-$$t || exit 1; \
 		echo "== fuzz_$$t (libFuzzer, $(FUZZ_SECONDS)s)"; \
 		$(BUILD_DIR)/fuzz/fuzz-$$t $(BUILD_DIR)/fuzz/corpus-$$t \

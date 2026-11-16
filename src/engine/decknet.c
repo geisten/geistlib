@@ -210,6 +210,29 @@ enum geist_status geist_decknet_stream_push_frame(struct geist_decknet_stream   
     return decknet_stream_push_frame(s, frame);
 }
 
+enum geist_status geist_decknet_stream_offer(struct geist_decknet_stream       *s,
+                                             const struct geist_decknet_frame  *frame,
+                                             const struct geist_decknet_frame **dropped) {
+    if (dropped != nullptr) {
+        *dropped = nullptr;
+    }
+    if (s == nullptr || frame == nullptr || dropped == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_offer(s, frame, dropped);
+}
+
+enum geist_status geist_decknet_stream_push_offered(struct geist_decknet_stream       *s,
+                                                    const struct geist_decknet_frame **done) {
+    if (done != nullptr) {
+        *done = nullptr;
+    }
+    if (s == nullptr || done == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_push_offered(s, done);
+}
+
 enum geist_status geist_decknet_stream_result(const struct geist_decknet_stream  *s,
                                               struct geist_decknet_stream_result *out) {
     if (out != nullptr) {
@@ -228,6 +251,7 @@ enum geist_status geist_decknet_stream_result(const struct geist_decknet_stream 
             .n_tiles         = s->n_tiles,
             .n_tiles_changed = s->n_tiles_changed,
             .n_samples       = s->n_samples,
+            .n_dropped       = decknet_stream_dropped(s),
     };
     return GEIST_OK;
 }

@@ -29,6 +29,11 @@
  * of nine tiles, and aborts when at threshold 0 the two differ in a bit, or
  * when at any threshold the same frame twice gives two results.
  *
+ * The queue of one (geist_decknet_stream_offer, _push_offered) takes the
+ * same description: each input goes through it as well, and the harness
+ * aborts when an offer accepts what a push refuses, queues a refused frame
+ * or does not hand back the frame it replaces.
+ *
  * The model is tests/decknet_tiny.h (16 x 12, two slots). Built only with
  * DECKNET=1 (mk/common.mk).
  *
@@ -321,6 +326,28 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         fuzz_stream_accepted++;
     } else {
         fuzz_stream_refused++;
+    }
+    /* The same description through the queue of one: it is checked when it
+     * is offered, by the same rule, and a refused frame is not queued. */
+    const struct geist_decknet_frame *back = &frame;
+    if (geist_decknet_stream_offer(s, &frame, &back) != (fit ? GEIST_OK : GEIST_E_INVALID_ARG) ||
+        back != nullptr) {
+        abort();
+    }
+    if (fit && (geist_decknet_stream_offer(s, &frame, &back) != GEIST_OK || back != &frame)) {
+        abort(); /* the second offer hands the first back */
+    }
+    if (geist_decknet_stream_push_offered(s, &back) != GEIST_OK ||
+        back != (fit ? &frame : nullptr)) {
+        abort();
+    }
+    if (fit) {
+        struct geist_decknet_stream_result res;
+        if (geist_decknet_stream_result(s, &res) != GEIST_OK || res.n_frames != 2 ||
+            res.n_dropped != 1 || res.timestamp != size) {
+            abort();
+        }
+        read_outputs(s);
     }
     free(buf);
     geist_decknet_stream_destroy(s);

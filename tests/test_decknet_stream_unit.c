@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L /* sched_yield */
 /* tests/test_decknet_stream_unit.c — a decknet stream against the still-image
  * path (#533).
  *
@@ -41,6 +42,19 @@
  *                   any four bytes to within two units of 1/65536 of the
  *                   exact value;
  *   two threads     the same bits, with and without gating;
+ *   the frame's end a sample at the last pixels of a frame is computed from
+ *                   those pixels alone when the buffer ends with them, and
+ *                   from 16 bytes of each row when it does not: the same
+ *                   bits, for every length of what is behind the frame;
+ *   a queue of one  geist_decknet_stream_offer and _push_offered: step by
+ *                   step on one thread (what is handed back, when, and
+ *                   counted), with a consumer that takes one frame for
+ *                   every three a second thread offers (it computes the
+ *                   third, two are dropped, in every round), and with the
+ *                   second thread offering as fast as it can: every frame
+ *                   comes back exactly once, dropped or computed, the
+ *                   computed ones in order and with the bits of a
+ *                   push_frame on the same frame;
  *   state           no frame before a reference or after new homographies;
  *                   no result before a frame; each allocation of a create
  *                   failing once.
@@ -58,6 +72,10 @@
 #include <geist_decknet.h>
 
 #include <math.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdatomic.h>
+#include <time.h>
 
 static int g_fail = 0;
 
@@ -409,8 +427,13 @@ static void test_gate(enum geist_decknet_format format,
     bool     have_kept = false;
     memset(kept, 0xA5, fref.n_bytes);
 
-    constexpr size_t n_frames  = 10;
-    size_t           n_outputs = 0, n_held = 0, n_skipped = 0, n_differ = 0;
+    /* The first frame, the one after a frame that is not checkable and the
+     * one after a new reference are taken whole and computed as a frame
+     * that is not gated; the frame after each of them fills the caches; the
+     * others are computed from them. */
+    constexpr size_t n_frames  = 14;
+    size_t           n_outputs = 0, n_held = 0, n_skipped = 0, n_differ = 0, n_cached = 0;
+    size_t           n_whole = 0; /* the samples of a frame computed whole */
     for (size_t k = 0; k < n_frames; k++) {
         uint8_t *img = moved(w, h, k % 4, cur); /* the block comes back to where it was */
         /* Above threshold 0 a little noise, on other pixels each frame;
@@ -422,12 +445,12 @@ static void test_gate(enum geist_decknet_format format,
                 }
             }
         }
-        if (k == 4) { /* half brightness: not checkable, and every tile changes */
+        if (k == 5) { /* half brightness: not checkable, and every tile changes */
             for (size_t i = 0; i < n_rgb; i++) {
                 img[i] >>= 1;
             }
         }
-        if (k == 7) { /* a new reference: the next frame is taken whole */
+        if (k == 10) { /* a new reference: the next frame is taken whole */
             CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
             have_kept = false;
         }
@@ -477,8 +500,13 @@ static void test_gate(enum geist_decknet_format format,
         /* The stream keeps only the tiles the network reads. */
         CHECK(got.n_tiles > 0 && got.n_tiles <= ((w + 15) / 16) * ((h + 15) / 16));
         CHECK(got.n_tiles_changed <= got.n_tiles && got.n_tiles_changed <= n_taken);
-        CHECK(want.checkable == (k != 4));
+        CHECK(want.checkable == (k != 5));
         n_skipped += got.n_tiles_changed < got.n_tiles;
+        if (k == 0) {
+            n_whole = got.n_samples;
+            CHECK(got.n_tiles_changed == got.n_tiles);
+        }
+        n_cached += want.checkable && got.n_samples < n_whole;
         free(cur8);
         free(img8);
         free((void *) (uintptr_t) f.data);
@@ -487,13 +515,16 @@ static void test_gate(enum geist_decknet_format format,
     /* The sequence has to reach what it claims to test: frames in which
      * tiles were kept, and above threshold 0 tiles that differed and were
      * kept all the same, so that the image is not the frame. */
-    CHECK(n_skipped >= 5);
+    CHECK(n_skipped >= 8);
+    CHECK(n_cached >= 6); /* frames that sampled less than all: computed from what was kept */
     CHECK(threshold == 0 ? (n_held == 0 && n_differ == 0) : (n_held > 20 && n_differ >= 5));
-    printf("%-34s %zu frames, %zu with tiles kept, %zu outputs bit-identical to the still path on "
-           "the kept tiles (%zu tiles kept although they differed)\n",
+    printf("%-34s %zu frames, %zu with tiles kept, %zu computed from the caches, %zu outputs "
+           "bit-identical to the still path on the kept tiles (%zu tiles kept although they "
+           "differed)\n",
            what,
            (size_t) n_frames,
            n_skipped,
+           n_cached,
            n_outputs,
            n_held);
 
@@ -581,14 +612,16 @@ static void test_gate_edges(bool vertical) {
         bool   bright15, bright16, strip;
         size_t tiles_changed; /* SIZE_MAX: not asserted */
     } frames[] = {
-            {false, false, false, SIZE_MAX}, /* the first: taken whole */
+            {false, false, false, SIZE_MAX}, /* the first: taken whole, computed whole */
+            {false, false, false, 0},        /* the same: fills the caches */
             {false, true, false, 1},         /* 16 changes: the unit at 15 reads it */
             {true, false, false, 2},         /* 15 changes, 16 back: the unit at 16 reads 15 */
             {true, false, false, 0},         /* nothing */
             {true, true, true, 2},           /* not checkable, and 16 changes */
-            {true, true, false, 1}, /* only the strip changes back: 16 is of the frame before */
+            {true, true, false, 1},  /* only the strip changes back: 16 is of the frame before */
+            {true, false, false, 1}, /* and 16 back, from the caches that frame filled */
     };
-    size_t n_outputs = 0;
+    size_t n_outputs = 0, n_whole = 0;
     for (size_t k = 0; k < sizeof frames / sizeof frames[0]; k++) {
         memset(img, 120, n_rgb);
         const size_t along[2] = {15 * 40, 16 * 40};
@@ -608,6 +641,11 @@ static void test_gate_edges(bool vertical) {
         CHECK(want.checkable == !frames[k].strip);
         CHECK(frames[k].tiles_changed == SIZE_MAX ||
               got.n_tiles_changed == frames[k].tiles_changed);
+        /* Frames 2 to 4 and the last are computed from the caches: they
+         * sample less than a whole frame (as frame 5 does, of which only
+         * the strip is sampled). */
+        n_whole = k == 0 ? got.n_samples : n_whole;
+        CHECK((k >= 2 && k != 6) == (got.n_samples < n_whole));
         if (!same_outputs(still, &want, s, &info, &n_outputs)) {
             fprintf(stderr,
                     "FAIL gate edges (%s): frame %zu differs from the still path\n",
@@ -615,7 +653,7 @@ static void test_gate_edges(bool vertical) {
                     k);
             g_fail = 1;
         }
-        if (want.checkable && k > 0) { /* a bright pixel shows in the units at all */
+        if (want.checkable && k > 1) { /* a bright pixel shows in the units at all */
             struct geist_decknet_slot slot;
             CHECK(geist_decknet_stream_slot(s, 0, &slot) == GEIST_OK &&
                   (slot.plate > 0.0f || slot.rack > 0.0f));
@@ -656,6 +694,7 @@ static void test_gate_threshold(void) {
     CHECK(geist_decknet_stream_set_gate(s, true, 30) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* the grey frame is the kept one */
+    CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* and what the caches are of */
     f.data = img;
 
     const uint8_t by[2][3]  = {{130, 130, 130}, {131, 130, 130}}; /* 30 in all, then 31 */
@@ -825,6 +864,7 @@ static void test_gate_seams(void) {
     /* 6 floor samples and 96 rows of 3 on each other plane, per slot: the
      * first stretch of 256 ends on the first sample of a crop row. */
     CHECK(got.n_samples == 20 + 2 * (6 + 4 * 288));
+    CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* fills the caches */
     f.data = img;
 
     size_t n_outputs = 0;
@@ -837,6 +877,7 @@ static void test_gate_seams(void) {
             CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
             CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
             CHECK(want.checkable && got.n_tiles_changed >= 1 && got.n_tiles_changed <= 2);
+            CHECK(got.n_samples < 20 + 2 * (6 + 4 * 288)); /* from the caches */
             struct geist_decknet_slot slot;
             CHECK(geist_decknet_slot(still, 0, &slot) == GEIST_OK && slot.plate > 0.0f);
             if (!same_outputs(still, &want, s, &info, &n_outputs)) {
@@ -1063,6 +1104,352 @@ static void test_conversion_reference(void) {
     }
 }
 
+/* ---- the end of a frame ----------------------------------------------- */
+
+/* A sample is computed from 16 bytes of each of its rows where the frame has
+ * them, and from its six pixels' bytes alone where the buffer ends before.
+ * Crops that lie on the last pixels of the image (and beyond it, clamped),
+ * in buffers with 0 to 20 bytes behind the last pixel: the same bits as the
+ * still path each time, and ASan sees a read behind an exact buffer. */
+static void test_frame_end(void) {
+    constexpr size_t w     = TINY_IMG_W;
+    constexpr size_t h     = TINY_IMG_H;
+    constexpr size_t n_rgb = w * h * 3;
+    struct tiny      m;
+    tiny_default(&m);
+    float hm[11 * 9];
+    for (size_t i = 0; i < 11; i++) {
+        /* crop pixel (x, y) reads the image at (w - 4 + 0.7 x, h - 3 + 0.6 y) */
+        const float corner[9] = {0.7f, 0, (float) w - 3.6f, 0, 0.6f, (float) h - 2.7f, 0, 0, 1};
+        memcpy(hm + i * 9, corner, sizeof corner);
+    }
+    tiny_set(&m.t[TINY_T_HOMOGRAPHY], "decknet.homography", 3, 11, 3, 3, 99, hm);
+    static struct tiny_buf buf;
+    tiny_write(&m, &buf);
+    struct geist_decknet *still = nullptr, *d = nullptr;
+    if (geist_decknet_load_from_memory(buf.n, buf.b, &still) != GEIST_OK ||
+        geist_decknet_load_from_memory(buf.n, buf.b, &d) != GEIST_OK) {
+        broken(geist_last_create_error(), "decknet_tiny, the end of a frame");
+    }
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    uint8_t ref[n_rgb], img[n_rgb];
+    for (size_t i = 0; i < n_rgb; i++) {
+        ref[i] = (uint8_t) (110 + (i * 7) % 21);
+        img[i] = (uint8_t) (ref[i] + (i * 5) % 7 - 3); /* near it: the pair stays checkable */
+    }
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    size_t n_outputs = 0, n_checkable = 0;
+    for (size_t behind = 0; behind <= 20; behind++) {
+        struct geist_decknet_frame f    = {.format  = GEIST_DECKNET_FORMAT_RGB8,
+                                           .width   = w,
+                                           .height  = h,
+                                           .stride  = w * 3,
+                                           .n_bytes = n_rgb + behind};
+        uint8_t                   *fref = xmalloc(f.n_bytes), *fimg = xmalloc(f.n_bytes);
+        memset(fref, 0xA5, f.n_bytes);
+        memset(fimg, 0x5A, f.n_bytes);
+        memcpy(fref, ref, n_rgb);
+        memcpy(fimg, img, n_rgb);
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, n_rgb, img, ref, &want) == GEIST_OK);
+        f.data = fref;
+        CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+        f.data = fimg;
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr, "FAIL the end of a frame: %zu bytes behind it\n", behind);
+            g_fail = 1;
+        }
+        n_checkable += want.checkable;
+        free(fimg);
+        free(fref);
+    }
+    CHECK(n_checkable == 21); /* otherwise no slot was sampled */
+    printf("samples at the last pixels of a frame with 0 to 20 bytes behind it: %zu outputs "
+           "bit-identical to the still path\n",
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* ---- a queue of one --------------------------------------------------- */
+
+/* Every output of the last frame, as bits. Returns how many. */
+constexpr size_t QUEUE_OUTPUTS = 4096;
+static size_t    outputs_of(const struct geist_decknet_stream *s,
+                            const struct geist_decknet_info   *info,
+                            float                              out[static QUEUE_OUTPUTS]) {
+    struct geist_decknet_stream_result res;
+    size_t                             n = 0;
+    if (geist_decknet_stream_result(s, &res) != GEIST_OK || !res.image.checkable) {
+        return 0;
+    }
+    memcpy(out, res.image.gain, sizeof res.image.gain);
+    out[3] = res.image.bg_changed;
+    n      = 4;
+    for (size_t i = 0; i < info->n_slots; i++) {
+        struct geist_decknet_slot slot;
+        if (geist_decknet_stream_slot(s, i, &slot) != GEIST_OK ||
+            n + 8 + info->n_tips + 2 * info->n_tubes > QUEUE_OUTPUTS) {
+            return 0;
+        }
+        const float sc[8] = {slot.occ_front,
+                             slot.occ_rear,
+                             slot.wall_front,
+                             slot.rack,
+                             slot.plate,
+                             slot.deep,
+                             slot.tube_n,
+                             slot.tube_r};
+        memcpy(out + n, sc, sizeof sc);
+        memcpy(out + n + 8, slot.tips, info->n_tips * sizeof(float));
+        memcpy(out + n + 8 + info->n_tips, slot.tubes, info->n_tubes * sizeof(float));
+        memcpy(out + n + 8 + info->n_tips + info->n_tubes,
+               slot.tubes_rot,
+               info->n_tubes * sizeof(float));
+        n += 8 + info->n_tips + 2 * info->n_tubes;
+    }
+    return n;
+}
+
+constexpr size_t QUEUE_IMAGES = 4;    /* distinct frames */
+constexpr size_t QUEUE_ROUNDS = 12;   /* the slow consumer: three offers, one pass */
+constexpr size_t QUEUE_FREE   = 3000; /* offers of the thread that does not wait */
+
+/* What the two threads of the queue test share. A frame is offered once;
+ * `dropped` and `done` say how it came back, each written by one thread. */
+struct queue_test {
+    struct geist_decknet_stream *s;
+    size_t                       n_frames;
+    struct geist_decknet_frame  *frames;
+    uint8_t                     *dropped;     /* by the thread that offers */
+    uint8_t                     *done;        /* by the thread that computes */
+    atomic_size_t                go, offered; /* rounds asked for, rounds offered */
+    atomic_bool                  finished;
+    size_t                       n_wrong; /* by the thread that offers */
+};
+
+static void *queue_producer(void *arg) {
+    struct queue_test *q = arg;
+    /* The slow consumer: a round is three frames, and the consumer takes
+     * one pass when all three are offered. The first finds nothing waiting;
+     * each of the others gets the one before it back. */
+    for (size_t r = 0; r < QUEUE_ROUNDS; r++) {
+        while (atomic_load(&q->go) <= r) {
+            sched_yield();
+        }
+        for (size_t j = 0; j < 3; j++) {
+            const struct geist_decknet_frame *f    = &q->frames[r * 3 + j];
+            const struct geist_decknet_frame *back = f;
+            q->n_wrong += geist_decknet_stream_offer(q->s, f, &back) != GEIST_OK;
+            q->n_wrong += back != (j == 0 ? nullptr : f - 1);
+            if (back != nullptr) {
+                q->dropped[back - q->frames]++;
+            }
+        }
+        atomic_store(&q->offered, r + 1);
+    }
+    /* And without waiting for anyone: as fast as this thread can. */
+    while (atomic_load(&q->go) <= QUEUE_ROUNDS) {
+        sched_yield();
+    }
+    for (size_t i = QUEUE_ROUNDS * 3; i < q->n_frames; i++) {
+        const struct geist_decknet_frame *back = nullptr;
+        q->n_wrong += geist_decknet_stream_offer(q->s, &q->frames[i], &back) != GEIST_OK;
+        if (back != nullptr) {
+            q->n_wrong += back < q->frames || back >= &q->frames[i];
+            q->dropped[back - q->frames]++;
+        }
+        if (i % 4 == 0) { /* so that the other thread gets passes in between */
+            nanosleep(&(struct timespec) {.tv_nsec = 50000}, nullptr);
+        }
+    }
+    atomic_store(&q->finished, true);
+    return nullptr;
+}
+
+static void test_queue(size_t threads, bool gated) {
+    struct geist_decknet     *d = load_synth();
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    const size_t w = info.image_width, h = info.image_height;
+    uint8_t     *cur = read_ppm("tests/data/decknet_synth/cur.ppm", w, h);
+    uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
+
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
+    struct geist_decknet_frame fref = make_frame(GEIST_DECKNET_FORMAT_NV12, w, h, 3, ref);
+    CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
+
+    /* The frames, and what geist_decknet_stream_push_frame gives for each. */
+    struct geist_decknet_frame image[QUEUE_IMAGES];
+    static float               want[QUEUE_IMAGES][QUEUE_OUTPUTS];
+    size_t                     n_want = 0;
+    for (size_t k = 0; k < QUEUE_IMAGES; k++) {
+        uint8_t *img = moved(w, h, k, cur);
+        image[k]     = make_frame(GEIST_DECKNET_FORMAT_NV12, w, h, 3, img);
+        free(img);
+        CHECK(geist_decknet_stream_push_frame(s, &image[k]) == GEIST_OK);
+        n_want = outputs_of(s, &info, want[k]);
+        CHECK(n_want > 4);
+    }
+    CHECK(geist_decknet_stream_set_gate(s, gated, 0) == GEIST_OK);
+    struct geist_decknet_stream_result res;
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.n_dropped == 0);
+    const uint64_t n_before = res.n_frames;
+
+    /* One thread, step by step. */
+    struct geist_decknet_frame        a = image[0], b = image[1], c = image[2];
+    const struct geist_decknet_frame *back = &a;
+    static float                      got[QUEUE_OUTPUTS];
+    a.timestamp = 11;
+    b.timestamp = 12;
+    c.timestamp = 13;
+    CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK && back == nullptr);
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.n_frames == n_before);
+    CHECK(geist_decknet_stream_offer(s, &a, &back) == GEIST_OK && back == nullptr);
+    CHECK(geist_decknet_stream_offer(s, &b, &back) == GEIST_OK && back == &a);
+    CHECK(geist_decknet_stream_offer(s, &c, &back) == GEIST_OK && back == &b);
+    /* Offered frames are not computed on, and not counted as frames. */
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.n_frames == n_before &&
+          res.n_dropped == 2);
+    CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK && back == &c);
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.n_frames == n_before + 1 &&
+          res.timestamp == 13 && res.n_dropped == 2);
+    CHECK(outputs_of(s, &info, got) == n_want && memcmp(got, want[2], n_want * sizeof(float)) == 0);
+    CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK && back == nullptr);
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.n_frames == n_before + 1 &&
+          res.timestamp == 13);
+    /* A frame that would be refused is not queued, and replaces nothing. */
+    struct geist_decknet_frame bad = image[3];
+    bad.n_bytes--;
+    CHECK(geist_decknet_stream_offer(s, &a, &back) == GEIST_OK && back == nullptr);
+    back = &a;
+    CHECK(geist_decknet_stream_offer(s, &bad, &back) == GEIST_E_INVALID_ARG && back == nullptr);
+    CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK && back == &a);
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.timestamp == 11 &&
+          res.n_dropped == 2);
+    /* Null arguments. */
+    back = &a;
+    CHECK(geist_decknet_stream_offer(nullptr, &a, &back) == GEIST_E_INVALID_ARG && back == nullptr);
+    back = &a;
+    CHECK(geist_decknet_stream_offer(s, nullptr, &back) == GEIST_E_INVALID_ARG && back == nullptr);
+    CHECK(geist_decknet_stream_offer(s, &a, nullptr) == GEIST_E_INVALID_ARG);
+    back = &a;
+    CHECK(geist_decknet_stream_push_offered(nullptr, &back) == GEIST_E_INVALID_ARG &&
+          back == nullptr);
+    CHECK(geist_decknet_stream_push_offered(s, nullptr) == GEIST_E_INVALID_ARG);
+    CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK && back == nullptr);
+
+    /* Two threads. Frame i is image i % QUEUE_IMAGES with timestamp 100 + i. */
+    struct queue_test q = {.s = s, .n_frames = QUEUE_ROUNDS * 3 + QUEUE_FREE};
+    q.frames            = xmalloc(q.n_frames * sizeof q.frames[0]);
+    q.dropped           = xmalloc(q.n_frames);
+    q.done              = xmalloc(q.n_frames);
+    memset(q.dropped, 0, q.n_frames);
+    memset(q.done, 0, q.n_frames);
+    for (size_t i = 0; i < q.n_frames; i++) {
+        q.frames[i]           = image[i % QUEUE_IMAGES];
+        q.frames[i].timestamp = 100 + i;
+    }
+    pthread_t producer;
+    if (pthread_create(&producer, nullptr, queue_producer, &q) != 0) {
+        broken("pthread_create", "the queue test");
+    }
+    size_t n_same = 0;
+    /* The consumer is slow by construction: it asks for a round of three
+     * offers, waits until they are made, and takes one pass. */
+    for (size_t r = 0; r < QUEUE_ROUNDS; r++) {
+        atomic_store(&q.go, r + 1);
+        while (atomic_load(&q.offered) <= r) {
+            sched_yield();
+        }
+        CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK &&
+              back == &q.frames[r * 3 + 2]);
+        CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK &&
+              res.timestamp == 100 + r * 3 + 2 && res.n_dropped == 2 + 2 * (r + 1));
+        const size_t n = outputs_of(s, &info, got);
+        n_same += n == n_want &&
+                  memcmp(got, want[(r * 3 + 2) % QUEUE_IMAGES], n * sizeof(float)) == 0;
+        q.done[r * 3 + 2]++;
+    }
+    CHECK(n_same == QUEUE_ROUNDS);
+    /* And a consumer that takes what is there while the other thread offers
+     * without waiting, until that one is done and nothing waits. */
+    atomic_store(&q.go, QUEUE_ROUNDS + 1);
+    size_t   n_done = 0, n_order = 0;
+    uint64_t last = 0;
+    for (;;) {
+        const bool finished = atomic_load(&q.finished);
+        CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK);
+        if (back == nullptr) {
+            if (finished) {
+                break;
+            }
+            sched_yield();
+            continue;
+        }
+        const size_t i = (size_t) (back - q.frames);
+        CHECK(i >= QUEUE_ROUNDS * 3 && i < q.n_frames);
+        q.done[i]++;
+        CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.timestamp == 100 + i);
+        n_order += res.timestamp > last;
+        last           = res.timestamp;
+        const size_t n = outputs_of(s, &info, got);
+        n_same += n == n_want && memcmp(got, want[i % QUEUE_IMAGES], n * sizeof(float)) == 0;
+        n_done++;
+    }
+    pthread_join(producer, nullptr);
+    CHECK(q.n_wrong == 0);
+    CHECK(n_done >= 1 && n_order == n_done && n_same == QUEUE_ROUNDS + n_done);
+    CHECK(last == 100 + q.n_frames - 1); /* the newest frame is never the one dropped */
+    size_t n_dropped = 0, n_once = 0;
+    for (size_t i = 0; i < q.n_frames; i++) {
+        n_dropped += q.dropped[i];
+        n_once += q.dropped[i] + q.done[i] == 1;
+    }
+    CHECK(n_once == q.n_frames); /* every frame came back, and once */
+    CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.n_dropped == 2 + n_dropped &&
+          n_dropped + QUEUE_ROUNDS + n_done == q.n_frames);
+    printf("a queue of one, %zu thread%s, %s: a consumer that takes one of three computes the "
+           "third and %zu are dropped; of %zu frames offered without waiting %zu were computed, "
+           "in order, and %zu dropped; each came back once\n",
+           threads,
+           threads == 1 ? "" : "s",
+           gated ? "gated" : "not gated",
+           (size_t) (2 * QUEUE_ROUNDS),
+           (size_t) QUEUE_FREE,
+           n_done,
+           n_dropped - 2 * QUEUE_ROUNDS);
+
+    /* A stream without a reference hands the frame back with its status. */
+    struct geist_decknet_stream *s2 = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s2) == GEIST_E_INVALID_ARG || s2 != nullptr);
+    if (s2 != nullptr) {
+        CHECK(geist_decknet_stream_offer(s2, &a, &back) == GEIST_OK && back == nullptr);
+        CHECK(geist_decknet_stream_push_offered(s2, &back) == GEIST_E_INVALID_STATE && back == &a);
+        /* A frame that still waits when the stream goes is the caller's. */
+        CHECK(geist_decknet_stream_offer(s2, &a, &back) == GEIST_OK && back == nullptr);
+        geist_decknet_stream_destroy(s2);
+    }
+
+    geist_decknet_stream_destroy(s);
+    free(q.done);
+    free(q.dropped);
+    free(q.frames);
+    for (size_t k = 0; k < QUEUE_IMAGES; k++) {
+        free((void *) (uintptr_t) image[k].data);
+    }
+    free((void *) (uintptr_t) fref.data);
+    free(cur);
+    free(ref);
+    geist_decknet_destroy(d);
+}
+
 /* ---- no allocation ---------------------------------------------------- */
 
 static void test_no_alloc(void) {
@@ -1117,7 +1504,13 @@ static void test_no_alloc(void) {
             struct geist_decknet_frame bad = frames[f];
             bad.n_bytes--;
             CHECK(geist_decknet_stream_push_frame(s, &bad) == GEIST_E_INVALID_ARG);
-            n_calls += 10;
+            /* the queue of one: an offer, one that drops it, a pass */
+            const struct geist_decknet_frame *back = nullptr;
+            CHECK(geist_decknet_stream_offer(s, &halves[f], &back) == GEIST_OK);
+            CHECK(geist_decknet_stream_offer(s, &frames[f], &back) == GEIST_OK &&
+                  back == &halves[f]);
+            CHECK(geist_decknet_stream_push_offered(s, &back) == GEIST_OK && back == &frames[f]);
+            n_calls += 13;
             const uint64_t now = heap_alloc_count();
             if (now != before) {
                 fprintf(stderr,
@@ -1400,6 +1793,9 @@ int main(void) {
     test_gate_threshold();
     test_gate_each_tile();
     test_gate_seams();
+    test_frame_end();
+    test_queue(1, false);
+    test_queue(2, true);
     test_no_alloc();
     test_geometry();
     test_state();
