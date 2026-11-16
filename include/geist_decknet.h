@@ -182,6 +182,9 @@ struct geist_decknet_stream_result {
     size_t n_tiles;
     size_t n_tiles_changed;
     size_t n_samples;
+    /* Frames handed to geist_decknet_stream_offer since the stream was
+     * created that a later one replaced before a pass took them. */
+    uint64_t n_dropped;
 };
 
 /* @stability EXPERIMENTAL
@@ -259,10 +262,54 @@ geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
  * a row, or n_bytes smaller than the frame's last row ends.
  * GEIST_E_INVALID_STATE before a reference is set and after the handle's
  * homographies were replaced. Never call one stream from two threads at
- * once. */
+ * once (geist_decknet_stream_offer is the one function that may be). */
 [[nodiscard]] enum geist_status
 geist_decknet_stream_push_frame(struct geist_decknet_stream      *s,
                                 const struct geist_decknet_frame *frame);
+
+/* @stability EXPERIMENTAL
+ * A queue of one, for a camera that may be faster than the pass: the thread
+ * that captures hands each frame over here, and the thread that computes
+ * takes the newest with geist_decknet_stream_push_offered.
+ *
+ * Never waits and never allocates: one atomic exchange. `frame` becomes the
+ * waiting frame. If one was waiting already, the pass was slower than the
+ * camera: that older frame is dropped, counted
+ * (geist_decknet_stream_result.n_dropped) and handed back in *dropped;
+ * otherwise *dropped is nullptr.
+ *
+ * Who owns a waiting frame. Nothing is copied: from this call on the struct
+ * `frame` points to and the bytes it describes are lent to the stream, and
+ * the caller neither writes nor frees nor reuses them until the stream
+ * hands that pointer back. It does so exactly once: as *dropped of a later
+ * offer, or as *done of the geist_decknet_stream_push_offered that computed
+ * on it. A frame that is still out when the stream is destroyed is the
+ * caller's again from then on.
+ *
+ * May be called from any thread, also while another thread is inside any
+ * other function of the stream except geist_decknet_stream_destroy. The
+ * geometry of the frame is checked here, as
+ * geist_decknet_stream_push_frame checks it: GEIST_E_INVALID_ARG, with
+ * nothing queued and *dropped nullptr, for a frame it would refuse and for
+ * a null argument. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_offer(struct geist_decknet_stream       *s,
+                           const struct geist_decknet_frame  *frame,
+                           const struct geist_decknet_frame **dropped);
+
+/* @stability EXPERIMENTAL
+ * geist_decknet_stream_push_frame on the frame that is waiting, if one is;
+ * returns when the pass is done. *done is that frame, the caller's again,
+ * whatever the status; nullptr, with GEIST_OK and the last result kept,
+ * when none was waiting. This call does not wait for a frame: when to call
+ * it (a condition variable, a pipe, the capture loop's own event) is the
+ * caller's. Called from the one thread that uses the stream, like every
+ * function but geist_decknet_stream_offer. Statuses as
+ * geist_decknet_stream_push_frame; GEIST_E_INVALID_ARG for a null
+ * argument. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_push_offered(struct geist_decknet_stream       *s,
+                                  const struct geist_decknet_frame **done);
 
 /* @stability EXPERIMENTAL — the result of the last pushed frame.
  * GEIST_E_INVALID_STATE, with *out zero, before the first. */

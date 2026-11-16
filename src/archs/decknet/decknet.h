@@ -27,6 +27,7 @@
 #include <geist.h>
 #include <geist_decknet.h>
 
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -407,6 +408,13 @@ struct geist_decknet_stream {
     float     mix_ga[3]; /* the gains `mix` was computed with */
     uint8_t  *stale;     /* per thread crop_px: decknet_work.stale, zero between planes */
 
+    /* ---- a queue of one (decknet_stream_offer) ----
+     * The frame that waits for the next pass, lent by the caller, and how
+     * many were replaced while they waited. The only members a second
+     * thread touches. */
+    _Atomic(const struct geist_decknet_frame *) offered;
+    atomic_uint_fast64_t                        n_dropped;
+
     /* ---- two threads (decknet_stream_set_threads) ---- */
     size_t            n_threads; /* 1 or DECKNET_STREAM_THREADS */
     struct decknet_ws ws2;       /* what the second one computes in; the first has d->ws */
@@ -425,3 +433,11 @@ decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t thresh
                                                              const struct geist_decknet_frame *ref);
 [[nodiscard]] enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
                                                           const struct geist_decknet_frame *frame);
+[[nodiscard]] enum geist_status decknet_stream_offer(struct geist_decknet_stream       *s,
+                                                     const struct geist_decknet_frame  *frame,
+                                                     const struct geist_decknet_frame **dropped);
+[[nodiscard]] enum geist_status
+decknet_stream_push_offered(struct geist_decknet_stream       *s,
+                            const struct geist_decknet_frame **done);
+/* Frames dropped by decknet_stream_offer so far. */
+uint64_t decknet_stream_dropped(const struct geist_decknet_stream *s);

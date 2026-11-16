@@ -32,16 +32,28 @@
  * must give the same hash: the bench fails if a stream is not bit-identical
  * to the still path.
  *
+ * With --camera FPS the frames come at that rate instead, from a second
+ * thread, as a camera delivers them: it hands each to
+ * geist_decknet_stream_offer, and this thread takes what waits with
+ * geist_decknet_stream_push_offered (it looks every 50 microseconds; a
+ * program would be woken by its capture loop). Reported per row: how many
+ * frames were computed and how many dropped because the pass was not done
+ * when the next one came, and the time from the offer of a frame to its
+ * result. The still path is not run, and nothing is hashed: which frames
+ * are computed depends on the clock.
+ *
  * Run it under the host lock like every timing (CONTRIBUTING.md):
  *   make DECKNET=1 bin/<target>/release/tools/bench_stream
  *   bench_stream [--frames N] [--threads 1|2] [--scene block|all|half|burst]
- *                [--only still|stream|gated] [--size 720|1080]
+ *                [--only still|stream|gated] [--size 720|1080] [--camera FPS]
  */
 #define _POSIX_C_SOURCE 200809L
 #include <geist.h>
 #include <geist_decknet.h>
 
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -592,6 +604,49 @@ static void report(const char    *way,
     fflush(stdout);
 }
 
+/* ---- a camera --------------------------------------------------------- */
+
+static uint64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t) ts.tv_sec * 1000000000u + (uint64_t) ts.tv_nsec;
+}
+
+static void sleep_until(uint64_t t_ns) {
+    const uint64_t now = now_ns();
+    if (t_ns > now) {
+        nanosleep(&(struct timespec) {.tv_sec  = (time_t) ((t_ns - now) / 1000000000u),
+                                      .tv_nsec = (long) ((t_ns - now) % 1000000000u)},
+                  nullptr);
+    }
+}
+
+/* The thread that captures: frame i is offered at i periods from the start,
+ * with the time of the offer as its timestamp. It never waits for the pass;
+ * a frame it gets back was dropped, and is the camera's to fill again. */
+struct camera {
+    struct geist_decknet_stream *s;
+    size_t                       n;
+    struct geist_decknet_frame  *frames; /* n: a frame is lent until it comes back */
+    double                       period_ns;
+    atomic_bool                  done;
+};
+
+static void *camera_run(void *arg) {
+    struct camera *c  = arg;
+    const uint64_t t0 = now_ns();
+    for (size_t i = 0; i < c->n; i++) {
+        sleep_until(t0 + (uint64_t) ((double) (i + 1) * c->period_ns));
+        const struct geist_decknet_frame *dropped = nullptr;
+        c->frames[i].timestamp                    = now_ns();
+        if (geist_decknet_stream_offer(c->s, &c->frames[i], &dropped) != GEIST_OK) {
+            die("geist_decknet_stream_offer");
+        }
+    }
+    atomic_store(&c->done, true);
+    return nullptr;
+}
+
 static const char *const format_names[3] = {"rgb8", "nv12", "yuyv"};
 
 /* Which frame of the two rings is pushed i-th. */
@@ -606,6 +661,7 @@ static bool measure(size_t                    w,
                     size_t                    n_frames,
                     size_t                    threads,
                     enum scene                scene,
+                    double                    camera_fps,
                     const char               *only) {
     struct buf            file = network(w, h);
     struct geist_decknet *d    = nullptr;
@@ -651,7 +707,7 @@ static bool measure(size_t                    w,
     struct timing t_still = {0};
     const char   *name    = format_names[format];
 
-    if (only == nullptr || strcmp(only, "still") == 0) {
+    if (camera_fps <= 0.0 && (only == nullptr || strcmp(only, "still") == 0)) {
         for (size_t i = 0; i < WARMUP + n_frames; i++) {
             const uint8_t              *cam = ring[frame_of(scene, i)];
             struct geist_decknet_result res;
@@ -699,6 +755,64 @@ static bool measure(size_t                    w,
         if (geist_decknet_stream_set_reference(s, &f) != GEIST_OK) {
             die("geist_decknet_stream_set_reference");
         }
+        if (camera_fps > 0.0) {
+            struct camera c = {.s = s, .n = WARMUP + n_frames, .period_ns = 1e9 / camera_fps};
+            c.frames        = must_alloc(c.n * sizeof c.frames[0]);
+            for (size_t i = 0; i < c.n; i++) {
+                c.frames[i]      = f;
+                c.frames[i].data = ring[frame_of(scene, i)];
+            }
+            pthread_t thread;
+            if (pthread_create(&thread, nullptr, camera_run, &c) != 0) {
+                die("pthread_create");
+            }
+            size_t n_computed = 0, n_late = 0;
+            double worst = 0.0;
+            for (;;) {
+                const bool                        done = atomic_load(&c.done);
+                const struct geist_decknet_frame *got  = nullptr;
+                if (geist_decknet_stream_push_offered(s, &got) != GEIST_OK) {
+                    die("geist_decknet_stream_push_offered");
+                }
+                if (got == nullptr) {
+                    if (done) {
+                        break;
+                    }
+                    nanosleep(&(struct timespec) {.tv_nsec = 50000}, nullptr);
+                    continue;
+                }
+                const double latency = (double) (now_ns() - got->timestamp) * 1e-6;
+                if (got >= c.frames + WARMUP) {
+                    ms[n_computed++] = latency;
+                    n_late += latency > 1e3 / camera_fps;
+                    worst = latency > worst ? latency : worst;
+                }
+            }
+            pthread_join(thread, nullptr);
+            struct geist_decknet_stream_result res;
+            if (geist_decknet_stream_result(s, &res) != GEIST_OK || n_computed == 0) {
+                die("geist_decknet_stream_result");
+            }
+            qsort(ms, n_computed, sizeof ms[0], by_value);
+            printf("%4zux%-4zu  %-4s  %-6s  camera at %.1f frames/s: %zu frames, %llu dropped "
+                   "(warm-up included), offer to result p50 %7.3f ms   p99 %7.3f ms   worst "
+                   "%7.3f ms, %zu later than a frame period\n",
+                   w,
+                   h,
+                   name,
+                   way,
+                   camera_fps,
+                   c.n,
+                   (unsigned long long) res.n_dropped,
+                   ms[n_computed / 2],
+                   ms[n_computed * 99 / 100],
+                   worst,
+                   n_late);
+            fflush(stdout);
+            free(c.frames);
+            geist_decknet_stream_destroy(s);
+            continue;
+        }
         double tiles = 0.0, changed = 0.0, samples = 0.0;
         for (size_t i = 0; i < WARMUP + n_frames; i++) {
             f.data          = ring[frame_of(scene, i)];
@@ -744,7 +858,7 @@ static bool measure(size_t                    w,
         geist_decknet_stream_destroy(s);
     }
     bool same = true;
-    for (size_t gated = 0; only == nullptr && gated < 2; gated++) {
+    for (size_t gated = 0; camera_fps <= 0.0 && only == nullptr && gated < 2; gated++) {
         const bool ok = t_way[gated].hash == t_still.hash;
         same          = same && ok;
         printf("%4zux%-4zu  %-4s  %s / still %.2fx frames/s, outputs %s (hash %016llx)\n",
@@ -792,7 +906,8 @@ int main(int argc, char **argv) {
     size_t      threads  = 1;
     enum scene  scene    = SCENE_BLOCK;
     const char *only     = nullptr;
-    size_t      height   = 0; /* both sizes */
+    size_t      height   = 0;   /* both sizes */
+    double      camera   = 0.0; /* frames per second; 0: as fast as the pass */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             n_frames = (size_t) strtoul(argv[++i], nullptr, 10);
@@ -808,11 +923,16 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc &&
                    (strcmp(argv[i + 1], "720") == 0 || strcmp(argv[i + 1], "1080") == 0)) {
             height = (size_t) strtoul(argv[++i], nullptr, 10);
+        } else if (strcmp(argv[i], "--camera") == 0 && i + 1 < argc) {
+            camera = strtod(argv[++i], nullptr);
+            if (!(camera >= 1.0 && camera <= 1000.0)) {
+                die("--camera: 1 to 1000 frames per second");
+            }
         } else {
             fprintf(stderr,
                     "usage: bench_stream [--frames N] [--threads 1|2] [--scene "
                     "block|all|half|burst] "
-                    "[--only still|stream|gated] [--size 720|1080]\n");
+                    "[--only still|stream|gated] [--size 720|1080] [--camera FPS]\n");
             return 2;
         }
     }
@@ -847,6 +967,7 @@ int main(int argc, char **argv) {
                            n_frames,
                            threads,
                            scene,
+                           camera,
                            only) &&
                    same;
         }

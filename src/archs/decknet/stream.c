@@ -31,6 +31,12 @@
  *                   independent of each other, so one half of them is
  *                   computed on a second thread, in a second workspace.
  *
+ *   a queue of one  optional (decknet_stream_offer, _push_offered): the
+ *                   thread that captures leaves a pointer to its newest
+ *                   frame, the thread that computes takes it. One atomic
+ *                   pointer; a frame that is replaced before it is taken is
+ *                   handed back to the caller and counted.
+ *
  * Everything is allocated in decknet_stream_create and, for gating, in the
  * first decknet_stream_set_gate that turns it on; the reference and the
  * frames allocate nothing.
@@ -590,8 +596,10 @@ enum geist_status decknet_stream_create(struct geist_decknet         *d,
     if (s == nullptr) {
         return GEIST_E_OOM;
     }
-    s->d                                    = d;
-    s->n_threads                            = 1;
+    s->d         = d;
+    s->n_threads = 1;
+    atomic_init(&s->offered, nullptr);
+    atomic_init(&s->n_dropped, 0);
     s->tiles_w                              = (d->img_w + DECKNET_TILE - 1) / DECKNET_TILE;
     s->tiles_h                              = (d->img_h + DECKNET_TILE - 1) / DECKNET_TILE;
     GEIST_CLEANUP(heap_freep) uint8_t *mark = heap_alloc_array_aligned(uint8_t, d->crop_px);
@@ -871,4 +879,32 @@ enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
     s->have_result = true;
     s->n_frames++;
     return GEIST_OK;
+}
+
+/* ---- a queue of one --------------------------------------------------- */
+
+enum geist_status decknet_stream_offer(struct geist_decknet_stream       *s,
+                                       const struct geist_decknet_frame  *frame,
+                                       const struct geist_decknet_frame **dropped) {
+    *dropped = nullptr;
+    /* Of the stream this reads the model's image size and nothing else,
+     * which no call changes: the thread that computes may be anywhere. */
+    if (!frame_ok(s->d, frame)) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *dropped = atomic_exchange(&s->offered, frame);
+    if (*dropped != nullptr) {
+        atomic_fetch_add(&s->n_dropped, 1);
+    }
+    return GEIST_OK;
+}
+
+enum geist_status decknet_stream_push_offered(struct geist_decknet_stream       *s,
+                                              const struct geist_decknet_frame **done) {
+    *done = atomic_exchange(&s->offered, nullptr);
+    return *done == nullptr ? GEIST_OK : decknet_stream_push_frame(s, *done);
+}
+
+uint64_t decknet_stream_dropped(const struct geist_decknet_stream *s) {
+    return atomic_load(&s->n_dropped);
 }
