@@ -20,7 +20,9 @@
 #include "../archs/decknet/decknet.h"
 #undef GEIST_INTERNAL_ARCH_LAYER
 
+#include <geist_backend.h>
 #include <geist_decknet.h>
+#include <geist_decknet_gpu.h>
 
 #include <math.h>
 #include <string.h>
@@ -192,6 +194,31 @@ enum geist_status geist_decknet_stream_set_threads(struct geist_decknet_stream *
         return GEIST_E_INVALID_ARG;
     }
     return decknet_stream_set_threads(s, n_threads);
+}
+
+/* The backends that take the integer part of a stream's pass, each with the
+ * table it implements <geist_decknet_gpu.h> by. This file is where the arch
+ * and a backend meet (tools/layers.json): the arch knows the table's type
+ * and no backend, the backend the type and no arch. */
+#if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
+extern const struct geist_backend_descriptor geist_backend_metal;
+extern const struct geist_decknet_gpu_ops    geist_decknet_gpu_metal;
+#endif
+
+enum geist_status geist_decknet_stream_set_backend(struct geist_decknet_stream *s,
+                                                   struct geist_backend        *be) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (be == nullptr) {
+        return decknet_stream_set_gpu(s, nullptr, nullptr);
+    }
+#if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
+    if (be->desc == &geist_backend_metal) {
+        return decknet_stream_set_gpu(s, &geist_decknet_gpu_metal, be);
+    }
+#endif
+    return GEIST_E_UNSUPPORTED;
 }
 
 enum geist_status geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,

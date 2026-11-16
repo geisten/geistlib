@@ -14,7 +14,8 @@
  * Defined in:
  *   src/archs/decknet/load.c — file contract, validation, workspace
  *   src/archs/decknet/run.c  — the forward pass
- *   src/archs/decknet/stream.c — the pass on a camera stream
+ *   src/archs/decknet/stream.c — the pass on a camera stream, on the CPU or
+ *                                with its integer part on a GPU
  */
 #pragma once
 
@@ -26,6 +27,7 @@
 
 #include <geist.h>
 #include <geist_decknet.h>
+#include <geist_decknet_gpu.h>
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -336,6 +338,17 @@ void decknet_plane(struct geist_decknet      *d,
                    const float                ga[static 3],
                    const struct decknet_work *w);
 
+/* sums[i x 3 + c] for n pixels a kernel is evaluated at, as decknet_plane
+ * computes them from a crop, from the integer sums of the kernel's parts:
+ * acc has, pixel by pixel and part by part, four 32-bit values, the sum of
+ * the crop pixels of the part's taps (R G B and a zero), which is what a GPU
+ * hands back (<geist_decknet_gpu.h>). A plane whose decknet_work has these
+ * sums and `kept` without `stale` computes no kernel. */
+void decknet_kernel_parts(const struct decknet_kernel *k,
+                          size_t                       n,
+                          const uint32_t              *acc,
+                          double                      *sums);
+
 /* mark[px] = 1 for each of the d->crop_px crop pixels decknet_plane reads of
  * a crop of that plane (of both crops, for the floor plane), 0 for the
  * others: the pixels of the pooling rows, and the kernel windows around the
@@ -354,6 +367,10 @@ struct decknet_sample {
 };
 static_assert(DECKNET_MAX_IMAGE_DIM <= (size_t) UINT16_MAX + 1);
 static_assert(sizeof(struct decknet_sample) == 16, "four 32-bit lanes, three of them the weights");
+/* A GPU reads the same 16 bytes. */
+static_assert(sizeof(struct decknet_sample) == sizeof(struct geist_decknet_gpu_sample) &&
+              offsetof(struct decknet_sample, x) == offsetof(struct geist_decknet_gpu_sample, x) &&
+              offsetof(struct decknet_sample, y) == offsetof(struct geist_decknet_gpu_sample, y));
 
 /* The crop pixels px .. px + n - 1, whose samples a table has side by side:
  * what a plane reads of its crop is a few hundred such runs. */
@@ -455,6 +472,16 @@ struct geist_decknet_stream {
     size_t            n_threads; /* 1 or DECKNET_STREAM_THREADS */
     bool              spans;     /* both kernels have spans: their planes are sampled as sums */
     struct decknet_ws ws2;       /* what the second one computes in; the first has d->ws */
+
+    /* ---- a GPU (decknet_stream_set_gpu) ----
+     * gpu_ops is nullptr while every frame is the CPU's. Otherwise the
+     * backend's state for this stream and its host memory: the sample
+     * table in the GPU's order, the frame, the pixels and the kernel sums
+     * (stream.c, "a GPU"). */
+    const struct geist_decknet_gpu_ops *gpu_ops;
+    struct geist_decknet_gpu           *gpu;
+    struct geist_decknet_gpu_memory     gpu_mem;
+    size_t gpu_y0, gpu_y1; /* the rows of a frame a sample reads, [y0, y1) */
 };
 
 /* The public entry points of the same names without `geist_`, minus the
@@ -466,6 +493,11 @@ void                            decknet_stream_destroy(struct geist_decknet_stre
 decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t threshold);
 [[nodiscard]] enum geist_status decknet_stream_set_threads(struct geist_decknet_stream *s,
                                                            size_t                       n);
+/* geist_decknet_stream_set_backend with the backend's decknet table, which
+ * the engine looks up; nullptr for both goes back to the CPU. */
+[[nodiscard]] enum geist_status decknet_stream_set_gpu(struct geist_decknet_stream        *s,
+                                                       const struct geist_decknet_gpu_ops *ops,
+                                                       struct geist_backend               *be);
 [[nodiscard]] enum geist_status decknet_stream_set_reference(struct geist_decknet_stream      *s,
                                                              const struct geist_decknet_frame *ref);
 [[nodiscard]] enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,

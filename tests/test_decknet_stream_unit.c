@@ -63,7 +63,17 @@
  *                   push_frame on the same frame;
  *   state           no frame before a reference or after new homographies;
  *                   no result before a frame; each allocation of a create
- *                   failing once.
+ *                   failing once;
+ *   a GPU           geist_decknet_stream_set_backend: what it refuses, and
+ *                   where the "metal" backend is built in and has a device
+ *                   every test above that pushes a frame once more with the
+ *                   stream on it (the kernels at a crop's corners, a pixel
+ *                   sum that passes 32 bits, NV12 and YUYV of arbitrary
+ *                   bytes, padded rows, new homographies, a frame that is
+ *                   not checkable, gating, the queue, no allocation), and a
+ *                   stream that changes between the CPU and the GPU from
+ *                   frame to frame: the same bits throughout. Elsewhere
+ *                   that part is skipped, and says so.
  */
 #include "decknet_tiny.h"
 #include "heap.h"
@@ -99,6 +109,20 @@ static int g_fail = 0;
 }
 
 static const char GGUF[] = "tests/data/decknet_synth/synth.gguf";
+
+/* nullptr, or the backend every stream of a test is put on (main). */
+static struct geist_backend *g_be = nullptr;
+
+/* geist_decknet_stream_create, and the stream on g_be where one is set. */
+static enum geist_status stream_create(struct geist_decknet *d, struct geist_decknet_stream **s) {
+    const enum geist_status st = geist_decknet_stream_create(d, s);
+    if (st == GEIST_OK && g_be != nullptr &&
+        geist_decknet_stream_set_backend(*s, g_be) != GEIST_OK) {
+        fprintf(stderr, "FAIL: geist_decknet_stream_set_backend: %s\n", geist_backend_errmsg(g_be));
+        g_fail = 1;
+    }
+    return st;
+}
 
 /* Binary PPM (P6, maxval 255) of exactly w x h. */
 static uint8_t *read_ppm(const char *path, size_t w, size_t h) {
@@ -292,7 +316,7 @@ static void test_parity(enum geist_decknet_format format,
     uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
 
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK && s != nullptr);
+    CHECK(stream_create(d, &s) == GEIST_OK && s != nullptr);
     CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
     struct geist_decknet_frame fref = make_frame(format, w, h, pad, ref);
     uint8_t                   *ref8 = frame_to_rgb8(&fref);
@@ -421,7 +445,7 @@ static void test_gate(enum geist_decknet_format format,
     uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
 
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK && s != nullptr);
+    CHECK(stream_create(d, &s) == GEIST_OK && s != nullptr);
     CHECK(geist_decknet_stream_set_gate(s, true, threshold) == GEIST_OK);
     CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
     struct geist_decknet_frame fref = make_frame(format, w, h, pad, ref);
@@ -607,7 +631,7 @@ static void test_gate_edges(bool vertical) {
                                       .n_bytes = n_rgb,
                                       .data    = ref};
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     f.data = img;
@@ -696,7 +720,7 @@ static void test_gate_threshold(void) {
                                       .n_bytes = n_rgb,
                                       .data    = ref};
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_gate(s, true, 30) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* the grey frame is the kept one */
@@ -752,7 +776,7 @@ static void test_gate_each_tile(void) {
                                         .n_bytes = n_rgb,
                                         .data    = ref};
     struct geist_decknet_stream *s   = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     f.data = img;
@@ -861,7 +885,7 @@ static void test_gate_seams(void) {
                                       .n_bytes = n_rgb,
                                       .data    = ref};
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
@@ -1022,7 +1046,7 @@ static void test_conversion_range(enum geist_decknet_format format) {
     struct geist_decknet_frame   f    = make_frame(format, w, h, 5, grey);
     uint8_t                     *ref8 = frame_to_rgb8(&f);
     struct geist_decknet_stream *s    = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     uint8_t *bytes = (uint8_t *) (uintptr_t) f.data;
 
@@ -1139,7 +1163,7 @@ static void test_packed(enum geist_decknet_format format, size_t threads) {
     struct geist_decknet_frame   f    = make_frame(format, w, h, 3, grey);
     uint8_t                     *ref8 = frame_to_rgb8(&f);
     struct geist_decknet_stream *s    = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     uint8_t *bytes = (uint8_t *) (uintptr_t) f.data;
@@ -1332,7 +1356,7 @@ static void test_spans(size_t threads, bool gated) {
                                       .n_bytes = n_rgb,
                                       .data    = ref};
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_gate(s, gated, 0) == GEIST_OK);
     CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
@@ -1423,7 +1447,7 @@ static void test_frame_end(void) {
         img[i] = (uint8_t) (ref[i] + (i * 5) % 7 - 3); /* near it: the pair stays checkable */
     }
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     size_t n_outputs = 0, n_checkable = 0;
     for (size_t behind = 0; behind <= 20; behind++) {
         struct geist_decknet_frame f    = {.format  = GEIST_DECKNET_FORMAT_RGB8,
@@ -1564,7 +1588,7 @@ static void test_queue(size_t threads, bool gated) {
     uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
 
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
     struct geist_decknet_frame fref = make_frame(GEIST_DECKNET_FORMAT_NV12, w, h, 3, ref);
     CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
@@ -1756,7 +1780,7 @@ static void test_no_alloc(void) {
 
     const uint64_t               before_create = heap_alloc_count();
     struct geist_decknet_stream *s             = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     const uint64_t before_gate = heap_alloc_count();
     CHECK(before_gate > before_create); /* the counter sees the stream's allocations */
     /* Gating allocates once, when it is first turned on, and not when it is
@@ -1858,7 +1882,7 @@ static void test_geometry(void) {
         rgb[i] = (uint8_t) (100 + i % 50);
     }
     struct geist_decknet_stream *s = nullptr;
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     struct geist_decknet_frame ok = make_frame(GEIST_DECKNET_FORMAT_RGB8, w, h, 0, rgb);
     ok.timestamp                  = 7;
     CHECK(geist_decknet_stream_set_reference(s, &ok) == GEIST_OK);
@@ -1934,7 +1958,7 @@ static void test_geometry(void) {
     constexpr size_t ow = TINY_IMG_W - 1;
     constexpr size_t oh = TINY_IMG_H - 1;
     d                   = load_tiny((uint32_t) ow, (uint32_t) oh);
-    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(stream_create(d, &s) == GEIST_OK);
     struct geist_decknet_frame odd = make_frame(GEIST_DECKNET_FORMAT_RGB8, ow, oh, 0, rgb);
     CHECK(geist_decknet_stream_set_reference(s, &odd) == GEIST_OK);
     CHECK(geist_decknet_stream_push_frame(s, &odd) == GEIST_OK);
@@ -2049,8 +2073,125 @@ static void test_state(void) {
            (long long) n_gate);
 }
 
-int main(void) {
-    test_conversion_reference();
+/* ---- a GPU ------------------------------------------------------------ */
+
+/* geist_decknet_stream_set_backend: what it refuses, and with `metal` a
+ * stream that goes to the GPU and back between frames. */
+static void test_backend(struct geist_backend *metal) {
+    struct geist_decknet     *still = load_synth();
+    struct geist_decknet     *d     = load_synth();
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    const size_t w = info.image_width, h = info.image_height, n_rgb = w * h * 3;
+    uint8_t     *cur = read_ppm("tests/data/decknet_synth/cur.ppm", w, h);
+    uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
+
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_backend(nullptr, metal) == GEIST_E_INVALID_ARG);
+    CHECK(geist_decknet_stream_set_backend(s, nullptr) == GEIST_OK); /* the CPU, as it was */
+    /* A CPU backend has no decknet path: the pass is not a backend's. */
+    struct geist_backend *cpu = nullptr;
+    CHECK(geist_backend_create("cpu_scalar", nullptr, nullptr, &cpu) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_backend(s, cpu) == GEIST_E_UNSUPPORTED);
+    geist_backend_destroy(cpu);
+    /* Before the reference, so that the reference fills the GPU's tables;
+     * the stream is its own again when the backend is set a second time. */
+    if (metal != nullptr) {
+        CHECK(geist_decknet_stream_set_backend(s, metal) == GEIST_OK);
+        CHECK(geist_decknet_stream_set_backend(s, metal) == GEIST_OK);
+    }
+    struct geist_decknet_frame fref = make_frame(GEIST_DECKNET_FORMAT_YUYV, w, h, 3, ref);
+    uint8_t                   *ref8 = frame_to_rgb8(&fref);
+    CHECK(geist_decknet_stream_push_frame(s, &fref) == GEIST_E_INVALID_STATE);
+    CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
+
+    size_t           n_outputs = 0, n_samples = 0;
+    constexpr size_t n_frames = 12;
+    for (size_t k = 0; k < n_frames; k++) {
+        /* In turn: the GPU, the CPU, the GPU with gating on (which is the
+         * CPU's), the GPU set after the reference; every format. */
+        const size_t on = k % 4;
+        if (metal != nullptr) {
+            CHECK(geist_decknet_stream_set_backend(s, on == 1 ? nullptr : metal) == GEIST_OK);
+        }
+        CHECK(geist_decknet_stream_set_gate(s, on == 2, 0) == GEIST_OK);
+        CHECK(geist_decknet_stream_set_threads(s, 1 + k / 6) == GEIST_OK);
+        uint8_t                   *img = moved(w, h, k, cur);
+        struct geist_decknet_frame f = make_frame((enum geist_decknet_format)(k % 3), w, h, k, img);
+        f.timestamp                  = 77 + k;
+        uint8_t                    *img8 = frame_to_rgb8(&f);
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, n_rgb, img8, ref8, &want) == GEIST_OK && want.checkable);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        struct geist_decknet_stream_result got;
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK && got.timestamp == 77 + k &&
+              got.n_frames == k + 1 && got.n_tiles_changed == got.n_tiles);
+        /* A frame that is not gated counts every sample, whoever took it. */
+        n_samples = k == 0 ? got.n_samples : n_samples;
+        CHECK(got.n_samples == n_samples);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr, "FAIL backend: frame %zu differs from the still path\n", k);
+            g_fail = 1;
+        }
+        free(img8);
+        free((void *) (uintptr_t) f.data);
+        free(img);
+    }
+    printf("%-34s %zu frames, %zu outputs bit-identical to the still path\n",
+           metal != nullptr ? "between the CPU and the GPU" : "set_backend, no GPU here",
+           (size_t) n_frames,
+           n_outputs);
+    if (metal != nullptr) {
+        /* The GPU did take frames: its pixel memory has the worktable strip
+         * of the last one it sampled, which the gain was computed from. */
+        CHECK(geist_decknet_stream_set_backend(s, metal) == GEIST_OK);
+        CHECK(geist_decknet_stream_set_gate(s, false, 0) == GEIST_OK);
+        const uint32_t *strip = s->gpu_mem.pixels + info.n_slots * DECKNET_PLANES * d->crop_px * 4;
+        CHECK(s->gpu != nullptr && strip[0] == 0 && strip[4 * (d->bg_px - 1)] == 0);
+        CHECK(geist_decknet_stream_push_frame(s, &fref) == GEIST_OK);
+        CHECK(strip[0] != 0 && strip[4 * (d->bg_px - 1)] != 0 && strip[3] == 0);
+
+        /* Each allocation of a set_backend failing once: the stream stays on
+         * the CPU and computes the same. */
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, n_rgb, ref8, ref8, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_set_backend(s, nullptr) == GEIST_OK);
+        int64_t n = 0;
+        for (;; n++) {
+            heap_fail_after(n);
+            const enum geist_status st = geist_decknet_stream_set_backend(s, metal);
+            heap_fail_after(-1);
+            if (st == GEIST_OK) {
+                break;
+            }
+            CHECK(st == GEIST_E_OOM && s->gpu == nullptr);
+            CHECK(geist_decknet_stream_push_frame(s, &fref) == GEIST_OK);
+            CHECK(same_outputs(still, &want, s, &info, &n_outputs));
+            if (n > 100) {
+                CHECK(!"a set_backend never succeeded");
+                break;
+            }
+        }
+        CHECK(n >= 5 && s->gpu != nullptr); /* the tables it hands over, and the backend's state */
+        CHECK(geist_decknet_stream_push_frame(s, &fref) == GEIST_OK);
+        CHECK(same_outputs(still, &want, s, &info, &n_outputs));
+        printf("a set_backend survives each of its %lld allocations failing; the GPU's pixel "
+               "memory holds the frame's samples\n",
+               (long long) n);
+    }
+    geist_decknet_stream_destroy(s);
+    free(ref8);
+    free((void *) (uintptr_t) fref.data);
+    free(cur);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* Every test that pushes a frame: on the CPU, and once more with each
+ * stream on g_be. */
+static void frames_suite(void) {
     test_parity(GEIST_DECKNET_FORMAT_RGB8, 0, false, 1, "RGB8");
     test_parity(GEIST_DECKNET_FORMAT_RGB8, 37, false, 1, "RGB8, padded rows");
     test_parity(GEIST_DECKNET_FORMAT_RGB8, 0, true, 1, "RGB8, replaced homographies");
@@ -2074,7 +2215,6 @@ int main(void) {
     test_packed(GEIST_DECKNET_FORMAT_NV12, 2);
     test_packed(GEIST_DECKNET_FORMAT_YUYV, 1);
     test_packed(GEIST_DECKNET_FORMAT_YUYV, 2);
-    test_sample();
     test_kernel_sum();
     test_spans(1, false);
     test_spans(2, false);
@@ -2091,6 +2231,26 @@ int main(void) {
     test_no_alloc();
     test_geometry();
     test_state();
+}
+
+int main(void) {
+    test_conversion_reference();
+    test_sample();
+    frames_suite();
+    test_backend(nullptr);
+    /* The same on Apple's GPU, where there is one: Linux builds have no
+     * Metal backend, and a Mac without a device refuses the create. */
+    struct geist_backend *metal = nullptr;
+    if (geist_backend_create("metal", nullptr, nullptr, &metal) == GEIST_OK) {
+        printf("---- every stream on the metal backend ----\n");
+        g_be = metal;
+        frames_suite();
+        g_be = nullptr;
+        test_backend(metal);
+        geist_backend_destroy(metal);
+    } else {
+        printf("SKIP the streams on a GPU: the metal backend is not built in or has no device\n");
+    }
     if (g_fail) {
         return GEIST_TEST_FAIL;
     }

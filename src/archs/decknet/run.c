@@ -268,6 +268,32 @@ static void kernel_at(size_t                       w,
     out[2] = s[2];
 }
 
+void decknet_kernel_parts(const struct decknet_kernel *k,
+                          size_t                       n,
+                          const uint32_t              *acc,
+                          double                      *sums) {
+    for (size_t i = 0; i < n; i++) {
+        /* kernel_at from here on: 64 bits across the parts of a weight,
+         * then weight by weight in F64, in the kernel's order. */
+        uint64_t sum[3] = {0, 0, 0};
+        double   s[3]   = {0.0, 0.0, 0.0};
+        for (size_t p = 0; p < k->n_parts; p++, acc += DECKNET_CROP_CH) {
+            for (size_t c = 0; c < 3; c++) {
+                sum[c] += acc[c];
+            }
+            if (k->part[p].last) {
+                for (size_t c = 0; c < 3; c++) {
+                    s[c] += (double) k->part[p].value * (double) sum[c];
+                    sum[c] = 0;
+                }
+            }
+        }
+        sums[i * 3]     = s[0];
+        sums[i * 3 + 1] = s[1];
+        sums[i * 3 + 2] = s[2];
+    }
+}
+
 /* Whether a stale cell holds a pixel the kernel reads around (x, y). */
 static bool window_stale(size_t w, size_t h, size_t n, const uint8_t *stale, size_t x, size_t y) {
     const size_t cells_w = (w + DECKNET_CELL - 1) / DECKNET_CELL;
