@@ -5,7 +5,7 @@
 #include "metal_pq2_lowp_shaders.h"
 #include "iq_grids.h"
 
-[[nodiscard]] static enum geist_status
+[[nodiscard]] enum geist_status
 metal_create_named_pipeline(struct geist_backend     *be,
                             struct metal_library_h   *library,
                             void                     *ns_string,

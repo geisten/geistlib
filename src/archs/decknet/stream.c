@@ -46,9 +46,15 @@
  *                   pointer; a frame that is replaced before it is taken is
  *                   handed back to the caller and counted.
  *
+ *   a GPU           optional (decknet_stream_set_gpu): the integer part of
+ *                   a frame that is not gated (conversion, sampling, the
+ *                   kernels' pixel sums) is a backend's, in two stages, and
+ *                   this file computes what needs F64 from the first stage
+ *                   while the second runs.
+ *
  * Everything is allocated in decknet_stream_create and, for gating, in the
- * first decknet_stream_set_gate that turns it on; the reference and the
- * frames allocate nothing.
+ * first decknet_stream_set_gate that turns it on, and for a GPU in
+ * decknet_stream_set_gpu; the reference and the frames allocate nothing.
  */
 #define GEIST_INTERNAL_ARCH_LAYER
 #include "decknet.h"
@@ -649,11 +655,321 @@ static size_t sample_changed(const struct geist_decknet_stream *s,
     return taken;
 }
 
+/* ---- a GPU ------------------------------------------------------------- */
+
+/* Where the GPU writes: the crops slot by slot and plane by plane, then the
+ * worktable strip (<geist_decknet_gpu.h>, "pixels"). */
+static size_t gpu_crop(size_t slot, size_t plane) {
+    return slot * DECKNET_PLANES + plane;
+}
+
+/* The samples in the order the GPU takes them, in pieces of one table and
+ * one crop each: the strip and the floor plane of every slot, which is
+ * stage 0, then the other planes slot by slot. */
+struct gpu_piece {
+    size_t                       n, n_runs;
+    const struct decknet_run    *run; /* the crop pixels of the samples; nullptr: 0 .. n - 1 */
+    size_t                       crop;
+    const struct decknet_sample *table;
+};
+
+static size_t gpu_n_pieces(const struct geist_decknet_stream *s) {
+    return 1 + s->d->n_slots * DECKNET_PLANES;
+}
+
+static struct gpu_piece gpu_piece_at(const struct geist_decknet_stream *s, size_t i) {
+    const struct geist_decknet *d = s->d;
+    if (i == 0) {
+        return (struct gpu_piece) {.n = d->bg_px, .crop = gpu_crop(d->n_slots, 0), .table = s->bg};
+    }
+    /* Pieces 1 .. n_slots are the floors; behind them a slot has the rest
+     * of its planes side by side. */
+    constexpr size_t rest     = DECKNET_PLANES - 1;
+    const bool       on_floor = i <= d->n_slots;
+    const size_t     slot     = on_floor ? i - 1 : (i - 1 - d->n_slots) / rest;
+    const size_t     plane    = on_floor ? DECKNET_PLANE_FLOOR : 1 + (i - 1 - d->n_slots) % rest;
+    const struct decknet_sample *t = s->tab + slot * s->per_slot;
+    for (size_t p = 0; p < plane; p++) {
+        t += s->n_px[p];
+    }
+    return (struct gpu_piece) {.n      = s->n_px[plane],
+                               .n_runs = s->n_runs[plane],
+                               .run    = s->run[plane],
+                               .crop   = gpu_crop(slot, plane),
+                               .table  = t};
+}
+
+/* dst[i]: which pixel of the pixel memory the GPU's sample i writes. */
+static void gpu_dst(const struct geist_decknet_stream *s, uint32_t *dst) {
+    for (size_t i = 0; i < gpu_n_pieces(s); i++) {
+        const struct gpu_piece piece = gpu_piece_at(s, i);
+        const size_t           base  = piece.crop * s->d->crop_px;
+        for (size_t k = 0; piece.run == nullptr && k < piece.n; k++) {
+            *dst++ = (uint32_t) (base + k);
+        }
+        for (size_t r = 0; r < piece.n_runs; r++) {
+            for (size_t k = 0; k < piece.run[r].n; k++) {
+                *dst++ = (uint32_t) (base + piece.run[r].px + k);
+            }
+        }
+    }
+}
+
+/* The tables of the current homographies (decknet_stream_set_reference) to
+ * the GPU, and the rows of a frame they read. */
+[[nodiscard]] static enum geist_status gpu_tables(struct geist_decknet_stream *s) {
+    const struct geist_decknet      *d  = s->d;
+    struct geist_decknet_gpu_sample *to = s->gpu_mem.samples;
+    for (size_t i = 0; i < gpu_n_pieces(s); i++) {
+        const struct gpu_piece piece = gpu_piece_at(s, i);
+        memcpy(to, piece.table, piece.n * sizeof piece.table[0]);
+        to += piece.n;
+    }
+    size_t y0 = SIZE_MAX, y1 = 0;
+    for (size_t who = 0; who <= d->n_slots; who++) {
+        y0 = s->read_box[who].y0 < y0 ? s->read_box[who].y0 : y0;
+        y1 = s->read_box[who].y1 > y1 ? s->read_box[who].y1 : y1;
+    }
+    s->gpu_y0 = y0 * DECKNET_TILE;
+    s->gpu_y1 = (y1 + 1) * DECKNET_TILE < d->img_h ? (y1 + 1) * DECKNET_TILE : d->img_h;
+    return s->gpu_ops->samples_written(s->gpu);
+}
+
+/* A kernel as the GPU takes it: the taps of each part, then dy dx per tap. */
+static int32_t *gpu_taps(const struct decknet_kernel *k) {
+    const size_t n_taps = k->k * k->k; /* at most DECKNET_MAX_KERNEL squared */
+    int32_t     *taps   = heap_alloc_array_aligned(int32_t, k->n_parts + 2 * n_taps);
+    if (taps == nullptr) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < k->n_parts; i++) {
+        taps[i] = (int32_t) k->part[i].n_taps;
+    }
+    for (size_t i = 0; i < n_taps; i++) {
+        taps[k->n_parts + 2 * i]     = k->tap[i].dy;
+        taps[k->n_parts + 2 * i + 1] = k->tap[i].dx;
+    }
+    return taps;
+}
+
+enum geist_status decknet_stream_set_gpu(struct geist_decknet_stream        *s,
+                                         const struct geist_decknet_gpu_ops *ops,
+                                         struct geist_backend               *be) {
+    const struct geist_decknet *d = s->d;
+    if (ops == nullptr) {
+        if (s->gpu_ops != nullptr) {
+            s->gpu_ops->destroy(s->gpu);
+        }
+        s->gpu_ops = nullptr;
+        s->gpu     = nullptr;
+        return GEIST_OK;
+    }
+    /* What the GPU indexes with 32 bits: the pixels, the samples and the
+     * bytes of a frame. A model whose image or crops are larger stays on
+     * the CPU. */
+    const size_t n_crops  = d->n_slots * DECKNET_PLANES; /* at most 5 x DECKNET_MAX_SLOTS */
+    size_t       n_pixels = 0, n_samples = 0, n_frame = 0;
+    if (ckd_mul(&n_pixels, n_crops, d->crop_px) || ckd_add(&n_pixels, n_pixels, d->bg_px) ||
+        ckd_mul(&n_samples, d->n_slots, s->per_slot) || ckd_add(&n_samples, n_samples, d->bg_px) ||
+        ckd_mul(&n_frame, d->img_w * d->img_h, 3) || n_pixels > UINT32_MAX ||
+        n_samples > UINT32_MAX || n_frame > UINT32_MAX - 3) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    constexpr size_t                    n_kernel_planes = DECKNET_PLANES - 1;
+    GEIST_CLEANUP(heap_freep) uint32_t *dst = heap_alloc_array_aligned(uint32_t, n_samples);
+    GEIST_CLEANUP(heap_freep) uint32_t *crops =
+            heap_alloc_array_aligned(uint32_t, d->n_slots *(n_kernel_planes + 1));
+    GEIST_CLEANUP(heap_freep) int32_t *blob = gpu_taps(&d->blob);
+    GEIST_CLEANUP(heap_freep) int32_t *tube = gpu_taps(&d->tube_kernel);
+    if (dst == nullptr || crops == nullptr || blob == nullptr || tube == nullptr) {
+        return GEIST_E_OOM;
+    }
+    gpu_dst(s, dst);
+    /* The blob kernel on every plane but the floor, the tube kernel on the
+     * hole plane; the sums come back in this order (push_gpu). */
+    uint32_t *blob_crops = crops, *tube_crops = crops + d->n_slots * n_kernel_planes;
+    for (size_t slot = 0; slot < d->n_slots; slot++) {
+        for (size_t p = DECKNET_PLANE_FLOOR + 1; p < DECKNET_PLANES; p++) {
+            blob_crops[slot * n_kernel_planes + p - 1] = (uint32_t) gpu_crop(slot, p);
+        }
+        tube_crops[slot] = (uint32_t) gpu_crop(slot, DECKNET_PLANE_HOLE);
+    }
+    const struct geist_decknet_gpu_plan plan = {
+            .frame_bytes = n_frame,
+            .crop_w      = d->crop_w,
+            .crop_h      = d->crop_h,
+            .n_pixels    = n_pixels,
+            .n_samples   = n_samples,
+            .n_first     = d->bg_px + d->n_slots * s->n_px[DECKNET_PLANE_FLOOR],
+            .dst         = dst,
+            .kernel      = {{.n_parts = d->blob.n_parts,
+                             .n_taps  = d->blob.k * d->blob.k,
+                             .taps    = blob,
+                             .n_px    = d->n_blob_px,
+                             .px      = d->blob_px,
+                             .n_crops = d->n_slots * n_kernel_planes,
+                             .crop    = blob_crops},
+                            {.n_parts = d->tube_kernel.n_parts,
+                             .n_taps  = d->tube_kernel.k * d->tube_kernel.k,
+                             .taps    = tube,
+                             .n_px    = d->n_tube_px,
+                             .px      = d->tube_px,
+                             .n_crops = d->n_slots,
+                             .crop    = tube_crops}},
+    };
+    struct geist_decknet_gpu       *gpu = nullptr;
+    struct geist_decknet_gpu_memory mem = {0};
+    const enum geist_status         st  = ops->create(be, &plan, &gpu, &mem);
+    if (st != GEIST_OK) {
+        return st;
+    }
+    if (s->gpu_ops != nullptr) {
+        s->gpu_ops->destroy(s->gpu);
+    }
+    s->gpu_ops = ops;
+    s->gpu     = gpu;
+    s->gpu_mem = mem;
+    /* A reference that is set already has its tables; a stale one's are
+     * replaced by the next decknet_stream_set_reference, before any frame. */
+    return s->have_ref ? gpu_tables(s) : GEIST_OK;
+}
+
+/* The rows of the frame a sample reads into the GPU's frame memory, without
+ * their padding: a row is `row` bytes there. */
+static void
+gpu_upload(const struct geist_decknet_stream *s, const struct geist_decknet_frame *f, size_t row) {
+    struct block b[2]     = {};
+    const size_t n_blocks = blocks(f, 0, f->width, s->gpu_y0, s->gpu_y1, b);
+    for (size_t i = 0; i < n_blocks; i++) {
+        if (f->stride == row) {
+            memcpy(s->gpu_mem.frame + b[i].row0 * row,
+                   f->data + b[i].row0 * row,
+                   (b[i].row1 - b[i].row0) * row);
+            continue;
+        }
+        for (size_t r = b[i].row0; r < b[i].row1; r++) {
+            memcpy(s->gpu_mem.frame + r * row, f->data + r * f->stride, row);
+        }
+    }
+}
+
+struct gpu_job {
+    struct geist_decknet_stream *s;
+    const float                 *ga;
+};
+
+/* The slots of part `part` of the stream's n_threads parts, as slots(). */
+static inline size_t gpu_slot0(const struct geist_decknet_stream *s, size_t part) {
+    return part * s->d->n_slots / s->n_threads;
+}
+
+/* Stage 0: the floor plane of each slot from the pixels the GPU sampled. */
+static void gpu_floors(void *ctx, size_t begin, size_t end) {
+    const struct gpu_job        *job = ctx;
+    struct geist_decknet_stream *s   = job->s;
+    struct geist_decknet        *d   = s->d;
+    for (size_t part = begin; part < end; part++) {
+        struct decknet_ws *ws = part == 0 ? &d->ws : &s->ws2;
+        for (size_t slot = gpu_slot0(s, part); slot < gpu_slot0(s, part + 1); slot++) {
+            const struct decknet_work work = {
+                    .crop     = s->gpu_mem.pixels +
+                                gpu_crop(slot, DECKNET_PLANE_FLOOR) * d->crop_px * DECKNET_CROP_CH,
+                    .crop_ref = s->floor_ref + slot * d->crop_px * 3,
+                    .mix      = ws->mix,
+            };
+            decknet_plane(d, ws, slot, DECKNET_PLANE_FLOOR, job->ga, &work);
+        }
+    }
+}
+
+/* Stage 1: the other planes, whose kernels the GPU summed part by part. */
+static void gpu_planes(void *ctx, size_t begin, size_t end) {
+    const struct gpu_job        *job    = ctx;
+    struct geist_decknet_stream *s      = job->s;
+    struct geist_decknet        *d      = s->d;
+    constexpr size_t             planes = DECKNET_PLANES - 1;
+    const size_t                 n_blob = d->n_blob_px * d->blob.n_parts * DECKNET_CROP_CH;
+    const size_t                 n_tube = d->n_tube_px * d->tube_kernel.n_parts * DECKNET_CROP_CH;
+    const uint32_t              *tube   = s->gpu_mem.sums + d->n_slots * planes * n_blob;
+    for (size_t part = begin; part < end; part++) {
+        struct decknet_ws *ws = part == 0 ? &d->ws : &s->ws2;
+        for (size_t slot = gpu_slot0(s, part); slot < gpu_slot0(s, part + 1); slot++) {
+            for (size_t p = DECKNET_PLANE_FLOOR + 1; p < DECKNET_PLANES; p++) {
+                /* `kept` without `stale`: the sums are there, no kernel is
+                 * computed. The crop is read for the white unit. */
+                const struct decknet_work work = {
+                        .crop = s->gpu_mem.pixels +
+                                gpu_crop(slot, p) * d->crop_px * DECKNET_CROP_CH,
+                        .sums = ws->sums,
+                        .tube = ws->tube_sums,
+                        .kept = true,
+                };
+                decknet_kernel_parts(&d->blob,
+                                     d->n_blob_px,
+                                     s->gpu_mem.sums + (slot * planes + p - 1) * n_blob,
+                                     ws->sums);
+                if (p == DECKNET_PLANE_HOLE) {
+                    decknet_kernel_parts(
+                            &d->tube_kernel, d->n_tube_px, tube + slot * n_tube, ws->tube_sums);
+                }
+                decknet_plane(d, ws, slot, (enum decknet_plane) p, job->ga, &work);
+            }
+        }
+    }
+}
+
+/* A frame that is not gated, with its integer part on the GPU. The frame's
+ * rows are copied to the GPU's memory and both stages submitted; then this
+ * thread waits for the first, which is short, and computes the gains and
+ * the floor planes from it while the GPU samples the other planes and sums
+ * their kernels. */
+[[nodiscard]] static enum geist_status push_gpu(struct geist_decknet_stream      *s,
+                                                const struct geist_decknet_frame *frame) {
+    struct geist_decknet *d   = s->d;
+    size_t                row = 0, rows = 0;
+    (void) frame_rows(frame, &row, &rows); /* frame_ok accepted it */
+    gpu_upload(s, frame, row);
+    enum geist_status st = s->gpu_ops->submit(s->gpu, frame->format, row, frame->height);
+    if (st != GEIST_OK) {
+        return st; /* nothing was computed: the last result stays */
+    }
+    float          ga[3], gb[3];
+    struct gpu_job job = {.s = s, .ga = ga};
+    st                 = s->gpu_ops->wait(s->gpu, 0);
+    if (st == GEIST_OK) {
+        const size_t strip = gpu_crop(d->n_slots, 0) * d->crop_px * DECKNET_CROP_CH;
+        decknet_strip(d, s->gpu_mem.pixels + strip, d->bg_a);
+        decknet_gains(d, d->bg_a, s->bg_ref, ga, gb);
+        if (d->result.checkable) {
+            on_threads(s, s->n_threads, gpu_floors, &job);
+        }
+    }
+    const enum geist_status st1 = s->gpu_ops->wait(s->gpu, 1);
+    st                          = st != GEIST_OK ? st : st1;
+    if (st != GEIST_OK) {
+        /* Half a result is none. */
+        s->have_result = false;
+        return st;
+    }
+    if (d->result.checkable) {
+        on_threads(s, s->n_threads, gpu_planes, &job);
+    }
+    s->n_tiles_changed = s->n_tiles;
+    s->n_samples       = d->bg_px + d->n_slots * s->per_slot;
+    s->timestamp       = frame->timestamp;
+    s->have_result     = true;
+    s->n_frames++;
+    return GEIST_OK;
+}
+
 /* ---- entry points ----------------------------------------------------- */
 
 void decknet_stream_destroy(struct geist_decknet_stream *s) {
     if (s == nullptr) {
         return;
+    }
+    if (s->gpu_ops != nullptr) {
+        s->gpu_ops->destroy(s->gpu);
     }
     for (size_t p = 0; p < DECKNET_PLANES; p++) {
         heap_freep(&s->run[p]);
@@ -877,6 +1193,13 @@ enum geist_status decknet_stream_set_reference(struct geist_decknet_stream      
     s->have_ref  = true;
     s->have_kept = false; /* s->rgb may hold the empty deck, and the tiles are other ones */
     s->cached    = false;
+    if (s->gpu_ops != nullptr) {
+        const enum geist_status st = gpu_tables(s);
+        if (st != GEIST_OK) {
+            s->have_ref = false; /* the GPU's tables are neither the old ones nor these */
+            return st;
+        }
+    }
     return GEIST_OK;
 }
 
@@ -979,6 +1302,11 @@ enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
     }
     if (!s->have_ref || s->h_gen != d->h_gen) {
         return GEIST_E_INVALID_STATE;
+    }
+    /* A gated frame is the CPU's also where a GPU is set: most of it is
+     * kept, and what is left is less than a round trip to the GPU. */
+    if (s->gpu_ops != nullptr && !s->gate) {
+        return push_gpu(s, frame);
     }
     const struct decknet_run strip = {.px = 0, .n = (uint32_t) d->bg_px};
     struct pixels            img   = pixels_own(s);

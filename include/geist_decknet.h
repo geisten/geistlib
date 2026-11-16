@@ -9,9 +9,11 @@
  * symbols, so a default build is byte-for-byte what it was; a program that
  * includes this header links only against a DECKNET=1 library.
  *
- * No tokenizer, no session, no backend handle: the forward pass is portable
- * C and is the same code on every platform. File contract, forward pass and
- * calibration: docs/DECKNET.md.
+ * No tokenizer, no session, and no backend to create: the forward pass is
+ * portable C and is the same code on every platform. A camera stream may be
+ * given a GPU backend for its integer part
+ * (geist_decknet_stream_set_backend); its results are the same bits. File
+ * contract, forward pass and calibration: docs/DECKNET.md.
  */
 #pragma once
 
@@ -22,6 +24,7 @@ extern "C" {
 #endif
 
 struct geist_decknet;
+struct geist_backend;
 
 /* @stability EXPERIMENTAL — which image's homographies a call replaces. */
 enum geist_decknet_image : uint32_t {
@@ -244,6 +247,35 @@ geist_decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t 
 geist_decknet_stream_set_threads(struct geist_decknet_stream *s, size_t n_threads);
 
 /* @stability EXPERIMENTAL
+ * Where the integer part of a frame is computed: on the CPU (after the
+ * create, and again with be == nullptr), or on the GPU of `be`, a backend
+ * from geist_backend_create that has a decknet path (today "metal"). The
+ * GPU converts and samples the frame and sums the kernels' pixels, in
+ * integers; what needs F64 (gains, 1x1 units, pooling) stays on the calling
+ * thread, or with geist_decknet_stream_set_threads(s, 2) on two. Every
+ * result is, bit for bit, the CPU's.
+ *
+ * A frame's bytes are copied to memory the GPU reads (the rows a sample
+ * reads, without their padding), so a frame is the caller's again when the
+ * call that took it returns, as on the CPU. A gated frame
+ * (geist_decknet_stream_set_gate) is computed on the CPU whatever is set
+ * here. The stream borrows `be`: it outlives the stream, or the next call
+ * that sets another, and while a call on the stream runs no other thread
+ * uses that backend.
+ *
+ * Allocates what the GPU needs (buffers of the size of the stream's tables,
+ * two compute pipelines); no frame allocates in the library afterwards.
+ * GEIST_E_UNSUPPORTED for a backend without a decknet path (every CPU
+ * backend: pass nullptr for the CPU) and for a model whose crops or image
+ * do not fit the GPU's 32-bit indices; GEIST_E_OOM; GEIST_E_BACKEND when the
+ * device refuses a buffer or a pipeline (geist_backend_errmsg(be) says
+ * which). The stream is as it was after any of them.
+ * GEIST_E_INVALID_ARG for a null stream. Called from the thread that uses
+ * the stream. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_set_backend(struct geist_decknet_stream *s, struct geist_backend *be);
+
+/* @stability EXPERIMENTAL
  * The empty deck: the image every pushed frame is compared with (`ref` of
  * geist_decknet_run), in any of the formats. Also takes over the handle's
  * homographies as they are now: after geist_decknet_set_homographies the
@@ -267,8 +299,10 @@ geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
  * model's (or is odd where the format needs it even), a stride shorter than
  * a row, or n_bytes smaller than the frame's last row ends.
  * GEIST_E_INVALID_STATE before a reference is set and after the handle's
- * homographies were replaced. Never call one stream from two threads at
- * once (geist_decknet_stream_offer is the one function that may be). */
+ * homographies were replaced. On a GPU (geist_decknet_stream_set_backend)
+ * also GEIST_E_BACKEND when the device fails a frame: the stream then has
+ * no result until a frame succeeds. Never call one stream from two threads
+ * at once (geist_decknet_stream_offer is the one function that may be). */
 [[nodiscard]] enum geist_status
 geist_decknet_stream_push_frame(struct geist_decknet_stream      *s,
                                 const struct geist_decknet_frame *frame);

@@ -4,7 +4,9 @@ decknet is the geistbox deck-check network (#532): two camera images in (the
 deck now and the empty deck), one small state vector per deck position out.
 It is a fixed convolutional net whose weights were written by hand from the
 deck geometry; nothing is trained. It is the library's first model that is
-not a language model: no tokenizer, no session, no backend handle.
+not a language model: no tokenizer, no session, and no backend to create.
+Its pass is portable C; a camera stream may hand the integer part of it to
+a GPU backend (see "On a GPU").
 
 Build with `make DECKNET=1`. The default build (`DECKNET=0`) compiles none of
 it: `libgeist.a`, `libgeist.so`/`.dylib` and every binary are byte for byte
@@ -103,6 +105,7 @@ struct geist_decknet_frame f = {
 (void) geist_decknet_stream_set_reference(s, &f); /* once, and after new homographies */
 (void) geist_decknet_stream_set_gate(s, true, 0); /* optional: unchanged tiles are not recomputed */
 (void) geist_decknet_stream_set_threads(s, 2);    /* optional: the slots on two threads */
+(void) geist_decknet_stream_set_backend(s, metal); /* optional: the integer part on a GPU */
 
 for (;;) {                                        /* per camera frame */
     f.data      = frame;                          /* the capture buffer itself */
@@ -123,8 +126,9 @@ geist_decknet_stream_destroy(s);
 | `geist_decknet_stream_create(d, &s)` | a stream on the handle `d`, which it borrows; allocates everything the stream will ever need | `GEIST_E_OOM`, `GEIST_E_INVALID_ARG` |
 | `geist_decknet_stream_set_gate(s, on, threshold)` | temporal gating on or off (off after the create), see "Gating"; the first call that turns it on allocates what it keeps | `GEIST_E_OOM` (the stream stays as it was), `GEIST_E_INVALID_ARG` |
 | `geist_decknet_stream_set_threads(s, n)` | the slots of a frame on one thread (after the create) or on two | `GEIST_E_INVALID_ARG` (null, or `n` is not 1 or 2) |
+| `geist_decknet_stream_set_backend(s, be)` | the integer part of a frame that is not gated on the GPU of `be` (today the `metal` backend), or with `nullptr` on the CPU again, see "On a GPU"; allocates what the GPU needs | `GEIST_E_UNSUPPORTED` (a backend without a decknet path, which every CPU backend is; a model too large for the GPU's 32-bit indices), `GEIST_E_OOM`, `GEIST_E_BACKEND`, `GEIST_E_INVALID_ARG`; the stream stays as it was |
 | `geist_decknet_stream_set_reference(s, &frame)` | the empty deck, in any format; takes over the handle's homographies as they are now | `GEIST_E_INVALID_ARG` (null, or a frame that is refused, see below); the reference it had stays |
-| `geist_decknet_stream_push_frame(s, &frame)` | one forward pass on the frame against the reference; returns when it is done | `GEIST_E_INVALID_ARG` (null, or a frame that is refused): nothing is read, the last result stays. `GEIST_E_INVALID_STATE`: no reference yet, or the homographies were replaced since |
+| `geist_decknet_stream_push_frame(s, &frame)` | one forward pass on the frame against the reference; returns when it is done | `GEIST_E_INVALID_ARG` (null, or a frame that is refused): nothing is read, the last result stays. `GEIST_E_INVALID_STATE`: no reference yet, or the homographies were replaced since. On a GPU also `GEIST_E_BACKEND`: the device failed the frame, and the stream has no result until one succeeds |
 | `geist_decknet_stream_offer(s, &frame, &dropped)` | from the thread that captures: the frame waits for the next pass; never waits itself. The frame that was waiting, if any, comes back in `*dropped` and is counted. See "A queue of one" | `GEIST_E_INVALID_ARG` (null, or a frame that is refused): nothing is queued |
 | `geist_decknet_stream_push_offered(s, &done)` | `push_frame` on the waiting frame, which comes back in `*done`; `GEIST_OK` and `*done == nullptr` when none waits | as `push_frame`; the frame comes back with any status |
 | `geist_decknet_stream_result(s, &res)` | the image check of the last frame, its timestamp, the number of frames so far, what the frame cost (the tiles the network reads, how many of them were taken from this frame, the samples computed), and how many offered frames were dropped | `GEIST_E_INVALID_STATE` before the first frame, `GEIST_E_INVALID_ARG` |
@@ -134,9 +138,10 @@ geist_decknet_stream_destroy(s);
 The stream computes in the handle's workspace: `d` outlives the stream, and
 while the stream exists `geist_decknet_run` is not called on `d`. One stream
 is used by one thread at a time; `geist_decknet_stream_offer` is the one
-function a second thread may call meanwhile. After the create, and the first
-`geist_decknet_stream_set_gate` that turns gating on, nothing allocates: not
-the reference, not the first frame, not a later one.
+function a second thread may call meanwhile. After the create, the first
+`geist_decknet_stream_set_gate` that turns gating on and a
+`geist_decknet_stream_set_backend`, nothing allocates: not the reference,
+not the first frame, not a later one.
 
 ### Frames
 
@@ -611,8 +616,13 @@ stream on two threads whose every tile changes is at 13.2, 15.1 and
 make DECKNET=1 bin/<target>/release/tools/bench_stream
 ~/bin/with-mac-lock bin/<target>/release/tools/bench_stream \
     [--frames N] [--threads 1|2] [--scene block|all|half|burst] \
-    [--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace]
+    [--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace] \
+    [--backend cpu|metal]
 ```
+
+Each row also gives the processor time the process used for its timed
+frames, all threads together (`getrusage`); behind a camera that includes
+the bench's own looking for a frame, which the row names.
 
 ### Where the conversion's 2 ms went
 
@@ -857,6 +867,257 @@ they are whatever else starts a compaction. The second group goes with
 the other services. A camera whose scene mostly stands still has the
 margin anyway: gated, a frame is 5 ms.
 
+### On a GPU
+
+#533 kept a GPU for last: "only if the CPU path misses the target; the
+frame upload usually costs more than these small nets". The sixth step
+measured it where a GPU was in reach, on an Apple M1 Max through Metal, and
+landed what the numbers there carried. **Nothing here is a number of the
+Raspberry Pi 5's GPU**, which was not reachable; see "Not covered".
+
+```c
+struct geist_backend *metal = nullptr;
+if (geist_backend_create("metal", nullptr, nullptr, &metal) == GEIST_OK &&
+    geist_decknet_stream_set_backend(s, metal) == GEIST_OK) {
+    /* frames that are not gated have their integer part on the GPU */
+}
+/* ... */
+(void) geist_decknet_stream_set_backend(s, nullptr); /* the CPU again */
+```
+
+**The GPU takes what is integer, and the results are the same bits.** A
+crop pixel is an integer, and a kernel is the sum of its pixels per
+distinct weight (see "Integer crops"): 32-bit arithmetic that wraps, which
+a shader computes as the CPU does. So the conversion of an NV12 or YUYV
+frame, the 0.88 M bilinear samples and the pixel sums of both kernels go to
+the GPU, and what comes back is integers. Everything behind them is F32 and
+F64 in an order that is part of the result (the gains, the 1x1 units, the
+weight of a kernel part times its sum, the pooling), and Metal has no F64:
+that stays on the CPU, in the functions the CPU path computes it with
+(`decknet_plane`, which is handed kernel sums as a gated stream hands it
+kept ones). There is no tolerance to state: `test_decknet_stream_unit`
+runs its frames once more on the GPU and compares with `memcmp`, and
+`bench_stream --backend metal` hashes every output of every frame against
+the still path.
+
+A frame on the GPU (`push_gpu` in `stream.c`, `src/backends/metal/decknet.c`):
+
+1. **The frame's rows are copied** into memory the GPU reads: the rows a
+   sample reads, without their padding. The frame is the caller's again
+   when the call returns, as on the CPU.
+2. **Two command buffers are committed, one behind the other**, before
+   anything is waited for. The first has the samples the CPU needs first:
+   the worktable strip and the floor plane of every slot. The second has
+   the samples of the other four planes and, behind them, the kernels: per
+   pixel a kernel is evaluated at, and per part of the kernel, the sum of
+   the crop pixels of its taps.
+3. **The CPU waits for the first**, computes the gains and the floor planes
+   (the 1x1 units and their region pools) **while the GPU runs the second**,
+4. waits for the second, turns the part sums into the kernel sums (weight
+   times sum, in F64, in the kernel's order) and pools the units.
+
+An NV12 or YUYV pixel is converted where it is fetched, by the integer
+formula under "Frames", so the three formats cost the same. Every buffer is
+shared memory, which is the only kind an Apple GPU has: nothing is uploaded
+but the frame's rows, and the results are read where the GPU wrote them.
+
+- **A gated frame is the CPU's**, whatever backend is set: most of it is
+  kept from the frame before, and what is left is less than a round trip to
+  the GPU (with the bench's block moving, a gated frame takes 1.9 ms on
+  one thread here and 2.1 ms behind the camera, where a frame on the GPU
+  takes 2.6 and 2.9).
+- **Two threads** (`geist_decknet_stream_set_threads(s, 2)`) share the
+  CPU's part, slot by slot as on the CPU.
+- **Allocation.** `set_backend` allocates the GPU's buffers (for the bench's
+  network 14 MB of sample tables and 3.5 MB of destinations, 24 MB of crop
+  pixels, 3 MB of sums, 6 MB for a frame) and compiles two kernels; a frame
+  allocates nothing in the library (`test_decknet_stream_unit` counts).
+  Metal itself makes two command buffers and their encoders per frame, as
+  for every submission; they go with an autorelease pool that a frame
+  opens and closes.
+- **A device that fails a frame** gives `GEIST_E_BACKEND`, and the stream
+  has no result until a frame succeeds; `set_backend(s, nullptr)` goes on
+  on the CPU.
+- **One user of the backend at a time.** While a call on the stream runs,
+  no other thread uses that backend: the Metal backend's bookkeeping is
+  one thread's, for a model's sessions as well.
+
+The interface between the stream and a backend is
+`include/geist_decknet_gpu.h`: a plan (how many samples, which pixel each
+writes, the kernels as lists of taps, where they are evaluated), four
+pieces of host memory (the sample table and the frame to write, the pixels
+and the sums to read) and `submit` / `wait(stage)`. All tables are 32-bit
+words: a sample is its three weights and `x | y << 16`, as on the CPU.
+
+#### Measured on an M1 Max
+
+Apple M1 Max (8 performance and 2 efficiency cores, 32 GPU cores, macOS
+27.2, Apple clang 21), on mains power, `tools/bench_stream` with the
+bench's network at 1920 x 1080, under the host lock. The machine is shared
+and was not idle (load average 1.5 to 8 during the runs behind the camera,
+the display in use), which is what the tails below are made of; no
+temperature could be read. Four arms, run in turn round by round, the order moved on by one
+with each round: the stream on the CPU on one thread and on two, and on
+the Metal backend with one thread and with two for the CPU's part.
+
+**Behind a camera at 60 frames per second** (`--camera 60 --frames 600
+--only stream`), ten rounds, RGB8 / NV12 / YUYV: the median of p50 from the
+offer of a frame to its result in ms, the median of p99 over the ten runs
+and its range, the results of 6000 later than a frame period, and the
+processor time of the process for 600 frames in seconds, all threads
+(of which the bench's looking for a frame is 0.25 to 0.31 s in every arm):
+
+| | p50 | p99, median (range) | late of 6000 | processor time, s |
+| :-- | --: | --: | --: | --: |
+| CPU, one thread | 5.25 / 5.31 / 5.38 | 7.3 (6.0 to 18.6) / 6.8 (6.0 to 21.1) / 7.4 (6.0 to 33.7) | 8 / 12 / 11 | 3.42 / 3.45 / 3.48 |
+| CPU, two threads | 2.85 / 2.85 / 2.92 | 4.8 (4.3 to 8.6) / 4.6 (3.2 to 10.4) / 5.7 (3.7 to 24.0) | 2 / 4 / 13 | 3.57 / 3.60 / 3.70 |
+| Metal, one thread | 2.95 / 2.90 / 2.87 | 5.0 (3.9 to 39.6) / 5.8 (4.7 to 15.6) / 5.4 (4.1 to 21.5) | 21 / 7 / 8 | 1.74 / 1.72 / 1.72 |
+| Metal, two threads | 2.54 / 2.52 / 2.51 | 5.0 (3.7 to 17.7) / 4.4 (3.5 to 25.7) / 4.5 (3.9 to 9.3) | 6 / 11 / 2 | 1.80 / 1.76 / 1.77 |
+
+**Back to back** (`--frames 600 --only stream`), ten rounds of the same
+four arms, with the machine busier than before (load average 4.7 to 11.5):
+the median of p50 of a frame in ms, the median of p99, and the processor
+time for 600 frames in seconds:
+
+| | p50 | p99, median | processor time, s |
+| :-- | --: | --: | --: |
+| CPU, one thread | 5.19 / 5.22 / 5.35 | 5.8 / 5.8 / 6.9 | 3.12 / 3.14 / 3.22 |
+| CPU, two threads | 2.76 / 2.75 / 2.82 | 3.7 / 4.2 / 3.9 | 3.19 / 3.21 / 3.28 |
+| Metal, one thread | 2.66 / 2.60 / 2.60 | 4.4 / 4.1 / 4.0 | 1.38 / 1.35 / 1.34 |
+| Metal, two threads | 2.33 / 2.27 / 2.30 | 3.9 / 3.9 / 3.9 | 1.53 / 1.52 / 1.52 |
+
+Every row of these forty runs hashed every output of every frame against
+the still path's: the same bits. What the numbers say:
+
+- **Against one CPU thread** the GPU path takes 45 % off a frame (2.9 ms
+  for 5.3) and half of the processor time: 1.4 s for 600 frames where the
+  CPU path takes 3.2, the bench's looking taken off both, which is 2.3 ms
+  and 5.3 ms a frame.
+- **Against two CPU threads** it is within 0.1 ms with one thread for the
+  CPU's part (2.9 ms both; back to back 2.6 for 2.8) and 0.3 to 0.5 ms
+  ahead with two (2.5 ms, back to back 2.3), at less than half the
+  processor time either way (1.4 to 1.5 s for 3.3).
+- **The formats cost the same** on the GPU, 2.87 to 2.95 ms; on the CPU a
+  YUYV frame is 0.13 ms behind an RGB8 one.
+- **The tail is the machine's, in every arm.** Each arm had runs with a
+  pass of 23 to 120 ms and results later than a frame period; p99 stayed
+  below a frame period in 27, 29, 28 and 28 of the 30 runs of the four
+  arms. Nothing in these runs tells a slow pass of the GPU's from one of
+  the machine's: the GPU is also the display's.
+- **What the processor time leaves out** is the GPU, which works 1.3 ms of
+  each frame (below). The time is the half of the energy a program can see;
+  the watts were not measured.
+
+Where a frame on the GPU goes, behind the camera, one thread for the CPU's
+part unless the column says two: p50 of each part in ms over 600 frames,
+the median of three runs (timers that are not in the tree; the GPU's own
+time is the command buffers' `GPUStartTime` to `GPUEndTime`, read in the
+prototype below):
+
+| | RGB8 | NV12 | YUYV | RGB8, two threads |
+| :-- | --: | --: | --: | --: |
+| the frame's rows copied | 0.14 | 0.07 | 0.09 | 0.14 |
+| both command buffers encoded and committed | 0.05 | 0.05 | 0.05 | 0.05 |
+| waiting for the first; the GPU works 0.07 ms on it | 0.61 | 0.60 | 0.54 | 0.63 |
+| gains and floor planes, on the CPU | 1.16 | 1.16 | 1.16 | 0.65 |
+| waiting for the second; the GPU works 1.27 ms on it | 0.15 | 0.14 | 0.14 | 0.67 |
+| the other planes: kernel sums from their parts, pooling, units | 0.82 | 0.82 | 0.82 | 0.44 |
+| the frame, offer to result | 3.02 | 2.93 | 2.87 | |
+
+- **The round trip of a command buffer is half a millisecond.** The first
+  one is waited for 0.6 ms (0.39 to 0.70 between runs) for 0.07 ms of work:
+  the rest is its way to the GPU and the way of its completion back, and
+  nothing in the library shortens it. It is paid once: the second command
+  buffer is under way meanwhile.
+- **The GPU's 1.27 ms** are 0.2 ms for all 0.88 M samples and 0.9 ms for the
+  8.0 M taps of the kernels (the prototype with one of the two at a time).
+  With one thread for the CPU's part the GPU is done 0.15 ms after the CPU
+  has the floor planes; with two the CPU waits 0.67 ms for it.
+- **The CPU's part is 2.0 ms of the 2.9**, and is what the processor time
+  of a GPU frame is made of.
+- **The upload is 2 to 5 % of a frame**: the rows a sample reads, 3 to
+  6 MB, copied in 0.07 to 0.14 ms. "The frame upload usually costs more than these small nets"
+  does not hold where the GPU's memory is the CPU's.
+
+**What was built to measure, before anything was written into the tree:**
+a program outside it (Objective-C, 400 lines, linked against the library's
+internals for the stream's tables) with the two kernels, one command buffer
+or two, the three ways to wait, the caller's frame wrapped or copied, and
+every frame compared with the CPU stream bit for bit. Five rounds in turn,
+RGB8, 300 frames at 60 per second, p50 in ms:
+
+| | p50 of a frame (range of five runs) |
+| :-- | --: |
+| one command buffer for everything, waited for | 4.10 (3.97 to 4.24) |
+| two command buffers, `waitUntilCompleted` | 2.89 (2.86 to 3.03) |
+| two, a completion handler that signals a semaphore | 2.79 (2.76 to 2.91) |
+| two, the status polled in a loop | 2.85 (2.83 to 2.95) |
+| two, waited for, the frame copied instead of wrapped | 3.04 (3.01 to 3.23) |
+
+In it the GPU's own time was 1.32 ms for one command buffer and 0.07 and
+1.27 ms for two, and a copy of the whole frame took 0.14 ms for RGB8
+(6.2 MB), 0.07 ms for NV12 and 0.10 ms for YUYV where wrapping the caller's
+memory took 0.001.
+
+What it settled:
+
+- **All of the integer part goes to the GPU, in two command buffers.** With
+  one, the CPU waits 1.9 ms and then computes for 2.1; with two it computes
+  the floor planes while the GPU sums the kernels, which takes 1.2 ms off
+  a frame. Sampling alone on the GPU was not built: the round trip is paid
+  in either case, and the kernels add 0.9 ms of GPU time that runs while
+  the CPU is busy anyway.
+- **The frame is copied, not wrapped.** Wrapping the caller's memory
+  (`newBufferWithBytesNoCopy`) saves the 0.07 to 0.14 ms, and has
+  conditions a stream's frames do not have: the memory has to start on a
+  page and be whole pages (16 KB here); a wrapper per frame is an object
+  allocated per frame; and wrappers kept per address rest on the caller
+  never having other memory at an address the stream has seen, which
+  nothing in a stream's contract says (what Metal does then was not
+  tried). A copy needs none of that and leaves the frame the caller's when
+  the call returns.
+- **`waitUntilCompleted`.** A completion handler was 0.1 ms ahead at the
+  median with ranges that overlap; it needs a block, and the library is C
+  without blocks. Polling the status was no faster and cost 0.2 s more
+  processor time per 300 frames.
+- **What it cannot show** is a camera's own buffers; see "Not covered".
+
+So on this machine the GPU path gains in latency and in processor time,
+which is the part of the energy that was measured, and it is in the tree.
+What that says about the board #533 is about is below.
+
+#### Vulkan, and the Raspberry Pi 5
+
+Not written, because it could not be run: the Pi 5 was not reachable, and
+Vulkan on this Mac goes through MoltenVK, where the backend does not run.
+What a port has to do is small, and what it has to show is not:
+
+- **What carries over.** The two kernels are integer arithmetic on buffers
+  of 32-bit words, with one thread per sample and one per kernel position;
+  GLSL has the same unsigned arithmetic, so the shader logic and the tables
+  (`include/geist_decknet_gpu.h`) stay as they are, and so do the stream's
+  side and the tests, which would run against a second
+  `geist_decknet_gpu_ops`. A frame's bytes would be read as words (a std430
+  block has no bytes without an extension); the frame memory is whole words
+  for that.
+- **What does not.** Shared memory. A discrete GPU needs the frame's rows
+  uploaded and the results read back: about 7 MB for the bench's network
+  (the floor planes' pixels, the pixels of the white unit, the sums), not
+  the 24 MB of crop memory. The interface has the two stages and the
+  `samples_written` call for that, but no list of the pixels the CPU reads;
+  a port for a discrete GPU adds it.
+- **What must be measured on the Pi 5** (V3D 7.1, memory shared with the
+  CPU): whether the round trip of a command buffer, which is
+  half a millisecond here on a GPU that does this work in 1.3 ms, leaves
+  anything of the 11 to 12 ms two Cortex-A76 cores take; how long V3D takes
+  for 0.88 M samples and 8.0 M taps; whether the CPU's part (2 ms here on a
+  core that is three to four times a Pi's) fits beside it; and what the
+  board draws, which is the half of the target the Mac says nothing about.
+  The 1x1 units and the pooling are a quarter of a CPU frame there (see
+  "Where the frame went") and would stay on the CPU.
+- **And on a desktop GPU**: the same, with the upload and the read-back in
+  the time.
+
 ### Not covered
 
 - **A capture loop.** The queue of one is two calls; the thread that
@@ -868,7 +1129,38 @@ margin anyway: gated, a frame is 5 ms.
   camera"). The board is shared, so its settings stayed as they are: no run
   with `vm.compaction_proactiveness=0`, with locked memory, with isolated
   cores or without the other services.
-- **A GPU path.** Not looked at.
+- **The Raspberry Pi 5's GPU, and Vulkan.** The GPU path was measured on
+  an Apple M1 Max, the one GPU in reach; the board was not reachable, and
+  no Vulkan code was written because none could be run. Whether a GPU
+  brings the board closer to the target of #533 or further from it is open;
+  "Vulkan, and the Raspberry Pi 5" has what a port needs and what only the
+  board can say.
+- **Energy in watts.** The processor time of the process is what a program
+  sees without privileges, and it does not include what the GPU draws for
+  its part of a frame. No power was measured (`powermetrics` needs
+  privileges), on the Mac or anywhere.
+- **A camera's own buffers.** On Apple a camera hands out pixel buffers
+  that lie on IOSurfaces. A stream takes a pointer to bytes, so a caller
+  locks such a buffer and the stream copies its rows; binding the surface
+  to the GPU as a texture would save that copy and was not built. The
+  bench's frames are plain memory and its camera is a thread with a clock:
+  it says what a copy costs and nothing about a surface.
+- **A gated frame on the GPU.** A gated stream computes on the CPU, also
+  the frame it computes whole because nearly every tile changed.
+- **A model and a stream on one backend at once.** Not tried. The Metal
+  backend's bookkeeping belongs to one thread at a time.
+- **Shorter kernels on the GPU.** The GPU sums a kernel tap by tap, 81
+  reads where the CPU's spans take 38. With one thread for the CPU's part
+  the GPU is done when the CPU is; with two it is what a frame waits for.
+- **The CPU's part of a GPU frame.** The 1x1 units, the pooling and the
+  units are 2 ms of such a frame here. They are F32 and F64 in the
+  reference's order; whether a shader could give the same bits (F64
+  emulated in integers, F32 without contraction) was not tried.
+- **A GPU that is busy, cold or hot.** The frames were measured at a steady
+  60 per second and back to back, with the display's compositor as the
+  GPU's only other user that is known of. The first frames after a pause,
+  a GPU shared with another program's work and a throttled one were not
+  measured, and the temperature cannot be read without privileges.
 - **More of the kernels.** A stream sums a row of equal weights from two
   prefix sums: 38 reads instead of 81 for the bench's 9 x 9 kernel. The
   weight with the most taps could be the whole window less the others (28
@@ -1063,7 +1355,8 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
 - `src/archs/decknet/load.c`: the file contract, `run.c`: the pass,
   `stream.c`: the same pass fed from a camera stream (sample tables, region
   of interest, tiles, frame formats, gating, prefix sums for the kernels,
-  the second thread, the queue of one). One
+  the second thread, the queue of one, and the CPU's part of a frame whose
+  integer part a GPU computed). One
   implementation in portable C, built without `-ffast-math` and without
   contraction. Its vectors are the compiler's (vector types for a crop pixel,
   for the sample that computes one and for four rows of the 1x1 layer,
@@ -1071,8 +1364,15 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
   so there is no `cpu_scalar` / `cpu_neon` / `cpu_x86` variant to keep in
   step: the same code runs on every platform, and `test_decknet_unit` is its
   parity check there.
+- `include/geist_decknet_gpu.h`: what a backend implements to take the
+  integer part of a stream's frame (five functions and the layout of the
+  tables, see "On a GPU"), and `src/backends/metal/decknet.c`, which
+  implements it for Metal: two compute kernels in integer arithmetic. Built
+  with `DECKNET=1` where the Metal backend is built; the arch knows the
+  interface and no backend, the backend the interface and no arch.
 - `src/engine/decknet.c`: the public entry points, and the composition point
-  for the arch (`tools/layers.json`).
+  for the arch and for the backends that have a decknet path
+  (`tools/layers.json`).
 - decknet is not in `src/engine/arch_registry.c`. That registry answers
   "which decoder, with which towers, does `geist_model_load` build for this
   `general.architecture`", and every reader of a descriptor goes on to a
@@ -1087,7 +1387,7 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
 | `tests/test_decknet_unit.c` | every output of every slot against the numpy reference, within 1e-4, on an invented network everywhere and on the device's network where its fixture exists; replaced homographies; a pair that is not checkable; no allocation per call, the first included; `geist_model_load` refuses the file |
 | `tests/test_decknet_malformed_unit.c` | 54 broken files, each refused with the expected status and message; every truncation; every allocation of a load failing once; units computed by hand (kernel orientation, pooling); argument checks |
 | `tests/fuzz_decknet.c` | the loader, and the forward pass on whatever the loader accepts, under libFuzzer and a deterministic driver |
-| `tests/test_decknet_stream_unit.c` | a stream against the still path, every output bit for bit: RGB8, NV12 and YUYV, padded rows, replaced homographies, across a frame that is not checkable, on one thread and on two; NV12 and YUYV frames of arbitrary bytes (the conversion over its whole range); a gated stream against the still path on the image of its kept tiles, which the test builds with its own tiles and its own sum of absolute differences, at threshold 0 and above it; gating at its edges (a kernel window across a cell of the crop, a tile exactly at the threshold and one above it, each tile changed on its own, one sample at a time across a seam of the sample tables, a frame that is not checkable between two that are); kernels with spans, which a stream sums from prefix sums and the still path tap by tap, at the corners and edges of a crop, one pixel inside them and in the middle, on one thread and two, and in a gated stream that goes both ways; the fixed-point sample itself (weights that never exceed the whole, a flat image sampled to itself, any four bytes to within 2/65536 of the exact value) and a kernel whose pixel sum passes 32 bits; no allocation after the create and the first `set_gate`, the first frame included, the queue's calls among them; 227 frame descriptions refused, exact-fit frames accepted; samples at the last pixels of a frame with 0 to 20 bytes behind it; the queue of one, step by step on one thread, with a consumer that takes one pass per three offers of a second thread, and with that thread offering without waiting (every frame comes back once, dropped or computed, the computed ones in order and with the bits of `push_frame`); state and argument checks; every allocation of a create and of a `set_gate` failing once. The gating tests assert which frames were computed from what was kept (they sample less than a whole frame) |
+| `tests/test_decknet_stream_unit.c` | a stream against the still path, every output bit for bit: RGB8, NV12 and YUYV, padded rows, replaced homographies, across a frame that is not checkable, on one thread and on two; NV12 and YUYV frames of arbitrary bytes (the conversion over its whole range); a gated stream against the still path on the image of its kept tiles, which the test builds with its own tiles and its own sum of absolute differences, at threshold 0 and above it; gating at its edges (a kernel window across a cell of the crop, a tile exactly at the threshold and one above it, each tile changed on its own, one sample at a time across a seam of the sample tables, a frame that is not checkable between two that are); kernels with spans, which a stream sums from prefix sums and the still path tap by tap, at the corners and edges of a crop, one pixel inside them and in the middle, on one thread and two, and in a gated stream that goes both ways; the fixed-point sample itself (weights that never exceed the whole, a flat image sampled to itself, any four bytes to within 2/65536 of the exact value) and a kernel whose pixel sum passes 32 bits; no allocation after the create and the first `set_gate`, the first frame included, the queue's calls among them; 227 frame descriptions refused, exact-fit frames accepted; samples at the last pixels of a frame with 0 to 20 bytes behind it; the queue of one, step by step on one thread, with a consumer that takes one pass per three offers of a second thread, and with that thread offering without waiting (every frame comes back once, dropped or computed, the computed ones in order and with the bits of `push_frame`); state and argument checks; every allocation of a create and of a `set_gate` failing once. The gating tests assert which frames were computed from what was kept (they sample less than a whole frame). **And on a GPU**, where the `metal` backend is built in and has a device (the macOS legs; elsewhere this part is skipped and says so): every test above that pushes a frame once more with its streams on the backend, a stream that goes between the CPU and the GPU from frame to frame, in every format, gated in between, on one thread and two; what `set_backend` refuses (a CPU backend, a null stream); each of its allocations failing once; and that the GPU's memory holds the samples the result was computed from |
 | `tests/fuzz_decknet_stream.c` | frame geometry (format, size, stride, extent) and homographies from the input, on exact-size buffers; the harness decides for itself whether a frame fits and fails on a wrong verdict, not only on a crash. And gating: four frames (one, the same again, two with bytes changed) through a gated stream and one without, which have to agree in every bit at threshold 0, and the same frame twice has to give one result at any threshold. And the queue of one: every description goes through an offer as well, which has to give the verdict of a push, queue nothing it refuses and hand back the frame it replaces |
 
 `test_decknet_unit` compares against the numpy reference on two fixtures of
