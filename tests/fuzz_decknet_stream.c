@@ -13,13 +13,21 @@
  *   [3..4]  stride, [5..6] extent in bytes (little endian)
  *   [7]     bit 0: replace the homographies by bytes of the input first, so
  *           that the tables point anywhere; bit 1: the frame is the
- *           reference as well
+ *           reference as well; bit 2: the gating sequence below, with the
+ *           threshold from bits 3 to 7
  *   [8..]   pixel bytes, repeated to fill the extent
  *
  * The buffer handed over is exactly `extent` bytes long, so ASan sees a read
  * one byte behind it. And "no crash" is not the assertion: the harness works
  * out for itself whether the description fits the buffer, and aborts when
  * the stream accepts a frame that does not fit or refuses one that does.
+ *
+ * Gating (geist_decknet_stream_set_gate) keeps tiles and what was computed
+ * from them, so what it can get wrong is a value that is stale. The gating
+ * sequence pushes four frames (one, the same again, two with bytes changed)
+ * through a gated stream and through one without gating, on a 48 x 40 image
+ * of nine tiles, and aborts when at threshold 0 the two differ in a bit, or
+ * when at any threshold the same frame twice gives two results.
  *
  * The model is tests/decknet_tiny.h (16 x 12, two slots). Built only with
  * DECKNET=1 (mk/common.mk).
@@ -41,8 +49,8 @@ constexpr size_t HEADER = 8;
 
 /* How far the inputs got. External linkage, because under libFuzzer nothing
  * reads them and clang rejects a static that is only written. */
-extern size_t fuzz_stream_accepted, fuzz_stream_refused;
-size_t        fuzz_stream_accepted, fuzz_stream_refused;
+extern size_t fuzz_stream_accepted, fuzz_stream_refused, fuzz_stream_gated, fuzz_stream_partial;
+size_t        fuzz_stream_accepted, fuzz_stream_refused, fuzz_stream_gated, fuzz_stream_partial;
 
 static volatile float sink;
 
@@ -73,9 +81,160 @@ static void read_outputs(const struct geist_decknet_stream *s) {
     sink = acc;
 }
 
+/* ---- gating ----------------------------------------------------------- */
+
+constexpr size_t GATE_W       = 48;
+constexpr size_t GATE_H       = 40;
+constexpr size_t GATE_OUTPUTS = 64;
+
+/* Every output of the last frame, as bits. Returns how many. */
+static size_t outputs(const struct geist_decknet_stream *s, uint32_t out[static GATE_OUTPUTS]) {
+    struct geist_decknet_stream_result res;
+    if (geist_decknet_stream_result(s, &res) != GEIST_OK) {
+        abort();
+    }
+    float  v[GATE_OUTPUTS] = {res.image.checkable ? 1.0f : 0.0f,
+                              res.image.gain[0],
+                              res.image.gain[1],
+                              res.image.gain[2],
+                              res.image.bg_changed};
+    size_t n               = 5;
+    for (size_t i = 0; res.image.checkable && i < 2; i++) {
+        struct geist_decknet_slot slot;
+        if (geist_decknet_stream_slot(s, i, &slot) != GEIST_OK) {
+            abort();
+        }
+        const float one[13] = {slot.occ_front,
+                               slot.occ_rear,
+                               slot.wall_front,
+                               slot.rack,
+                               slot.plate,
+                               slot.deep,
+                               slot.tube_n,
+                               slot.tube_r,
+                               slot.tips[0],
+                               slot.tips[1],
+                               slot.tubes[0],
+                               slot.tubes_rot[0]};
+        memcpy(v + n, one, sizeof one);
+        n += 13;
+    }
+    memcpy(out, v, sizeof v);
+    return n;
+}
+
+static void gate_sequence(const uint8_t *data, size_t size) {
+    const uint8_t *pixels    = data + HEADER;
+    const size_t   n_pixels  = size - HEADER;
+    const uint32_t format    = data[0] % 3;
+    const uint32_t wish      = data[7] >> 3U;
+    const uint32_t threshold = wish % 4 == 0 ? 0 : wish * 8; /* 0 for a quarter of the inputs */
+
+    /* The tiny network on a larger image and crop: nine tiles, and a crop
+     * of several cells. The homographies spread the crop over the image. */
+    struct tiny m;
+    tiny_default(&m);
+    m.img_w  = (uint32_t) GATE_W;
+    m.img_h  = (uint32_t) GATE_H;
+    m.crop_w = 40;
+    m.crop_h = 36;
+    float h[11 * 9];
+    for (size_t i = 0; i < 11; i++) {
+        const float spread[9] = {1.1f, 0.3f, 0.5f + (float) i * 0.2f, 0.2f, 9.0f, 0.5f, 0, 0, 1};
+        memcpy(h + i * 9, spread, sizeof spread);
+    }
+    if (data[7] & 1) {
+        for (size_t i = 0; i < 11 * 9; i++) {
+            uint8_t raw[4];
+            for (size_t k = 0; k < 4; k++) {
+                raw[k] = pixels[(i * 4 + k) % n_pixels];
+            }
+            memcpy(&h[i], raw, 4);
+        }
+    }
+    tiny_set(&m.t[TINY_T_HOMOGRAPHY], "decknet.homography", 3, 11, 3, 3, 99, h);
+    static struct tiny_buf file;
+    tiny_write(&m, &file);
+
+    const size_t row    = format == 0 ? GATE_W * 3 : format == 1 ? GATE_W : GATE_W * 2;
+    const size_t rows   = format == 1 ? GATE_H + GATE_H / 2 : GATE_H;
+    const size_t stride = row + data[3] % 8;
+    const size_t n      = (rows - 1) * stride + row;
+    uint8_t     *buf    = malloc(n);
+    if (buf == nullptr) {
+        abort();
+    }
+    for (size_t i = 0; i < n; i++) {
+        buf[i] = pixels[i % n_pixels];
+    }
+    const struct geist_decknet_frame frame = {.format  = (enum geist_decknet_format) format,
+                                              .width   = GATE_W,
+                                              .height  = GATE_H,
+                                              .stride  = stride,
+                                              .n_bytes = n,
+                                              .data    = buf};
+
+    /* [0] without gating, [1] gated. The frame is its own empty deck, so the
+     * pair is checkable until a change reaches the worktable strip. A file
+     * the loader refuses (homographies that are not finite) ends here. */
+    struct geist_decknet        *d[2] = {nullptr, nullptr};
+    struct geist_decknet_stream *s[2] = {nullptr, nullptr};
+    bool                         ok   = true;
+    for (size_t i = 0; ok && i < 2; i++) {
+        ok = geist_decknet_load_from_memory(file.n, file.b, &d[i]) == GEIST_OK;
+        if (ok && (geist_decknet_stream_create(d[i], &s[i]) != GEIST_OK ||
+                   geist_decknet_stream_set_gate(s[i], i == 1, threshold) != GEIST_OK ||
+                   geist_decknet_stream_set_reference(s[i], &frame) != GEIST_OK)) {
+            abort();
+        }
+    }
+    uint32_t first[GATE_OUTPUTS] = {0};
+    bool     partial             = false;
+    for (size_t step = 0; ok && step < 4; step++) {
+        if (step == 2) { /* a stretch of bytes, somewhere */
+            const size_t at = ((size_t) data[5] | (size_t) data[6] << 8) % n;
+            for (size_t i = 0; i < 1 + (size_t) data[4] % 64; i++) {
+                buf[(at + i) % n] ^= 0x5A;
+            }
+        } else if (step == 3) { /* and one byte by one */
+            buf[((size_t) data[4] * 131 + data[5]) % n] += 1;
+        }
+        uint32_t out[2][GATE_OUTPUTS] = {{0}, {0}};
+        for (size_t i = 0; i < 2; i++) {
+            if (geist_decknet_stream_push_frame(s[i], &frame) != GEIST_OK) {
+                abort();
+            }
+            (void) outputs(s[i], out[i]);
+        }
+        struct geist_decknet_stream_result res;
+        (void) geist_decknet_stream_result(s[1], &res);
+        partial = partial || (res.image.checkable && step > 0 && res.n_tiles_changed > 0 &&
+                              res.n_tiles_changed < res.n_tiles);
+        if (step == 0) {
+            memcpy(first, out[1], sizeof first);
+        }
+        if (threshold == 0 && memcmp(out[0], out[1], sizeof out[0]) != 0) {
+            abort(); /* threshold 0 is not the stream without gating */
+        }
+        if (step == 1 && memcmp(first, out[1], sizeof first) != 0) {
+            abort(); /* the same frame twice, two results */
+        }
+    }
+    fuzz_stream_gated += ok;
+    fuzz_stream_partial += partial;
+    for (size_t i = 0; i < 2; i++) {
+        geist_decknet_stream_destroy(s[i]);
+        geist_decknet_destroy(d[i]);
+    }
+    free(buf);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size < HEADER + 1) {
         return 0;
+    }
+    if (data[7] & 4) {
+        gate_sequence(data, size);
     }
     static const size_t widths[8] = {
             TINY_IMG_W, TINY_IMG_W, TINY_IMG_W, TINY_IMG_W, TINY_IMG_W, 14, 18, 0};
@@ -224,6 +383,17 @@ int main(int argc, char **argv) {
     }
     for (long i = 0; i < runs; i++) {
         const size_t size = seed((uint8_t) (prng(&s) % 3), (size_t) (prng(&s) % 9), input);
+        if (i % 3 == 0) { /* a third with the gating sequence, any threshold */
+            input[7] = (uint8_t) (4u | (uint8_t) (prng(&s) & 0xF8u) | (uint8_t) (prng(&s) & 1u));
+            input[4] = (uint8_t) prng(&s);
+            input[5] = (uint8_t) prng(&s);
+            input[6] = (uint8_t) prng(&s);
+            for (size_t k = HEADER; k < size; k += 1 + (size_t) (prng(&s) % 7)) {
+                input[k] = (uint8_t) (input[k] + (uint8_t) (prng(&s) % 9));
+            }
+            LLVMFuzzerTestOneInput(input, size);
+            continue;
+        }
         /* One to three pokes, two in three of them into the description. */
         const unsigned pokes = 1u + (unsigned) (prng(&s) % 3u);
         for (unsigned p = 0; p < pokes; p++) {
@@ -237,11 +407,14 @@ int main(int argc, char **argv) {
         LLVMFuzzerTestOneInput(input, size);
     }
     printf("fuzz_decknet_stream: %ld runs, no crash and no wrong verdict; %zu frames accepted and "
-           "run, %zu refused\n",
+           "run, %zu refused; %zu gating sequences, %zu of them with a part of the tiles taken\n",
            runs,
            fuzz_stream_accepted - 3,
-           fuzz_stream_refused);
-    if (runs >= 1000 && (fuzz_stream_accepted < 100 || fuzz_stream_refused < 100)) {
+           fuzz_stream_refused,
+           fuzz_stream_gated,
+           fuzz_stream_partial);
+    if (runs >= 1000 && (fuzz_stream_accepted < 100 || fuzz_stream_refused < 100 ||
+                         fuzz_stream_gated < 100 || fuzz_stream_partial < 100)) {
         fprintf(stderr, "fuzz_decknet_stream: one side of the check is hardly reached\n");
         return 1;
     }

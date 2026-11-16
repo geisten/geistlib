@@ -3,7 +3,8 @@
  * path called once per frame (#533).
  *
  * Needs no camera, no file and no model: the frames come from memory (a
- * static scene with a block moving over it) and the network is invented
+ * static scene with a block moving over it; with --scene all every pixel
+ * changes as well, which is gating at its worst) and the network is invented
  * here, in the shape of a deck check (six slots, 31 homographies, a
  * 256 x 192 crop, a 12 x 8 raster of units with disc and ring pooling, 9 x 9
  * and 13 x 13 kernels, two region pools over most of the floor crop). It
@@ -11,21 +12,28 @@
  * region of interest saves, so the numbers are this network's; the line
  * "samples per frame" says what it is.
  *
- * Two ways through the same frames, for each size and format:
+ * Three ways through the same frames, for each size and format:
  *
  *   still   geist_decknet_run per frame. It takes RGB8, so an NV12 or YUYV
  *           frame is first converted whole (the formula of docs/DECKNET.md);
  *           the empty deck is converted once, outside the timing.
  *   stream  geist_decknet_stream_push_frame on the frame as it is.
+ *   gated   the same with geist_decknet_stream_set_gate(s, true, 0): tiles
+ *           whose bytes did not change keep what was computed from them.
  *
  * Reported per row: frames per second, and the median and 99th percentile
- * of the time one frame takes. Single thread. Every output of every frame is
- * hashed, and the two ways must give the same hash: the bench fails if the
- * stream is not bit-identical to the still path.
+ * of the time one frame takes; for the two streams also what a frame
+ * touched: the tiles the network reads, how many of them were taken from
+ * the frame, the samples computed, and the frame bytes that stands for.
+ * One thread, or with --threads 2 the two streams on two. Every output of
+ * every frame is hashed, and the three ways
+ * must give the same hash: the bench fails if a stream is not bit-identical
+ * to the still path.
  *
  * Run it under the host lock like every timing (CONTRIBUTING.md):
  *   make DECKNET=1 bin/<target>/release/tools/bench_stream
- *   bench_stream [--frames N] [--only still|stream]
+ *   bench_stream [--frames N] [--threads 1|2] [--scene block|all]
+ *                [--only still|stream|gated]
  */
 #define _POSIX_C_SOURCE 200809L
 #include <geist.h>
@@ -376,9 +384,14 @@ static void scene(size_t w, size_t h, uint8_t *rgb) {
 }
 
 /* Frame k of the ring: the scene with a checkered block somewhere on the
- * slots, never on the worktable strip. */
-static void moving(size_t w, size_t h, size_t k, const uint8_t *still, uint8_t *rgb) {
+ * slots, never on the worktable strip. With `all`, every byte of the scene
+ * is also k brighter, so that no tile of a frame is a tile of the one
+ * before: what gating costs when it saves nothing. */
+static void moving(size_t w, size_t h, size_t k, bool all, const uint8_t *still, uint8_t *rgb) {
     memcpy(rgb, still, w * h * 3);
+    for (size_t i = 0; all && i < w * h * 3; i++) {
+        rgb[i] = byte_of((double) rgb[i] + (double) k);
+    }
     const size_t side = h / 6;
     const size_t x0   = w / 8 + k * (w - w / 8 - side) / RING;
     const size_t y0   = h / 10 + k * (h - h / 10 - side) / RING;
@@ -566,8 +579,13 @@ static void report(const char    *way,
 static const char *const format_names[3] = {"rgb8", "nv12", "yuyv"};
 
 /* One size and format, both ways. False when the two disagree. */
-static bool
-measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, const char *only) {
+static bool measure(size_t                    w,
+                    size_t                    h,
+                    enum geist_decknet_format format,
+                    size_t                    n_frames,
+                    size_t                    threads,
+                    bool                      all,
+                    const char               *only) {
     struct buf            file = network(w, h);
     struct geist_decknet *d    = nullptr;
     if (geist_decknet_load_from_memory(file.n, file.b, &d) != GEIST_OK) {
@@ -596,7 +614,7 @@ measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, c
     to_format(format, w, h, stride, still, ref);
     for (size_t k = 0; k < RING; k++) {
         ring[k] = must_alloc(n_cam);
-        moving(w, h, k, still, tmp);
+        moving(w, h, k, all, still, tmp);
         to_format(format, w, h, stride, tmp, ring[k]);
     }
     if (format == GEIST_DECKNET_FORMAT_RGB8) {
@@ -606,8 +624,8 @@ measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, c
     }
 
     double       *ms      = must_alloc(n_frames * sizeof(double));
-    struct timing t_still = {0}, t_stream = {0};
-    const char   *name = format_names[format];
+    struct timing t_still = {0};
+    const char   *name    = format_names[format];
 
     if (only == nullptr || strcmp(only, "still") == 0) {
         for (size_t i = 0; i < WARMUP + n_frames; i++) {
@@ -635,9 +653,17 @@ measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, c
         }
         report("still", w, h, name, n_frames, ms, &t_still);
     }
-    if (only == nullptr || strcmp(only, "stream") == 0) {
+    /* Twice: without gating, then gated at threshold 0. */
+    struct timing t_way[2] = {};
+    for (size_t gated = 0; gated < 2; gated++) {
+        const char *way = gated ? "gated" : "stream";
+        if (only != nullptr && strcmp(only, way) != 0) {
+            continue;
+        }
         struct geist_decknet_stream *s = nullptr;
-        if (geist_decknet_stream_create(d, &s) != GEIST_OK) {
+        if (geist_decknet_stream_create(d, &s) != GEIST_OK ||
+            geist_decknet_stream_set_gate(s, gated != 0, 0) != GEIST_OK ||
+            geist_decknet_stream_set_threads(s, threads) != GEIST_OK) {
             die("geist_decknet_stream_create");
         }
         struct geist_decknet_frame f = {.format  = format,
@@ -649,6 +675,7 @@ measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, c
         if (geist_decknet_stream_set_reference(s, &f) != GEIST_OK) {
             die("geist_decknet_stream_set_reference");
         }
+        double tiles = 0.0, changed = 0.0, samples = 0.0;
         for (size_t i = 0; i < WARMUP + n_frames; i++) {
             f.data          = ring[i % RING];
             f.timestamp     = i;
@@ -662,23 +689,48 @@ measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, c
                 if (geist_decknet_stream_result(s, &res) != GEIST_OK || res.timestamp != i) {
                     die("geist_decknet_stream_result");
                 }
-                ms[i - WARMUP] = t1 - t0;
-                t_stream.hash  = hash_outputs(t_stream.hash, &info, &res.image, d, s);
+                ms[i - WARMUP]    = t1 - t0;
+                t_way[gated].hash = hash_outputs(t_way[gated].hash, &info, &res.image, d, s);
+                tiles             = (double) res.n_tiles;
+                changed += (double) res.n_tiles_changed;
+                samples += (double) res.n_samples;
             }
         }
-        report("stream", w, h, name, n_frames, ms, &t_stream);
-        geist_decknet_stream_destroy(s);
-    }
-    bool same = true;
-    if (only == nullptr) {
-        same = t_still.hash == t_stream.hash;
-        printf("%4zux%-4zu  %-4s  stream / still %.2fx frames/s, outputs %s (hash %016llx)\n",
+        report(way, w, h, name, n_frames, ms, &t_way[gated]);
+        /* A tile is GEIST_DECKNET_TILE squared pixels (less at the frame's
+         * edge, which is not counted here). Without gating the samples read
+         * a part of each tile; gated, every tile is compared. */
+        const double tile_bytes =
+                (double) (GEIST_DECKNET_TILE * GEIST_DECKNET_TILE) * (double) row / (double) w;
+        changed /= (double) n_frames;
+        printf("%4zux%-4zu  %-4s  %-6s  per frame: %.0f of %.0f tiles taken (%.1f %%), %.0f "
+               "samples, "
+               "%s %.2f MB of the frame's %.2f MB\n",
                w,
                h,
                name,
-               t_stream.fps / t_still.fps,
-               same ? "bit-identical" : "DIFFER",
-               (unsigned long long) t_stream.hash);
+               way,
+               changed,
+               tiles,
+               100.0 * changed / tiles,
+               samples / (double) n_frames,
+               gated ? "compared" : "read at most",
+               tiles * tile_bytes / 1e6,
+               (double) frame_bytes(format, h, row) / 1e6);
+        geist_decknet_stream_destroy(s);
+    }
+    bool same = true;
+    for (size_t gated = 0; only == nullptr && gated < 2; gated++) {
+        const bool ok = t_way[gated].hash == t_still.hash;
+        same          = same && ok;
+        printf("%4zux%-4zu  %-4s  %s / still %.2fx frames/s, outputs %s (hash %016llx)\n",
+               w,
+               h,
+               name,
+               gated ? "gated" : "stream",
+               t_way[gated].fps / t_still.fps,
+               ok ? "bit-identical" : "DIFFER",
+               (unsigned long long) t_way[gated].hash);
     }
     for (size_t k = 0; k < RING; k++) {
         free(ring[k]);
@@ -695,29 +747,46 @@ measure(size_t w, size_t h, enum geist_decknet_format format, size_t n_frames, c
 
 int main(int argc, char **argv) {
     size_t      n_frames = 300;
+    size_t      threads  = 1;
+    bool        all      = false;
     const char *only     = nullptr;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             n_frames = (size_t) strtoul(argv[++i], nullptr, 10);
+        } else if (strcmp(argv[i], "--threads") == 0 && i + 1 < argc) {
+            threads = (size_t) strtoul(argv[++i], nullptr, 10);
+        } else if (strcmp(argv[i], "--scene") == 0 && i + 1 < argc &&
+                   (strcmp(argv[i + 1], "block") == 0 || strcmp(argv[i + 1], "all") == 0)) {
+            all = strcmp(argv[++i], "all") == 0;
         } else if (strcmp(argv[i], "--only") == 0 && i + 1 < argc &&
-                   (strcmp(argv[i + 1], "still") == 0 || strcmp(argv[i + 1], "stream") == 0)) {
+                   (strcmp(argv[i + 1], "still") == 0 || strcmp(argv[i + 1], "stream") == 0 ||
+                    strcmp(argv[i + 1], "gated") == 0)) {
             only = argv[++i];
         } else {
-            fprintf(stderr, "usage: bench_stream [--frames N] [--only still|stream]\n");
+            fprintf(stderr,
+                    "usage: bench_stream [--frames N] [--threads 1|2] [--only "
+                    "still|stream|gated]\n");
             return 2;
         }
     }
     if (n_frames < 1 || n_frames > 1000000) {
         die("--frames: 1 to 1000000");
     }
+    if (threads < 1 || threads > 2) {
+        die("--threads: 1 or 2");
+    }
     printf("bench_stream: invented network, %zu slots, %zu homographies, crop %zu x %zu; "
-           "%zu frames per row after %zu warm-up, one thread\n",
+           "%zu frames per row after %zu warm-up; %s; the streams on %zu thread%s, the still "
+           "path on one\n",
            N_SLOTS,
            1 + 5 * N_SLOTS,
            CROP_W,
            CROP_H,
            n_frames,
-           WARMUP);
+           WARMUP,
+           all ? "every pixel changes from frame to frame" : "a block moves over a still scene",
+           threads,
+           threads == 1 ? "" : "s");
     const size_t sizes[2][2] = {{1280, 720}, {1920, 1080}};
     bool         same        = true;
     for (size_t i = 0; i < 2; i++) {
@@ -726,12 +795,14 @@ int main(int argc, char **argv) {
                            sizes[i][1],
                            (enum geist_decknet_format) f,
                            n_frames,
+                           threads,
+                           all,
                            only) &&
                    same;
         }
     }
     if (!same) {
-        fprintf(stderr, "bench_stream: the stream is not bit-identical to the still path\n");
+        fprintf(stderr, "bench_stream: a stream is not bit-identical to the still path\n");
         return 1;
     }
     return 0;

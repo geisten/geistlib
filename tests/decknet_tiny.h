@@ -26,6 +26,9 @@ constexpr size_t TINY_CROP_W  = 8;
 constexpr size_t TINY_CROP_H  = 6;
 constexpr size_t TINY_MAX_H   = 16;
 constexpr size_t TINY_SCALARS = 15;
+/* The values of the largest tensor a test writes: a 17 x 17 kernel. */
+constexpr size_t TINY_MAX_VALUES = 17 * 17;
+static_assert(TINY_MAX_VALUES >= TINY_MAX_H * 9);
 
 struct tiny_buf {
     uint8_t b[4096];
@@ -40,7 +43,7 @@ struct tiny_tensor {
     uint64_t    shape[3]; /* numpy order; written reversed */
     uint32_t    dtype;    /* 0 = GGUF F32 */
     size_t      n;        /* payload values written */
-    float       v[TINY_MAX_H * 9];
+    float       v[TINY_MAX_VALUES];
 };
 
 enum {

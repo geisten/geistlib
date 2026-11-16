@@ -166,18 +166,30 @@ struct geist_decknet_frame {
     uint64_t                  timestamp; /* the caller's; handed back with the result */
 };
 
+/* @stability EXPERIMENTAL — the side, in pixels, of the tiles a stream
+ * divides a frame into, from its top left corner; the last tile of a row or
+ * a column is what is left of the frame. */
+constexpr size_t GEIST_DECKNET_TILE = 16;
+
 /* @stability EXPERIMENTAL — what the last pushed frame gave. */
 struct geist_decknet_stream_result {
     struct geist_decknet_result image;     /* as geist_decknet_run reports it */
     uint64_t                    timestamp; /* of that frame */
     uint64_t                    n_frames;  /* frames processed since the stream was created */
+    /* What that frame cost. Of the frame's tiles the network reads n_tiles;
+     * n_tiles_changed of them were taken from this frame (all of them
+     * without gating), and n_samples bilinear samples were computed. */
+    size_t n_tiles;
+    size_t n_tiles_changed;
+    size_t n_samples;
 };
 
 /* @stability EXPERIMENTAL
  * A stream on `d`, which it borrows: `d` outlives the stream, and between
  * the creation and the destruction of the stream no geist_decknet_run is
  * called on it (the stream computes in the handle's workspace). Allocates
- * everything the stream will ever need; no later call on it allocates.
+ * everything the stream will ever need; of the later calls on it only
+ * geist_decknet_stream_set_gate allocates.
  * GEIST_E_INVALID_ARG for a null argument, GEIST_E_OOM. On failure *out is
  * nullptr. */
 [[nodiscard]] enum geist_status
@@ -185,6 +197,42 @@ geist_decknet_stream_create(struct geist_decknet *d, struct geist_decknet_stream
 
 /* @stability EXPERIMENTAL — nullptr is a no-op. The model handle stays. */
 void geist_decknet_stream_destroy(struct geist_decknet_stream *s);
+
+/* @stability EXPERIMENTAL
+ * Temporal gating: off after the create, `on` turns it on or off.
+ *
+ * A gated stream keeps the bytes of the tiles the network reads. A tile of
+ * a pushed frame whose bytes differ from the kept ones by at most
+ * `threshold`, as the sum of absolute differences, is not taken: the kept
+ * bytes stand for it, and what the pass computed from them is reused. Any
+ * other tile is taken and is the kept one from then on. The bytes of a tile
+ * are those of its pixels in the frame's format: R G B for RGB8, Y0 U Y1 V
+ * for YUYV, for NV12 its Y bytes and the U V pairs of its 2 x 2 blocks. So
+ * the sum covers the colour as well, not the luma alone: threshold 0 means
+ * "the same bytes".
+ *
+ * The result is exact with respect to the threshold: bit for bit that of
+ * geist_decknet_run on the image whose tiles are the kept ones (for NV12 and
+ * YUYV converted as geist_decknet_stream_push_frame says). With threshold 0
+ * that image is the frame, and the result is that of a stream without
+ * gating. The first frame after this call, after
+ * geist_decknet_stream_set_reference and after a frame of another format is
+ * taken whole.
+ *
+ * The first call that turns gating on allocates what it keeps (the tiles,
+ * and per slot and plane what it reuses); no frame allocates. GEIST_E_OOM
+ * leaves the stream as it was. GEIST_E_INVALID_ARG for a null stream. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t threshold);
+
+/* @stability EXPERIMENTAL
+ * How many threads a pushed frame is computed on: 1 (after the create) or 2.
+ * With 2, one half of the slots is computed on a second thread of the
+ * library's thread pool while geist_decknet_stream_push_frame runs; the
+ * result is the same bits. Allocates nothing. GEIST_E_INVALID_ARG for a null
+ * stream or another count. */
+[[nodiscard]] enum geist_status
+geist_decknet_stream_set_threads(struct geist_decknet_stream *s, size_t n_threads);
 
 /* @stability EXPERIMENTAL
  * The empty deck: the image every pushed frame is compared with (`ref` of
@@ -200,7 +248,7 @@ geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
 
 /* @stability EXPERIMENTAL
  * One forward pass on `frame` against the reference; returns when it is
- * done. Only the pixels the network samples are read, in the frame's own
+ * done. Only the tiles the network samples are read, in the frame's own
  * format. The result is that of geist_decknet_run on the same two images:
  * bit for bit for RGB8, and for NV12 and YUYV bit for bit that of the frame
  * converted to RGB8 by the formula in docs/DECKNET.md.

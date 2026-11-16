@@ -178,6 +178,22 @@ void geist_decknet_stream_destroy(struct geist_decknet_stream *s) {
     decknet_stream_destroy(s);
 }
 
+enum geist_status
+geist_decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t threshold) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_set_gate(s, on, threshold);
+}
+
+enum geist_status geist_decknet_stream_set_threads(struct geist_decknet_stream *s,
+                                                   size_t                       n_threads) {
+    if (s == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    return decknet_stream_set_threads(s, n_threads);
+}
+
 enum geist_status geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
                                                      const struct geist_decknet_frame *ref) {
     if (s == nullptr || ref == nullptr) {
@@ -206,9 +222,12 @@ enum geist_status geist_decknet_stream_result(const struct geist_decknet_stream 
         return GEIST_E_INVALID_STATE;
     }
     *out = (struct geist_decknet_stream_result) {
-            .image     = s->d->result,
-            .timestamp = s->timestamp,
-            .n_frames  = s->n_frames,
+            .image           = s->d->result,
+            .timestamp       = s->timestamp,
+            .n_frames        = s->n_frames,
+            .n_tiles         = s->n_tiles,
+            .n_tiles_changed = s->n_tiles_changed,
+            .n_samples       = s->n_samples,
     };
     return GEIST_OK;
 }
