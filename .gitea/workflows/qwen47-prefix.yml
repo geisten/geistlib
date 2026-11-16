@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       experiment:
-        description: SIMD reductions or first-token QKV replacement
+        description: SIMD reductions, QKV replacement or SiLU intermediate values
         default: simd
         type: choice
         options:
           - simd
           - causal
+          - activation
 
 permissions:
   contents: read
