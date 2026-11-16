@@ -6,7 +6,7 @@ repo=$(git rev-parse --show-toplevel)
 out="$1"
 experiment=${2:-simd}
 case "$experiment" in
-  simd | causal | activation) ;;
+  simd | causal | activation | m1-silu) ;;
   *) exit 2 ;;
 esac
 host=$(/usr/sbin/sysctl -n hw.model)
@@ -73,6 +73,28 @@ replay() {
   "$HOME/bin/with-macmini-lock" /usr/bin/env DYLD_LIBRARY_PATH="$omp/lib" \
     "$@" "$driver" "$model" "$input"
 }
+if [ "$experiment" = m1-silu ]; then
+  calibration="$(CDPATH='' cd -- "${3:?missing M1 calibration directory}" && pwd)"
+  (cd "$calibration" && /usr/bin/shasum -a 256 -c checksums.txt)
+  cp "$calibration/source-platform.txt" "$out/source-platform.txt"
+  mkdir -p "$out/default-vectors" "$out/calibrated-vectors"
+  replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/default-vectors" > "$out/default.txt"
+  /usr/bin/python3 "$diag/qwen47-m1-rounding-patch.py" "$engine"
+  # Rebuild the three translation units even when timestamps have the same granularity.
+  for unit in lifecycle ops pipelines; do
+    rm -f "$engine/build/mac-omp/release/src/backends/metal/$unit.o"
+  done
+  build
+  replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/calibrated-vectors" \
+    QWEN47_M1_EXP="$calibration/exp.qm1" QWEN47_M1_RCP="$calibration/rcp.qm1" \
+    > "$out/calibrated.txt"
+  if ! /usr/bin/python3 "$diag/qwen47-m1-compare.py" "$diag" "$out" > "$out/comparison.txt"; then
+    cat "$out/comparison.txt"
+    exit 1
+  fi
+  cat "$out/comparison.txt"
+  exit 0
+fi
 replay > "$out/default.txt"
 replay GEIST_METAL_TENSOR=0 > "$out/tensor-off.txt"
 mkdir -p "$out/default-vectors"
