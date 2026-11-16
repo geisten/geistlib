@@ -1074,6 +1074,140 @@ static void test_conversion_range(enum geist_decknet_format format) {
     geist_decknet_destroy(still);
 }
 
+/* What a slot reads of an NV12 or YUYV frame is converted by the thread
+ * that samples the slot, into a packed image of its own (stream.c,
+ * pixels_box), 16 pixels at a time and the rest of a row in pairs. A
+ * network whose image is 150 x 70, so that the last tile of a row is six
+ * pixels wide and the last row of tiles six high; whose two slots read into
+ * both, share the tiles between them, and whose first shares its first tile
+ * with the worktable strip. Every byte from column 16 on is drawn anew for
+ * each frame. Not gated, gated for a stretch (which converts into the image
+ * of the whole frame, in the memory the first thread packs into) and not
+ * gated again, with a new reference on the way: every frame has to give the
+ * bits of the still path. */
+static void test_packed(enum geist_decknet_format format, size_t threads) {
+    constexpr size_t      w = 150;
+    constexpr size_t      h = 70;
+    struct geist_decknet *both[2];
+    for (size_t i = 0; i < 2; i++) {
+        struct tiny m;
+        tiny_default(&m);
+        m.img_w  = (uint32_t) w;
+        m.img_h  = (uint32_t) h;
+        m.crop_w = (uint32_t) EDGE_CROP_LONG;
+        m.crop_h = (uint32_t) EDGE_CROP_SHORT;
+        float       hm[11 * 9];
+        const float strip[9] = {1, 0, 0.5f, 0, 1, 0.5f, 0, 0, 1};
+        memcpy(hm, strip, sizeof strip);
+        for (size_t p = 0; p < 5; p++) {
+            const float off = (float) p;
+            /* Columns 0 to 144 and rows 0 to 31; then columns 3 to 149 and
+             * rows 22 to 69, where the image ends. */
+            const float first[9]  = {6, 0.1f, 0.5f + off, 0.05f, 5, 0.5f + off, 0, 0, 1};
+            const float second[9] = {6.3f, -0.1f, 3.5f + off, 0.02f, 9, 22.5f + off, 0, 0, 1};
+            memcpy(hm + (1 + p) * 9, first, sizeof first);
+            memcpy(hm + (6 + p) * 9, second, sizeof second);
+        }
+        tiny_set(&m.t[TINY_T_HOMOGRAPHY], "decknet.homography", 3, 11, 3, 3, 99, hm);
+        /* Units at the four corners of the 24 x 6 crop and in its middle:
+         * pixel 143 is its last, which the second slot reads at the image's
+         * last column and row. */
+        const float on[6]    = {0, 0, 1, 1, 143, 1};
+        const float off[6]   = {0, 1, 1, 1, 142, 1};
+        const float tube[6]  = {0, 23, 1, 1, 120, 1};
+        const float wall[6]  = {0, 23, 0.5f, 0, 120, 0.5f};
+        const float front[6] = {0, 0, 0.5f, 0, 143, 0.5f};
+        const float rear[6]  = {0, 71, 0.5f, 0, 72, 0.5f};
+        tiny_pool(&m.t[TINY_T_POOL_ON], "decknet.pool.on", 2, on);
+        tiny_pool(&m.t[TINY_T_POOL_OFF], "decknet.pool.off", 2, off);
+        tiny_pool(&m.t[TINY_T_POOL_TUBE], "decknet.pool.tube", 2, tube);
+        tiny_pool(&m.t[TINY_T_POOL_WALL], "decknet.pool.wall", 2, wall);
+        tiny_pool(&m.t[TINY_T_POOL_OCC_FRONT], "decknet.pool.occ_front", 2, front);
+        tiny_pool(&m.t[TINY_T_POOL_OCC_REAR], "decknet.pool.occ_rear", 2, rear);
+        static struct tiny_buf buf;
+        tiny_write(&m, &buf);
+        both[i] = nullptr;
+        if (geist_decknet_load_from_memory(buf.n, buf.b, &both[i]) != GEIST_OK) {
+            broken(geist_last_create_error(), "decknet_tiny, packed");
+        }
+    }
+    struct geist_decknet     *still = both[0], *d = both[1];
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    uint8_t *grey = xmalloc(w * h * 3);
+    memset(grey, 120, w * h * 3);
+    struct geist_decknet_frame   f    = make_frame(format, w, h, 3, grey);
+    uint8_t                     *ref8 = frame_to_rgb8(&f);
+    struct geist_decknet_stream *s    = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    uint8_t *bytes = (uint8_t *) (uintptr_t) f.data;
+
+    uint64_t         seed      = 0x5335;
+    size_t           n_outputs = 0, n_gated = 0;
+    constexpr size_t n_frames = 60;
+    for (size_t k = 0; k < n_frames; k++) {
+        /* In a gated stretch every other frame changes a few columns only,
+         * so that it is computed from what the stream kept. */
+        const bool   gated = k >= 20 && k < 40;
+        const size_t x_end = gated && k % 2 == 1 ? 40 : w;
+        for (size_t y = 0; y < h; y++) {
+            for (size_t x = 16; x < x_end; x++) {
+                seed            = seed * 6364136223846793005ull + 1442695040888963407ull;
+                const uint8_t v = (uint8_t) (seed >> 33U);
+                const uint8_t b = (seed >> 41U) % 3 == 0 ? (v & 1 ? 255 : 0) : v;
+                if (format == GEIST_DECKNET_FORMAT_NV12) {
+                    bytes[y * f.stride + x] = b;
+                    if (y % 2 == 0) {
+                        bytes[(h + y / 2) * f.stride + x] = (uint8_t) (b * 7 + v);
+                    }
+                } else {
+                    bytes[y * f.stride + x * 2]     = b;
+                    bytes[y * f.stride + x * 2 + 1] = (uint8_t) (b * 7 + v);
+                }
+            }
+        }
+        if (k == 20 || k == 40) {
+            CHECK(geist_decknet_stream_set_gate(s, gated, 0) == GEIST_OK);
+        }
+        if (k == 50) { /* the empty deck again: converted whole, into the same memory */
+            struct geist_decknet_frame again = make_frame(format, w, h, 3, grey);
+            CHECK(geist_decknet_stream_set_reference(s, &again) == GEIST_OK);
+            free((void *) (uintptr_t) again.data);
+        }
+        uint8_t                    *img8 = frame_to_rgb8(&f);
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, w * h * 3, img8, ref8, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        CHECK(want.checkable);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr,
+                    "FAIL packed conversion, format %u, %zu threads: frame %zu\n",
+                    (unsigned) format,
+                    threads,
+                    k);
+            g_fail = 1;
+        }
+        n_gated += gated;
+        free(img8);
+    }
+    printf("%s, packed, %zu thread%s          %zu frames of arbitrary bytes (%zu of them gated), "
+           "%zu outputs bit-identical to the still path\n",
+           format == GEIST_DECKNET_FORMAT_NV12 ? "NV12" : "YUYV",
+           threads,
+           threads == 1 ? " " : "s",
+           (size_t) n_frames,
+           n_gated,
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    free(bytes);
+    free(ref8);
+    free(grey);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
 /* The second implementation of the conversion gives the colours BT.601
  * names for its limited-range code points, and clamps outside them. */
 static void test_conversion_reference(void) {
@@ -1936,6 +2070,10 @@ int main(void) {
     test_gate(GEIST_DECKNET_FORMAT_RGB8, 0, 40, 2, "gated, 40, RGB8, two threads");
     test_conversion_range(GEIST_DECKNET_FORMAT_NV12);
     test_conversion_range(GEIST_DECKNET_FORMAT_YUYV);
+    test_packed(GEIST_DECKNET_FORMAT_NV12, 1);
+    test_packed(GEIST_DECKNET_FORMAT_NV12, 2);
+    test_packed(GEIST_DECKNET_FORMAT_YUYV, 1);
+    test_packed(GEIST_DECKNET_FORMAT_YUYV, 2);
     test_sample();
     test_kernel_sum();
     test_spans(1, false);
