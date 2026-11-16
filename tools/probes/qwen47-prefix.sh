@@ -6,7 +6,7 @@ repo=$(git rev-parse --show-toplevel)
 out="$1"
 experiment=${2:-simd}
 case "$experiment" in
-  simd | causal) ;;
+  simd | causal | activation) ;;
   *) exit 2 ;;
 esac
 host=$(/usr/sbin/sysctl -n hw.model)
@@ -34,6 +34,11 @@ build() {
   xcrun clang -std=c23 -O2 -Wall -Wextra -Werror -I"$engine/include" "$diag/qwen47-prefix.c" \
     "$engine/lib/mac-omp/release/libgeist.a" -framework Accelerate -L"$omp/lib" -lomp -lm \
     -o "$driver"
+}
+rebuild_shaders() {
+  # Avoid reusing the shader object when variant edits share a timestamp.
+  rm -f "$engine/build/mac-omp/release/src/backends/metal/pipelines.o"
+  build
 }
 build
 /usr/bin/python3 - "$reference" "$engine" <<'PY'
@@ -78,19 +83,31 @@ for file in default tensor-off trace; do
 done
 awk '$1 == "logits"' "$out/trace.txt" > "$out/trace-logits.txt"
 diff -u "$out/default.txt" "$out/trace-logits.txt"
-if [ "$experiment" = causal ]; then
+if [ "$experiment" != simd ]; then
   mkdir -p "$out/patched-vectors"
   replay QWEN47_TRACE=1 QWEN47_PATCH_QKV=1 QWEN47_RAW_DIR="$out/patched-vectors" > "$out/patched.txt"
+  case "$experiment" in
+    causal) set -- precise-rsqrt precise-exp-log ;;
+    activation) set -- convolution exp reciprocal divide exp-divide ;;
+  esac
+  awk '$1 == "logits"' "$out/patched.txt" > "$out/patched-logits.txt"
   shader="$engine/src/backends/metal/metal_shaders.h"
   cp "$shader" "$engine/metal_shaders.template"
-  for variant in precise-rsqrt precise-exp-log; do
+  for variant in "$@"; do
     cp "$engine/metal_shaders.template" "$shader"
     /usr/bin/python3 "$diag/qwen47-deltanet-variant.py" "$engine" "$variant"
-    build
+    rebuild_shaders
     mkdir -p "$out/$variant-vectors"
     replay QWEN47_TRACE=1 QWEN47_PATCH_QKV=1 QWEN47_RAW_DIR="$out/$variant-vectors" > "$out/$variant.txt"
+    case "$variant" in
+      convolution | exp | reciprocal)
+        awk '$1 == "logits"' "$out/$variant.txt" > "$out/$variant-logits.txt"
+        diff -u "$out/patched-logits.txt" "$out/$variant-logits.txt"
+        cmp "$out/patched-vectors/0-dn_mix.f32" "$out/$variant-vectors/0-dn_mix.f32"
+        ;;
+    esac
   done
-  for file in default patched precise-rsqrt precise-exp-log; do
+  for file in default patched "$@"; do
     awk '$1 == "logits" && $2 == 0 {print FILENAME, $0}' "$out/$file.txt"
   done
   exit 0
@@ -100,7 +117,7 @@ cp "$shader" "$engine/metal_shaders.template"
 for order in descending ascending; do
   cp "$engine/metal_shaders.template" "$shader"
   /usr/bin/python3 "$diag/qwen47-matvec-reduction.py" "$engine" "$order"
-  build
+  rebuild_shaders
   mkdir -p "$out/$order-vectors"
   replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/$order-vectors" > "$out/$order.txt"
   printf '%s ' "$order"
