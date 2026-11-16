@@ -339,6 +339,10 @@ struct decknet_run {
  * compares and keeps as a whole. Part of the contract of a gated stream
  * (include/geist_decknet.h). */
 constexpr size_t DECKNET_TILE = GEIST_DECKNET_TILE;
+/* A gated frame in which more than 7 of 8 tiles were taken is computed
+ * without the caches (stream.c, push_frame). */
+constexpr size_t DECKNET_GATE_WHOLE_NUM = 7;
+constexpr size_t DECKNET_GATE_WHOLE_DEN = 8;
 /* A stream computes its slots on one thread or on two. */
 constexpr size_t DECKNET_STREAM_THREADS = 2;
 

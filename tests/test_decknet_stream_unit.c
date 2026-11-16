@@ -409,8 +409,13 @@ static void test_gate(enum geist_decknet_format format,
     bool     have_kept = false;
     memset(kept, 0xA5, fref.n_bytes);
 
-    constexpr size_t n_frames  = 10;
-    size_t           n_outputs = 0, n_held = 0, n_skipped = 0, n_differ = 0;
+    /* The first frame, the one after a frame that is not checkable and the
+     * one after a new reference are taken whole and computed as a frame
+     * that is not gated; the frame after each of them fills the caches; the
+     * others are computed from them. */
+    constexpr size_t n_frames  = 14;
+    size_t           n_outputs = 0, n_held = 0, n_skipped = 0, n_differ = 0, n_cached = 0;
+    size_t           n_whole = 0; /* the samples of a frame computed whole */
     for (size_t k = 0; k < n_frames; k++) {
         uint8_t *img = moved(w, h, k % 4, cur); /* the block comes back to where it was */
         /* Above threshold 0 a little noise, on other pixels each frame;
@@ -422,12 +427,12 @@ static void test_gate(enum geist_decknet_format format,
                 }
             }
         }
-        if (k == 4) { /* half brightness: not checkable, and every tile changes */
+        if (k == 5) { /* half brightness: not checkable, and every tile changes */
             for (size_t i = 0; i < n_rgb; i++) {
                 img[i] >>= 1;
             }
         }
-        if (k == 7) { /* a new reference: the next frame is taken whole */
+        if (k == 10) { /* a new reference: the next frame is taken whole */
             CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
             have_kept = false;
         }
@@ -477,8 +482,13 @@ static void test_gate(enum geist_decknet_format format,
         /* The stream keeps only the tiles the network reads. */
         CHECK(got.n_tiles > 0 && got.n_tiles <= ((w + 15) / 16) * ((h + 15) / 16));
         CHECK(got.n_tiles_changed <= got.n_tiles && got.n_tiles_changed <= n_taken);
-        CHECK(want.checkable == (k != 4));
+        CHECK(want.checkable == (k != 5));
         n_skipped += got.n_tiles_changed < got.n_tiles;
+        if (k == 0) {
+            n_whole = got.n_samples;
+            CHECK(got.n_tiles_changed == got.n_tiles);
+        }
+        n_cached += want.checkable && got.n_samples < n_whole;
         free(cur8);
         free(img8);
         free((void *) (uintptr_t) f.data);
@@ -487,13 +497,16 @@ static void test_gate(enum geist_decknet_format format,
     /* The sequence has to reach what it claims to test: frames in which
      * tiles were kept, and above threshold 0 tiles that differed and were
      * kept all the same, so that the image is not the frame. */
-    CHECK(n_skipped >= 5);
+    CHECK(n_skipped >= 8);
+    CHECK(n_cached >= 6); /* frames that sampled less than all: computed from what was kept */
     CHECK(threshold == 0 ? (n_held == 0 && n_differ == 0) : (n_held > 20 && n_differ >= 5));
-    printf("%-34s %zu frames, %zu with tiles kept, %zu outputs bit-identical to the still path on "
-           "the kept tiles (%zu tiles kept although they differed)\n",
+    printf("%-34s %zu frames, %zu with tiles kept, %zu computed from the caches, %zu outputs "
+           "bit-identical to the still path on the kept tiles (%zu tiles kept although they "
+           "differed)\n",
            what,
            (size_t) n_frames,
            n_skipped,
+           n_cached,
            n_outputs,
            n_held);
 
@@ -581,14 +594,16 @@ static void test_gate_edges(bool vertical) {
         bool   bright15, bright16, strip;
         size_t tiles_changed; /* SIZE_MAX: not asserted */
     } frames[] = {
-            {false, false, false, SIZE_MAX}, /* the first: taken whole */
+            {false, false, false, SIZE_MAX}, /* the first: taken whole, computed whole */
+            {false, false, false, 0},        /* the same: fills the caches */
             {false, true, false, 1},         /* 16 changes: the unit at 15 reads it */
             {true, false, false, 2},         /* 15 changes, 16 back: the unit at 16 reads 15 */
             {true, false, false, 0},         /* nothing */
             {true, true, true, 2},           /* not checkable, and 16 changes */
-            {true, true, false, 1}, /* only the strip changes back: 16 is of the frame before */
+            {true, true, false, 1},  /* only the strip changes back: 16 is of the frame before */
+            {true, false, false, 1}, /* and 16 back, from the caches that frame filled */
     };
-    size_t n_outputs = 0;
+    size_t n_outputs = 0, n_whole = 0;
     for (size_t k = 0; k < sizeof frames / sizeof frames[0]; k++) {
         memset(img, 120, n_rgb);
         const size_t along[2] = {15 * 40, 16 * 40};
@@ -608,6 +623,11 @@ static void test_gate_edges(bool vertical) {
         CHECK(want.checkable == !frames[k].strip);
         CHECK(frames[k].tiles_changed == SIZE_MAX ||
               got.n_tiles_changed == frames[k].tiles_changed);
+        /* Frames 2 to 4 and the last are computed from the caches: they
+         * sample less than a whole frame (as frame 5 does, of which only
+         * the strip is sampled). */
+        n_whole = k == 0 ? got.n_samples : n_whole;
+        CHECK((k >= 2 && k != 6) == (got.n_samples < n_whole));
         if (!same_outputs(still, &want, s, &info, &n_outputs)) {
             fprintf(stderr,
                     "FAIL gate edges (%s): frame %zu differs from the still path\n",
@@ -615,7 +635,7 @@ static void test_gate_edges(bool vertical) {
                     k);
             g_fail = 1;
         }
-        if (want.checkable && k > 0) { /* a bright pixel shows in the units at all */
+        if (want.checkable && k > 1) { /* a bright pixel shows in the units at all */
             struct geist_decknet_slot slot;
             CHECK(geist_decknet_stream_slot(s, 0, &slot) == GEIST_OK &&
                   (slot.plate > 0.0f || slot.rack > 0.0f));
@@ -656,6 +676,7 @@ static void test_gate_threshold(void) {
     CHECK(geist_decknet_stream_set_gate(s, true, 30) == GEIST_OK);
     CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
     CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* the grey frame is the kept one */
+    CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* and what the caches are of */
     f.data = img;
 
     const uint8_t by[2][3]  = {{130, 130, 130}, {131, 130, 130}}; /* 30 in all, then 31 */
@@ -825,6 +846,7 @@ static void test_gate_seams(void) {
     /* 6 floor samples and 96 rows of 3 on each other plane, per slot: the
      * first stretch of 256 ends on the first sample of a crop row. */
     CHECK(got.n_samples == 20 + 2 * (6 + 4 * 288));
+    CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* fills the caches */
     f.data = img;
 
     size_t n_outputs = 0;
@@ -837,6 +859,7 @@ static void test_gate_seams(void) {
             CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
             CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
             CHECK(want.checkable && got.n_tiles_changed >= 1 && got.n_tiles_changed <= 2);
+            CHECK(got.n_samples < 20 + 2 * (6 + 4 * 288)); /* from the caches */
             struct geist_decknet_slot slot;
             CHECK(geist_decknet_slot(still, 0, &slot) == GEIST_OK && slot.plate > 0.0f);
             if (!same_outputs(still, &want, s, &info, &n_outputs)) {

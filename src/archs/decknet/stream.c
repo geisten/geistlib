@@ -296,30 +296,43 @@ static void tiles_gate(struct geist_decknet_stream *s, const struct geist_deckne
     const size_t n        = s->tiles_w * s->tiles_h;
     const bool   all      = !s->have_kept || s->kept_format != f->format;
     s->n_tiles_changed    = 0;
-    for (size_t t = 0; t < n; t++) {
-        s->changed[t] = 0;
-        if (s->used[t] == 0) {
-            continue;
+    for (size_t ty = 0; ty < s->tiles_h; ty++) {
+        const uint8_t *used    = s->used + ty * s->tiles_w;
+        uint8_t       *changed = s->changed + ty * s->tiles_w;
+        const size_t   y0      = ty * DECKNET_TILE;
+        const size_t   y1      = y0 + DECKNET_TILE < f->height ? y0 + DECKNET_TILE : f->height;
+        for (size_t tx = 0; tx < s->tiles_w; tx++) {
+            const size_t x0 = tx * DECKNET_TILE;
+            const size_t x1 = x0 + DECKNET_TILE < f->width ? x0 + DECKNET_TILE : f->width;
+            (void) blocks(f, x0, x1, y0, y1, b);
+            changed[tx] =
+                    used[tx] != 0 && (all || tile_differs(f, n_blocks, b, row, s->threshold, kept));
+            s->n_tiles_changed += changed[tx];
         }
-        const size_t x0 = t % s->tiles_w * DECKNET_TILE, y0 = t / s->tiles_w * DECKNET_TILE;
-        const size_t x1 = x0 + DECKNET_TILE < f->width ? x0 + DECKNET_TILE : f->width;
-        const size_t y1 = y0 + DECKNET_TILE < f->height ? y0 + DECKNET_TILE : f->height;
-        (void) blocks(f, x0, x1, y0, y1, b);
-        if (!all && !tile_differs(f, n_blocks, b, row, s->threshold, kept)) {
-            continue;
-        }
-        for (size_t i = 0; i < n_blocks; i++) {
-            for (size_t r = b[i].row0; r < b[i].row1; r++) {
-                memcpy(kept + r * row + b[i].col0,
-                       f->data + r * f->stride + b[i].col0,
-                       b[i].col1 - b[i].col0);
+        /* Taken: neighbouring tiles of a row in one piece, which is what
+         * makes a frame that changed all over cost a copy and no more. */
+        for (size_t tx = 0; tx < s->tiles_w; tx++) {
+            if (changed[tx] == 0) {
+                continue;
+            }
+            const size_t x0 = tx * DECKNET_TILE;
+            while (tx + 1 < s->tiles_w && changed[tx + 1] != 0) {
+                tx++;
+            }
+            const size_t x1 =
+                    (tx + 1) * DECKNET_TILE < f->width ? (tx + 1) * DECKNET_TILE : f->width;
+            (void) blocks(f, x0, x1, y0, y1, b);
+            for (size_t i = 0; i < n_blocks; i++) {
+                for (size_t r = b[i].row0; r < b[i].row1; r++) {
+                    memcpy(kept + r * row + b[i].col0,
+                           f->data + r * f->stride + b[i].col0,
+                           b[i].col1 - b[i].col0);
+                }
+            }
+            if (yuv) {
+                convert(f, x0, x1, y0, y1, s->rgb);
             }
         }
-        if (yuv) {
-            convert(f, x0, x1, y0, y1, s->rgb);
-        }
-        s->changed[t] = 1;
-        s->n_tiles_changed++;
     }
     /* In place: a tile reads the flags right of and below it, set before.
      * And the sums over the flags, row by row. */
@@ -424,9 +437,9 @@ sample_one(const struct decknet_sample *t, const struct pixels *img, uint32_t *o
     memcpy(&w, t, sizeof w); /* the fourth lane is x and y, and not used */
     const q4 b00 = rgb_lanes(row0, false);
     q4       sum = (b00 << 24) + 128;
-    sum += (rgb_lanes(row0, true) - b00) * __builtin_shufflevector(w, w, 0, 0, 0, 0);
-    sum += (rgb_lanes(row1, false) - b00) * __builtin_shufflevector(w, w, 1, 1, 1, 1);
-    sum += (rgb_lanes(row1, true) - b00) * __builtin_shufflevector(w, w, 2, 2, 2, 2);
+    sum += (rgb_lanes(row0, true) - b00) * (q4) {w[0], w[0], w[0], w[0]};
+    sum += (rgb_lanes(row1, false) - b00) * (q4) {w[1], w[1], w[1], w[1]};
+    sum += (rgb_lanes(row1, true) - b00) * (q4) {w[2], w[2], w[2], w[2]};
     sum >>= 8;
     memcpy(o, &sum, sizeof sum);
 }
@@ -734,9 +747,10 @@ struct slots_job {
     struct geist_decknet_stream *s;
     struct pixels                img; /* the frame, or s->rgb */
     const float                 *ga;
-    /* The caches hold the crops of the frame before; and the 1x1 values of
-     * the floor were computed with this frame's gains. */
-    bool   cached, same_gain;
+    /* A gated stream keeps what this frame computes; the caches hold the
+     * crops of the frame before; and the 1x1 values of the floor were
+     * computed with this frame's gains. */
+    bool   keep, cached, same_gain;
     size_t n_samples[DECKNET_STREAM_THREADS];
 };
 
@@ -751,7 +765,7 @@ static void slots(void *ctx, size_t begin, size_t end) {
                                            ((d->crop_h + DECKNET_CELL - 1) / DECKNET_CELL);
     for (size_t part = begin; part < end; part++) {
         struct decknet_ws *ws    = part == 0 ? &d->ws : &s->ws2;
-        uint8_t           *stale = s->gate ? s->stale + part * d->crop_px : nullptr;
+        uint8_t           *stale = job->keep ? s->stale + part * d->crop_px : nullptr;
         size_t             n     = 0;
         for (size_t slot = part * d->n_slots / s->n_threads;
              slot < (part + 1) * d->n_slots / s->n_threads;
@@ -762,14 +776,14 @@ static void slots(void *ctx, size_t begin, size_t end) {
                                                  .mix      = ws->mix,
                                                  .sums     = ws->sums,
                                                  .tube     = ws->tube_sums};
-            if (s->gate) {
+            if (job->keep) {
                 work.mix  = s->mix + slot * d->n_mix;
                 work.tube = s->tube + slot * d->n_tube_px * 3;
             }
             for (size_t p = 0; p < DECKNET_PLANES; p++) {
                 const enum decknet_plane plane = (enum decknet_plane) p;
                 size_t                   taken = s->n_px[p];
-                if (!s->gate) {
+                if (!job->keep) {
                     sample(s->n_runs[p], s->run[p], t, &job->img, ws->crop);
                 } else {
                     uint32_t *crop =
@@ -830,11 +844,18 @@ enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
     decknet_strip(d, d->bg_q, d->bg_a);
     decknet_gains(d, d->bg_a, s->bg_ref, ga, gb);
     s->n_samples = d->bg_px;
+    /* A frame that changed nearly all over is computed as one that is not
+     * gated, from the kept tiles (which are the frame's now) and in the
+     * workspace: keeping every crop of it costs more than computing it, and
+     * the next frame that mostly stands still fills the caches again. */
+    const bool whole = s->gate && s->n_tiles_changed * DECKNET_GATE_WHOLE_DEN >
+                                          s->n_tiles * DECKNET_GATE_WHOLE_NUM;
     if (d->result.checkable) {
-        const bool       cached = s->gate && s->cached;
+        const bool       cached = s->gate && s->cached && !whole;
         struct slots_job job    = {.s         = s,
                                    .img       = img,
                                    .ga        = ga,
+                                   .keep      = s->gate && !whole,
                                    .cached    = cached,
                                    .same_gain = cached && memcmp(ga, s->mix_ga, sizeof ga) == 0};
         on_threads(s, s->n_threads, slots, &job);
@@ -844,7 +865,7 @@ enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
     }
     /* A pair that is not checkable had no slot sampled: the caches are of
      * an earlier frame, but the kept tiles moved on. */
-    s->cached = s->gate && d->result.checkable;
+    s->cached = s->gate && d->result.checkable && !whole;
     memcpy(s->mix_ga, ga, sizeof ga);
     s->timestamp   = frame->timestamp;
     s->have_result = true;
