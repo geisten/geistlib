@@ -3,13 +3,18 @@
  *
  * Layer: ARCHITECTURE. A fixed convolutional net with hand-written weights:
  * homography resample, 1x1 convolutions, two small dense 2D kernels, ReLU
- * and sparse weighted pooling. It has no decoder, tokenizer or session, so
- * it implements none of the <geist_arch.h> vtables; src/engine/decknet.c is
- * its only caller and defines the public entry points of <geist_decknet.h>.
+ * and sparse weighted pooling. A crop is kept in integers (DECKNET_Q_ONE):
+ * the bilinear sample of the camera bytes in fixed point, before any gain,
+ * so that the kernels sum integers, exactly and in any order (#533).
+ *
+ * It has no decoder, tokenizer or session, so it implements none of the
+ * <geist_arch.h> vtables; src/engine/decknet.c is its only caller and
+ * defines the public entry points of <geist_decknet.h>.
  *
  * Defined in:
  *   src/archs/decknet/load.c — file contract, validation, workspace
  *   src/archs/decknet/run.c  — the forward pass
+ *   src/archs/decknet/stream.c — the pass on a camera stream
  */
 #pragma once
 
@@ -42,7 +47,6 @@ constexpr size_t DECKNET_PLANES = 5;
 constexpr size_t DECKNET_MAX_SLOTS     = 64;
 constexpr size_t DECKNET_MAX_PIXELS    = (size_t) 1 << 22U;
 constexpr size_t DECKNET_MAX_IMAGE_DIM = 32768;
-constexpr size_t DECKNET_MAX_KERNEL    = 255;
 constexpr size_t DECKNET_MAX_MIX_ROWS  = 64;
 constexpr size_t DECKNET_MIX_IN        = 6; /* current RGB, empty-deck RGB */
 
@@ -56,16 +60,69 @@ struct decknet_pool {
     float    *w;
 };
 
-/* A k x k kernel, k odd. */
+/* A crop pixel is the camera byte value in 1/65536, so 255 << 16 at most:
+ * the bilinear sample of four bytes with weights in 1/2^24, rounded once.
+ * Four of them per pixel, R G B and a zero, so that a pixel is one vector.
+ * The gain of an image is applied where a float is needed (decknet_unit). */
+constexpr uint32_t DECKNET_Q_ONE      = 255u << 16U;
+constexpr uint32_t DECKNET_WEIGHT     = 1u << 24U;
+constexpr size_t   DECKNET_CROP_CH    = 4;
+constexpr size_t   DECKNET_MAX_KERNEL = 255;
+/* The product of a sample fits 32 bits, and so does the sum of
+ * DECKNET_SUM_PIXELS crop pixels. */
+constexpr size_t DECKNET_SUM_PIXELS = 256;
+static_assert((uint64_t) DECKNET_SUM_PIXELS * DECKNET_Q_ONE <= UINT32_MAX);
+static_assert((uint64_t) 255 * DECKNET_WEIGHT + 128 <= UINT32_MAX);
+static_assert(DECKNET_MAX_KERNEL <= DECKNET_SUM_PIXELS);
+
+/* A kernel tap as run.c reads it: the crop pixel at (y + dy, x + dx), which
+ * is `off` pixels from (y, x) where the window lies inside the crop. */
+struct decknet_tap {
+    int32_t off;
+    int16_t dy, dx;
+};
+
+/* `n_taps` taps of one weight whose pixels sum in 32 bits. A weight with
+ * more than DECKNET_SUM_PIXELS taps has several parts; `last` ends it, and
+ * `value` is the weight. */
+struct decknet_part {
+    uint32_t n_taps;
+    bool     last;
+    float    value;
+};
+
+/* A k x k kernel, k odd: its weights as the file has them, and the same
+ * kernel with the taps ordered by weight (load.c), which is what run.c
+ * evaluates: the sum over the distinct weights of weight * (integer sum of
+ * its pixels). */
 struct decknet_kernel {
-    size_t k;
-    float *w;
+    size_t               k;
+    float               *w;
+    size_t               n_parts;
+    struct decknet_part *part;
+    struct decknet_tap  *tap; /* k x k */
 };
 
 /* A 1x1 convolution of `rows` units on the six channels of a pixel pair. */
 struct decknet_mix {
     size_t rows;
     float *w; /* rows x DECKNET_MIX_IN */
+    /* The same weights four rows at a time, for run.c: per four rows
+     * DECKNET_MIX_IN vectors of four, input by input; zero where the rows
+     * end. */
+    float *by_four;
+};
+
+/* What the planes of one slot are computed in: a crop, and what steps 3 to
+ * 6 derive from it on the way to the units. The handle has one; a stream
+ * that computes its slots on two threads has a second. */
+struct decknet_ws {
+    uint32_t *crop;                           /* crop_px x DECKNET_CROP_CH */
+    float    *mix;                            /* a 1x1 value per floor pooling row (n_mix) */
+    double   *sums, *tube_sums;               /* 3 kernel sums per blob_px / tube_px */
+    double   *e_bright, *e_dark, *e_tube;     /* crop_px, written at blob_px / tube_px */
+    double   *acc_on, *acc_off, *unit, *hole; /* n_tips */
+    double   *acc_tube;                       /* 2 * n_tubes */
 };
 
 struct geist_decknet {
@@ -94,11 +151,11 @@ struct geist_decknet {
     size_t    n_tubes; /* half the units of pool.tube */
 
     /* ---- workspace, sized at load ---- */
-    float  *crop_a, *crop_b;                /* crop_px x 3 */
-    float  *bg_a, *bg_b;                    /* bg_px x 3 */
-    double *e_bright, *e_dark, *e_tube;     /* crop_px, written at blob_px / tube_px */
-    double *acc_on, *acc_off, *unit, *hole; /* n_tips */
-    double *acc_tube;                       /* 2 * n_tubes */
+    struct decknet_ws ws;
+    uint32_t         *bg_q;        /* bg_px x DECKNET_CROP_CH */
+    float            *crop_b;      /* crop_px x 3: the empty deck's floor, with its gain */
+    float            *bg_a, *bg_b; /* bg_px x 3 */
+    size_t            n_mix;       /* rows of occ_front, occ_rear and wall_pool */
 
     /* ---- the last run ---- */
     bool                        have_run;
@@ -119,6 +176,11 @@ struct geist_decknet {
 
 /* Frees a handle and everything it owns; nullptr is a no-op. */
 void decknet_destroy(struct geist_decknet *d);
+
+/* A workspace for d's network. False, with *ws to be freed all the same, when
+ * memory is short. decknet_ws_free tolerates a zeroed or half-built one. */
+[[nodiscard]] bool decknet_ws_alloc(const struct geist_decknet *d, struct decknet_ws *ws);
+void               decknet_ws_free(struct decknet_ws *ws);
 
 /* One forward pass over two RGB8 images of d->img_bytes bytes each; writes
  * d->result and, for a checkable pair, every slot. Allocates nothing. */
@@ -154,6 +216,47 @@ static inline void decknet_sample_at(size_t      img_w,
     *v                = !(pv > 0.0) ? 0.0 : (pv < v_hi ? pv : v_hi);
 }
 
+/* The four weights of a bilinear sample at (u, v) as decknet_sample_at gives
+ * them, in 1/2^24: w[0] for the pixel right of ((size_t) u, (size_t) v), w[1]
+ * for the one below, w[2] for the one below right; the pixel itself has the
+ * rest, so the four sum to 2^24 exactly and a flat image samples to itself. */
+static inline void decknet_weights(double u, double v, uint32_t w[static 3]) {
+    const double fu  = u - (double) (size_t) u;
+    const double fv  = v - (double) (size_t) v;
+    const double one = (double) DECKNET_WEIGHT;
+    /* Rounded to nearest; each clamped to what the ones before it left, so
+     * that three roundings up cannot exceed the whole. */
+    const uint32_t w11 = (uint32_t) (fu * fv * one + 0.5);
+    const uint32_t w01 = (uint32_t) (fu * (1.0 - fv) * one + 0.5);
+    const uint32_t w10 = (uint32_t) ((1.0 - fu) * fv * one + 0.5);
+    w[2]               = w11 < DECKNET_WEIGHT ? w11 : DECKNET_WEIGHT;
+    w[0]               = w01 < DECKNET_WEIGHT - w[2] ? w01 : DECKNET_WEIGHT - w[2];
+    w[1]               = w10 < DECKNET_WEIGHT - w[2] - w[0] ? w10 : DECKNET_WEIGHT - w[2] - w[0];
+}
+
+/* One colour of a crop pixel: the bytes b00 (the pixel), b01 (right of it),
+ * b10 (below) and b11 with the weights of decknet_weights, rounded to
+ * 1/65536 of a byte value. */
+static inline uint32_t
+decknet_blend(const uint32_t w[static 3], uint8_t b00, uint8_t b01, uint8_t b10, uint8_t b11) {
+    const uint32_t w00 = DECKNET_WEIGHT - w[0] - w[1] - w[2];
+    return (w00 * b00 + w[0] * b01 + w[1] * b10 + w[2] * b11 + 128) >> 8U;
+}
+
+/* What multiplies a crop value to give the image's 0..1 scale times `gain`. */
+static inline double decknet_scale(float gain) {
+    return (double) gain / (double) DECKNET_Q_ONE;
+}
+
+/* A crop value as the F32 the 1x1 layers and the gain check compute with. */
+static inline float decknet_unit(uint32_t q, double scale) {
+    return (float) ((double) q * scale);
+}
+
+/* out[i x 3 + c] = decknet_unit of the strip q (d->bg_px x DECKNET_CROP_CH)
+ * without gain: what decknet_gain and decknet_gains take. */
+void decknet_strip(const struct geist_decknet *d, const uint32_t *q, float *out);
+
 /* The gain of one image from its worktable strip (d->bg_px x 3 floats,
  * sampled without gain): bg_nominal / max(mean, 1e-3) per colour. */
 void decknet_gain(const struct geist_decknet *d, const float *bg, float g[static 3]);
@@ -168,17 +271,44 @@ void decknet_gains(struct geist_decknet *d,
                    float                 ga[static 3],
                    float                 gb[static 3]);
 
+/* The side of a square of crop pixels that is stale or not as a whole
+ * (decknet_work.stale). */
+constexpr size_t DECKNET_CELL = 16;
+
+/* One plane of one slot: its crop, and the values the pass computes from the
+ * crop alone before anything is pooled. A still pass and a stream without
+ * gating compute them in the handle's workspace, plane after plane; a gated
+ * stream keeps them per slot and plane and has only the stale ones
+ * recomputed. */
+struct decknet_work {
+    const uint32_t *crop;     /* d->crop_px x DECKNET_CROP_CH, of the current image */
+    const float    *crop_ref; /* floor: the empty deck's crop x 3, with its gain */
+    float          *mix;      /* floor: d->n_mix values, a 1x1 unit per pooling row */
+    double         *sums;     /* other planes: 3 kernel sums per d->blob_px */
+    double         *tube;     /* hole plane: 3 kernel sums per d->tube_px */
+    /* false: mix, sums and tube are computed from the crop. true: they hold
+     * what an earlier crop gave (mix: with the same gains), and only what
+     * reads a pixel that differs from that crop's is computed again. */
+    bool kept;
+    /* With `kept`, the pixels that differ; nullptr when none does. Floor
+     * plane: one flag per crop pixel. Other planes: one flag per
+     * DECKNET_CELL x DECKNET_CELL square of the crop, in rows of
+     * ceil(crop_w / DECKNET_CELL). */
+    const uint8_t *stale;
+};
+
 /* Steps 3 to 6 for one plane of slot s, from its crop of the current image
- * (d->crop_px x 3 floats, sampled with ga); the floor plane also reads
- * `crop_ref`, the floor crop of the empty-deck image (sampled with gb), the
- * others ignore it. Of a crop only the pixels listed by decknet_plane_pixels
- * are read. The tip plane uses what the hole plane of the same slot left,
- * so the planes of a slot run in order. */
-void decknet_plane(struct geist_decknet *d,
-                   size_t                s,
-                   enum decknet_plane    plane,
-                   const float          *crop,
-                   const float          *crop_ref);
+ * (sampled without gain; `ga` is applied here); the floor plane also reads
+ * `crop_ref`. Of a crop only the pixels listed by decknet_plane_pixels are
+ * read. The tip plane uses what the hole plane of the same slot left in
+ * `ws`, so the planes of a slot run in order in one workspace. Two slots may
+ * be computed at once in two workspaces: a slot writes its own outputs. */
+void decknet_plane(struct geist_decknet      *d,
+                   struct decknet_ws         *ws,
+                   size_t                     s,
+                   enum decknet_plane         plane,
+                   const float                ga[static 3],
+                   const struct decknet_work *w);
 
 /* mark[px] = 1 for each of the d->crop_px crop pixels decknet_plane reads of
  * a crop of that plane (of both crops, for the floor plane), 0 for the
@@ -189,14 +319,27 @@ void decknet_plane_pixels(const struct geist_decknet *d, enum decknet_plane plan
 /* ---- stream (stream.c, #533) ------------------------------------------ */
 
 /* One bilinear sample: crop pixel `px` reads the 2 x 2 camera pixels at
- * (x, y) with the fractions fu and fv. What decknet_sample_at gives for a
- * homography, kept so that a frame costs no coordinate arithmetic. */
+ * (x, y) with the weights w (decknet_weights). What decknet_sample_at gives
+ * for a homography, kept so that a frame costs no coordinate arithmetic. */
 struct decknet_sample {
-    double   fu, fv;
+    uint32_t w[3];
     uint32_t px;
     uint16_t x, y; /* at most DECKNET_MAX_IMAGE_DIM - 2 */
 };
 static_assert(DECKNET_MAX_IMAGE_DIM <= (size_t) UINT16_MAX + 1);
+
+/* The side of the squares of camera pixels a stream reads, converts,
+ * compares and keeps as a whole. Part of the contract of a gated stream
+ * (include/geist_decknet.h). */
+constexpr size_t DECKNET_TILE = GEIST_DECKNET_TILE;
+/* A stream computes its slots on one thread or on two. */
+constexpr size_t DECKNET_STREAM_THREADS = 2;
+
+/* Tiles [x0, x1] x [y0, y1]. */
+struct decknet_box {
+    uint16_t x0, x1, y0, y1;
+};
+constexpr size_t DECKNET_CHUNK = 256;
 
 struct geist_decknet_stream {
     struct geist_decknet *d; /* borrowed; the pass runs in its workspace */
@@ -211,11 +354,45 @@ struct geist_decknet_stream {
      * slot with the gain already applied. */
     float   *bg_ref;    /* bg_px x 3 */
     float   *floor_ref; /* n_slots x crop_px x 3, written at px[DECKNET_PLANE_FLOOR] */
-    float    scale[256];
     bool     have_ref;
     uint64_t h_gen; /* d->h_gen the tables and the reference were made at */
     bool     have_result;
     uint64_t timestamp, n_frames;
+    size_t   n_tiles_changed, n_samples; /* of the last frame */
+
+    /* ---- tiles ---- */
+    size_t   tiles_w, tiles_h;
+    size_t   n_tiles; /* tiles a sample reads */
+    uint8_t *used;    /* tiles_w x tiles_h: a sample reads the tile */
+    uint8_t *changed; /* tiles_w x tiles_h, gated: see tiles_gate */
+    /* (tiles_w + 1) x (tiles_h + 1), gated: the number of `changed` tiles
+     * left of and above a tile corner, so that "any in this rectangle" is
+     * four reads. */
+    uint32_t *changed_sum;
+    /* Per DECKNET_CHUNK samples of `tab`, the rectangle of tiles their first
+     * pixels lie in: a chunk with no changed tile in it is not looked at. */
+    struct decknet_box *box;
+    /* img_w x img_h x 3, written at the used tiles: an NV12 or YUYV frame as
+     * RGB8, and for a gated stream the kept tiles of any frame as RGB8. */
+    uint8_t *rgb;
+
+    /* ---- gating: allocated by the first set_gate that turns it on ---- */
+    bool                      gate;
+    uint32_t                  threshold;
+    bool                      have_kept; /* the kept tiles are of a frame of kept_format */
+    enum geist_decknet_format kept_format;
+    uint8_t                  *kept; /* the kept tiles of an NV12 or YUYV frame, rows unpadded */
+    bool      cached;    /* the caches below are of the kept tiles as they were before this frame */
+    uint32_t *crop;      /* n_slots x DECKNET_PLANES crops */
+    double   *sums;      /* n_slots x (DECKNET_PLANES - 1) x n_blob_px x 3 */
+    double   *tube;      /* n_slots x n_tube_px x 3 */
+    float    *mix;       /* n_slots x n_mix */
+    float     mix_ga[3]; /* the gains `mix` was computed with */
+    uint8_t  *stale;     /* per thread crop_px: decknet_work.stale, zero between planes */
+
+    /* ---- two threads (decknet_stream_set_threads) ---- */
+    size_t            n_threads; /* 1 or DECKNET_STREAM_THREADS */
+    struct decknet_ws ws2;       /* what the second one computes in; the first has d->ws */
 };
 
 /* The public entry points of the same names without `geist_`, minus the
@@ -223,6 +400,10 @@ struct geist_decknet_stream {
 [[nodiscard]] enum geist_status decknet_stream_create(struct geist_decknet         *d,
                                                       struct geist_decknet_stream **out);
 void                            decknet_stream_destroy(struct geist_decknet_stream *s);
+[[nodiscard]] enum geist_status
+decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t threshold);
+[[nodiscard]] enum geist_status decknet_stream_set_threads(struct geist_decknet_stream *s,
+                                                           size_t                       n);
 [[nodiscard]] enum geist_status decknet_stream_set_reference(struct geist_decknet_stream      *s,
                                                              const struct geist_decknet_frame *ref);
 [[nodiscard]] enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,

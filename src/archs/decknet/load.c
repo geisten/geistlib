@@ -19,6 +19,7 @@
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The loader's NaN and Inf checks are comparisons the compiler may fold
@@ -217,7 +218,54 @@ static bool load_homographies(struct loader *l, struct geist_decknet *d) {
     return true;
 }
 
-static bool load_kernel(struct loader *l, const char *name, struct decknet_kernel *k) {
+static int by_key(const void *a, const void *b) {
+    const uint64_t x = *(const uint64_t *) a, y = *(const uint64_t *) b;
+    return (x > y) - (x < y);
+}
+
+/* k->tap and k->part: the taps of k->w ordered by weight (its bits) and then
+ * by position. Tap (a, b) reads the pixel at (y + n - a, x + n - b), n = k / 2
+ * (a convolution, see run.c). */
+static bool kernel_parts(struct loader *l, size_t crop_w, struct decknet_kernel *k) {
+    const size_t                        n   = k->k * k->k; /* at most 255 * 255 */
+    GEIST_CLEANUP(heap_freep) uint64_t *key = heap_alloc_array_aligned(uint64_t, n);
+    k->tap                                  = heap_alloc_array_aligned(struct decknet_tap, n);
+    k->part                                 = heap_alloc_array_aligned(struct decknet_part, n);
+    if (key == nullptr || k->tap == nullptr || k->part == nullptr) {
+        return oom(l);
+    }
+    for (size_t i = 0; i < n; i++) {
+        uint32_t bits;
+        memcpy(&bits, &k->w[i], sizeof bits);
+        key[i] = (uint64_t) bits << 32U | i;
+    }
+    qsort(key, n, sizeof key[0], by_key);
+    const int half = (int) (k->k / 2);
+    k->n_parts     = 0;
+    for (size_t i = 0; i < n; i++) {
+        const size_t tap = (size_t) (key[i] & UINT32_MAX);
+        const int    dy  = half - (int) (tap / k->k);
+        const int    dx  = half - (int) (tap % k->k);
+        /* |dy| <= 127 and crop_w <= 2^22: inside 32 bits. */
+        k->tap[i]       = (struct decknet_tap) {.off = (int32_t) (dy * (ptrdiff_t) crop_w + dx),
+                                                .dy  = (int16_t) dy,
+                                                .dx  = (int16_t) dx};
+        const bool same = i > 0 && key[i] >> 32U == key[i - 1] >> 32U;
+        if (same && k->part[k->n_parts - 1].n_taps < DECKNET_SUM_PIXELS) {
+            k->part[k->n_parts - 1].n_taps++;
+            continue;
+        }
+        if (i > 0) {
+            k->part[k->n_parts - 1].last = !same;
+        }
+        k->part[k->n_parts++] = (struct decknet_part) {.n_taps = 1, .value = k->w[tap]};
+    }
+    k->part[k->n_parts - 1].last = true;
+    return true;
+}
+
+static bool
+load_kernel(struct loader *l, const char *name, size_t crop_w, struct decknet_kernel *k) {
     const struct gguf_tensor_t *t = tensor(l, name, 2);
     if (t == nullptr) {
         return false;
@@ -235,7 +283,7 @@ static bool load_kernel(struct loader *l, const char *name, struct decknet_kerne
     if (k->w == nullptr) {
         return oom(l);
     }
-    return read_floats(l, t, k->k * k->k, k->w);
+    return read_floats(l, t, k->k * k->k, k->w) && kernel_parts(l, crop_w, k);
 }
 
 /* numpy (rows, 6). */
@@ -252,12 +300,22 @@ static bool load_mix(struct loader *l, const char *name, struct decknet_mix *m) 
                     DECKNET_MAX_MIX_ROWS,
                     DECKNET_MIX_IN);
     }
-    m->rows = (size_t) t->dims[1];
-    m->w    = heap_alloc_array_aligned(float, m->rows *DECKNET_MIX_IN);
-    if (m->w == nullptr) {
+    m->rows            = (size_t) t->dims[1];
+    const size_t fours = (m->rows + 3) / 4;
+    m->w               = heap_alloc_array_aligned(float, m->rows *DECKNET_MIX_IN);
+    m->by_four         = heap_calloc_array_aligned(float, fours * DECKNET_MIX_IN * 4);
+    if (m->w == nullptr || m->by_four == nullptr) {
         return oom(l);
     }
-    return read_floats(l, t, m->rows * DECKNET_MIX_IN, m->w);
+    if (!read_floats(l, t, m->rows * DECKNET_MIX_IN, m->w)) {
+        return false;
+    }
+    for (size_t r = 0; r < m->rows; r++) {
+        for (size_t i = 0; i < DECKNET_MIX_IN; i++) {
+            m->by_four[(r / 4 * DECKNET_MIX_IN + i) * 4 + r % 4] = m->w[r * DECKNET_MIX_IN + i];
+        }
+    }
+    return true;
 }
 
 /* v is an integer in [0, limit), limit <= 2^24. False for NaN, Inf and a
@@ -373,8 +431,8 @@ static bool load_tensors(struct loader *l, struct geist_decknet *d) {
     if (!load_homographies(l, d) ||
         !load_vector(l, "decknet.planes_mm", DECKNET_PLANES, d->planes_mm) ||
         !load_vector(l, "decknet.bg_nominal", 3, d->bg_nominal) ||
-        !load_kernel(l, "decknet.conv.blob", &d->blob) ||
-        !load_kernel(l, "decknet.conv.tube", &d->tube_kernel) ||
+        !load_kernel(l, "decknet.conv.blob", d->crop_w, &d->blob) ||
+        !load_kernel(l, "decknet.conv.tube", d->crop_w, &d->tube_kernel) ||
         !load_mix(l, "decknet.change.w", &d->change) || !load_mix(l, "decknet.wall.w", &d->wall) ||
         !load_pool(l, "decknet.pool.on", d->crop_px, &d->on) ||
         !load_pool(l, "decknet.pool.off", d->crop_px, &d->off) ||
@@ -409,33 +467,68 @@ static bool load_tensors(struct loader *l, struct geist_decknet *d) {
 
 /* ---- workspace -------------------------------------------------------- */
 
+bool decknet_ws_alloc(const struct geist_decknet *d, struct decknet_ws *ws) {
+    size_t crop_q = 0, blob_sums = 0, tube_sums = 0;
+    if (ckd_mul(&crop_q, d->crop_px, DECKNET_CROP_CH) || ckd_mul(&blob_sums, d->n_blob_px, 3) ||
+        ckd_mul(&tube_sums, d->n_tube_px, 3)) {
+        return false;
+    }
+    /* Zeroed: a stream fills a crop only where the pass reads it. */
+    ws->crop      = heap_calloc_array_aligned(uint32_t, crop_q);
+    ws->mix       = heap_alloc_array_aligned(float, d->n_mix);
+    ws->sums      = heap_alloc_array_aligned(double, blob_sums);
+    ws->tube_sums = heap_alloc_array_aligned(double, tube_sums);
+    ws->e_bright  = heap_alloc_array_aligned(double, d->crop_px);
+    ws->e_dark    = heap_alloc_array_aligned(double, d->crop_px);
+    ws->e_tube    = heap_alloc_array_aligned(double, d->crop_px);
+    ws->acc_on    = heap_alloc_array_aligned(double, d->n_tips);
+    ws->acc_off   = heap_alloc_array_aligned(double, d->n_tips);
+    ws->unit      = heap_alloc_array_aligned(double, d->n_tips);
+    ws->hole      = heap_alloc_array_aligned(double, d->n_tips);
+    ws->acc_tube  = heap_alloc_array_aligned(double, d->tube.n_units);
+    return ws->crop != nullptr && ws->mix != nullptr && ws->sums != nullptr &&
+           ws->tube_sums != nullptr && ws->e_bright != nullptr && ws->e_dark != nullptr &&
+           ws->e_tube != nullptr && ws->acc_on != nullptr && ws->acc_off != nullptr &&
+           ws->unit != nullptr && ws->hole != nullptr && ws->acc_tube != nullptr;
+}
+
+void decknet_ws_free(struct decknet_ws *ws) {
+    heap_freep(&ws->crop);
+    heap_freep(&ws->mix);
+    heap_freep(&ws->sums);
+    heap_freep(&ws->tube_sums);
+    heap_freep(&ws->e_bright);
+    heap_freep(&ws->e_dark);
+    heap_freep(&ws->e_tube);
+    heap_freep(&ws->acc_on);
+    heap_freep(&ws->acc_off);
+    heap_freep(&ws->unit);
+    heap_freep(&ws->hole);
+    heap_freep(&ws->acc_tube);
+}
+
 static bool alloc_workspace(struct loader *l, struct geist_decknet *d) {
-    size_t crop_floats = 0, bg_floats = 0, tip_floats = 0, tube_floats = 0;
+    size_t crop_floats = 0, bg_floats = 0, tip_floats = 0, tube_floats = 0, bg_q = 0;
     if (ckd_mul(&crop_floats, d->crop_px, 3) || ckd_mul(&bg_floats, d->bg_px, 3) ||
+        ckd_mul(&bg_q, d->bg_px, DECKNET_CROP_CH) ||
+        ckd_add(&d->n_mix, d->occ_front.n_rows, d->occ_rear.n_rows) ||
+        ckd_add(&d->n_mix, d->n_mix, d->wall_pool.n_rows) ||
         ckd_mul(&tip_floats, d->n_slots, d->n_tips) ||
         ckd_mul(&tube_floats, d->n_slots, d->tube.n_units)) {
         return fail(l, GEIST_E_FORMAT, "workspace size overflows");
     }
-    d->crop_a   = heap_alloc_array_aligned(float, crop_floats);
+    if (!decknet_ws_alloc(d, &d->ws)) {
+        return oom(l);
+    }
+    d->bg_q     = heap_alloc_array_aligned(uint32_t, bg_q);
     d->crop_b   = heap_alloc_array_aligned(float, crop_floats);
     d->bg_a     = heap_alloc_array_aligned(float, bg_floats);
     d->bg_b     = heap_alloc_array_aligned(float, bg_floats);
-    d->e_bright = heap_alloc_array_aligned(double, d->crop_px);
-    d->e_dark   = heap_alloc_array_aligned(double, d->crop_px);
-    d->e_tube   = heap_alloc_array_aligned(double, d->crop_px);
-    d->acc_on   = heap_alloc_array_aligned(double, d->n_tips);
-    d->acc_off  = heap_alloc_array_aligned(double, d->n_tips);
-    d->unit     = heap_alloc_array_aligned(double, d->n_tips);
-    d->hole     = heap_alloc_array_aligned(double, d->n_tips);
-    d->acc_tube = heap_alloc_array_aligned(double, d->tube.n_units);
     d->slot_out = heap_calloc_array_aligned(struct geist_decknet_slot, d->n_slots);
     d->tips     = heap_calloc_array_aligned(float, tip_floats);
     d->tubes    = heap_calloc_array_aligned(float, tube_floats);
-    if (d->crop_a == nullptr || d->crop_b == nullptr || d->bg_a == nullptr || d->bg_b == nullptr ||
-        d->e_bright == nullptr || d->e_dark == nullptr || d->e_tube == nullptr ||
-        d->acc_on == nullptr || d->acc_off == nullptr || d->unit == nullptr || d->hole == nullptr ||
-        d->acc_tube == nullptr || d->slot_out == nullptr || d->tips == nullptr ||
-        d->tubes == nullptr) {
+    if (d->bg_q == nullptr || d->crop_b == nullptr || d->bg_a == nullptr || d->bg_b == nullptr ||
+        d->slot_out == nullptr || d->tips == nullptr || d->tubes == nullptr) {
         return oom(l);
     }
     for (size_t s = 0; s < d->n_slots; s++) {
@@ -461,9 +554,15 @@ void decknet_destroy(struct geist_decknet *d) {
     heap_freep(&d->h_cur);
     heap_freep(&d->h_ref);
     heap_freep(&d->change.w);
+    heap_freep(&d->change.by_four);
     heap_freep(&d->wall.w);
+    heap_freep(&d->wall.by_four);
     heap_freep(&d->blob.w);
+    heap_freep(&d->blob.part);
+    heap_freep(&d->blob.tap);
     heap_freep(&d->tube_kernel.w);
+    heap_freep(&d->tube_kernel.part);
+    heap_freep(&d->tube_kernel.tap);
     pool_free(&d->on);
     pool_free(&d->off);
     pool_free(&d->tube);
@@ -472,18 +571,11 @@ void decknet_destroy(struct geist_decknet *d) {
     pool_free(&d->occ_rear);
     heap_freep(&d->blob_px);
     heap_freep(&d->tube_px);
-    heap_freep(&d->crop_a);
+    decknet_ws_free(&d->ws);
+    heap_freep(&d->bg_q);
     heap_freep(&d->crop_b);
     heap_freep(&d->bg_a);
     heap_freep(&d->bg_b);
-    heap_freep(&d->e_bright);
-    heap_freep(&d->e_dark);
-    heap_freep(&d->e_tube);
-    heap_freep(&d->acc_on);
-    heap_freep(&d->acc_off);
-    heap_freep(&d->unit);
-    heap_freep(&d->hole);
-    heap_freep(&d->acc_tube);
     heap_freep(&d->slot_out);
     heap_freep(&d->tips);
     heap_freep(&d->tubes);

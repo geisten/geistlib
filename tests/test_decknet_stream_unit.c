@@ -14,14 +14,33 @@
  *   and YUYV        converted to RGB8 by the formula of docs/DECKNET.md,
  *                   which this file implements a second time (and checks
  *                   against the colours BT.601 names, within one code);
- *   no allocation   after geist_decknet_stream_create: not for the
- *                   reference, not for the first frame, not for any later
- *                   one, in any format (heap.h counts). The count is
+ *   gating          a gated stream against the still path on the image a
+ *                   threshold defines: this file keeps its own copy of each
+ *                   tile, replaces it when the frame's differs by more than
+ *                   the threshold (its own sum of absolute differences) and
+ *                   runs the still path on that image; bit for bit, for
+ *                   threshold 0 (which is the frame itself) and above, in
+ *                   each format, across a frame that is not checkable and a
+ *                   new reference; and where a kept value could be stale: a
+ *                   kernel window across a cell of the crop, a tile exactly
+ *                   at the threshold, each tile changed on its own, a
+ *                   sample at the seam of two stretches of the tables;
+ *   conversion      NV12 and YUYV frames of arbitrary bytes, the whole range;
+ *   no allocation   after geist_decknet_stream_create and the first
+ *                   geist_decknet_stream_set_gate: not for the reference,
+ *                   not for the first frame, not for any later one, in any
+ *                   format, gated or not (heap.h counts). The count is
  *                   compared with zero, so one allocation fails the test;
  *   geometry        each way a frame can lie about itself is refused with
  *                   GEIST_E_INVALID_ARG and leaves the last result; frames
  *                   that fit their buffer to the byte are accepted (the
  *                   buffers are exact-size, so ASan sees a read behind one);
+ *   the sample      the fixed-point bilinear sample a crop pixel is: its
+ *                   weights never exceed the whole (at fractions where three
+ *                   roundings up would), a flat image samples to itself, and
+ *                   any four bytes to within two units of 1/65536 of the
+ *                   exact value;
+ *   two threads     the same bits, with and without gating;
  *   state           no frame before a reference or after new homographies;
  *                   no result before a frame; each allocation of a create
  *                   failing once.
@@ -30,8 +49,15 @@
 #include "heap.h"
 #include "test_helpers.h"
 
+/* The fixed-point sample (decknet_weights, decknet_blend), tested as it is. */
+#define GEIST_INTERNAL_ARCH_LAYER
+#include "../src/archs/decknet/decknet.h"
+#undef GEIST_INTERNAL_ARCH_LAYER
+
 #include <geist.h>
 #include <geist_decknet.h>
+
+#include <math.h>
 
 static int g_fail = 0;
 
@@ -228,8 +254,11 @@ static bool same_outputs(const struct geist_decknet        *still,
 /* A sequence of frames in one format through a stream and, converted,
  * through the still path on a second handle. `moved_h` replaces the
  * homographies of both images on both handles first. */
-static void
-test_parity(enum geist_decknet_format format, size_t pad, bool moved_h, const char *what) {
+static void test_parity(enum geist_decknet_format format,
+                        size_t                    pad,
+                        bool                      moved_h,
+                        size_t                    threads,
+                        const char               *what) {
     struct geist_decknet     *still = load_synth();
     struct geist_decknet     *d     = load_synth();
     struct geist_decknet_info info;
@@ -240,6 +269,7 @@ test_parity(enum geist_decknet_format format, size_t pad, bool moved_h, const ch
 
     struct geist_decknet_stream *s = nullptr;
     CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK && s != nullptr);
+    CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
     struct geist_decknet_frame fref = make_frame(format, w, h, pad, ref);
     uint8_t                   *ref8 = frame_to_rgb8(&fref);
     CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
@@ -318,6 +348,685 @@ test_parity(enum geist_decknet_format format, size_t pad, bool moved_h, const ch
     geist_decknet_destroy(still);
 }
 
+/* ---- gating ----------------------------------------------------------- */
+
+/* Where the bytes of the pixels [x0, x1) x [y0, y1) of a frame are, pixel by
+ * pixel: the header's "bytes of a tile", read a second time. Returns how
+ * many. */
+static size_t tile_bytes(const struct geist_decknet_frame *f,
+                         size_t                            x0,
+                         size_t                            x1,
+                         size_t                            y0,
+                         size_t                            y1,
+                         size_t out[static GEIST_DECKNET_TILE * GEIST_DECKNET_TILE * 3]) {
+    size_t n = 0;
+    for (size_t y = y0; y < y1; y++) {
+        for (size_t x = x0; x < x1; x++) {
+            if (f->format == GEIST_DECKNET_FORMAT_RGB8) {
+                for (size_t c = 0; c < 3; c++) {
+                    out[n++] = y * f->stride + x * 3 + c;
+                }
+            } else if (f->format == GEIST_DECKNET_FORMAT_YUYV) {
+                out[n++] = y * f->stride + x * 2;     /* its Y */
+                out[n++] = y * f->stride + x * 2 + 1; /* the U or the V of its pair */
+            } else {
+                out[n++] = y * f->stride + x;
+                if (x % 2 == 0 && y % 2 == 0) { /* the U V pair of its 2 x 2 block */
+                    out[n++] = (f->height + y / 2) * f->stride + x;
+                    out[n++] = (f->height + y / 2) * f->stride + x + 1;
+                }
+            }
+        }
+    }
+    return n;
+}
+
+/* Frames through a gated stream and, as the image the threshold defines,
+ * through the still path. */
+static void test_gate(enum geist_decknet_format format,
+                      size_t                    pad,
+                      uint32_t                  threshold,
+                      size_t                    threads,
+                      const char               *what) {
+    struct geist_decknet     *still = load_synth();
+    struct geist_decknet     *d     = load_synth();
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    const size_t w = info.image_width, h = info.image_height, n_rgb = w * h * 3;
+    uint8_t     *cur = read_ppm("tests/data/decknet_synth/cur.ppm", w, h);
+    uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
+
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK && s != nullptr);
+    CHECK(geist_decknet_stream_set_gate(s, true, threshold) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_threads(s, threads) == GEIST_OK);
+    struct geist_decknet_frame fref = make_frame(format, w, h, pad, ref);
+    uint8_t                   *ref8 = frame_to_rgb8(&fref);
+    CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
+
+    /* This file's kept tiles: a frame of the same layout. */
+    uint8_t *kept      = xmalloc(fref.n_bytes);
+    bool     have_kept = false;
+    memset(kept, 0xA5, fref.n_bytes);
+
+    constexpr size_t n_frames  = 10;
+    size_t           n_outputs = 0, n_held = 0, n_skipped = 0, n_differ = 0;
+    for (size_t k = 0; k < n_frames; k++) {
+        uint8_t *img = moved(w, h, k % 4, cur); /* the block comes back to where it was */
+        /* Above threshold 0 a little noise, on other pixels each frame;
+         * at 0 it would change every tile and nothing would be kept. */
+        for (size_t y = 0; threshold > 0 && y < h; y++) {
+            for (size_t x = 0; x < w; x++) {
+                if ((x * 7 + y * 13 + k * 5) % 97 == 0) {
+                    img[(y * w + x) * 3 + 1] ^= 3;
+                }
+            }
+        }
+        if (k == 4) { /* half brightness: not checkable, and every tile changes */
+            for (size_t i = 0; i < n_rgb; i++) {
+                img[i] >>= 1;
+            }
+        }
+        if (k == 7) { /* a new reference: the next frame is taken whole */
+            CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
+            have_kept = false;
+        }
+        struct geist_decknet_frame f = make_frame(format, w, h, pad, img);
+        f.timestamp                  = k;
+
+        size_t n_taken = 0;
+        for (size_t y0 = 0; y0 < h; y0 += GEIST_DECKNET_TILE) {
+            for (size_t x0 = 0; x0 < w; x0 += GEIST_DECKNET_TILE) {
+                size_t       at[GEIST_DECKNET_TILE * GEIST_DECKNET_TILE * 3];
+                const size_t x1   = x0 + GEIST_DECKNET_TILE < w ? x0 + GEIST_DECKNET_TILE : w;
+                const size_t y1   = y0 + GEIST_DECKNET_TILE < h ? y0 + GEIST_DECKNET_TILE : h;
+                const size_t n    = tile_bytes(&f, x0, x1, y0, y1, at);
+                uint32_t     diff = 0;
+                for (size_t i = 0; i < n; i++) {
+                    diff += (uint32_t) abs((int) f.data[at[i]] - (int) kept[at[i]]);
+                }
+                if (have_kept && diff <= threshold) {
+                    n_held += diff > 0; /* differs, and stays */
+                    continue;
+                }
+                for (size_t i = 0; i < n; i++) {
+                    kept[at[i]] = f.data[at[i]];
+                }
+                n_taken++;
+            }
+        }
+        have_kept                        = true;
+        struct geist_decknet_frame image = f;
+        image.data                       = kept;
+        uint8_t *img8                    = frame_to_rgb8(&image);
+        uint8_t *cur8                    = frame_to_rgb8(&f);
+        n_differ += memcmp(img8, cur8, n_rgb) != 0;
+
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, n_rgb, img8, ref8, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        struct geist_decknet_stream_result got;
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK && got.timestamp == k);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr,
+                    "FAIL %s: frame %zu differs from the still path on the kept tiles\n",
+                    what,
+                    k);
+            g_fail = 1;
+        }
+        /* The stream keeps only the tiles the network reads. */
+        CHECK(got.n_tiles > 0 && got.n_tiles <= ((w + 15) / 16) * ((h + 15) / 16));
+        CHECK(got.n_tiles_changed <= got.n_tiles && got.n_tiles_changed <= n_taken);
+        CHECK(want.checkable == (k != 4));
+        n_skipped += got.n_tiles_changed < got.n_tiles;
+        free(cur8);
+        free(img8);
+        free((void *) (uintptr_t) f.data);
+        free(img);
+    }
+    /* The sequence has to reach what it claims to test: frames in which
+     * tiles were kept, and above threshold 0 tiles that differed and were
+     * kept all the same, so that the image is not the frame. */
+    CHECK(n_skipped >= 5);
+    CHECK(threshold == 0 ? (n_held == 0 && n_differ == 0) : (n_held > 20 && n_differ >= 5));
+    printf("%-34s %zu frames, %zu with tiles kept, %zu outputs bit-identical to the still path on "
+           "the kept tiles (%zu tiles kept although they differed)\n",
+           what,
+           (size_t) n_frames,
+           n_skipped,
+           n_outputs,
+           n_held);
+
+    geist_decknet_stream_destroy(s);
+    free(kept);
+    free(ref8);
+    free((void *) (uintptr_t) fref.data);
+    free(cur);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* What a gated stream keeps is wrong when it is stale, and the places where
+ * that hides are edges: a kernel window that reaches into the next cell of
+ * the crop, and a frame that is not checkable (its tiles are kept, but no
+ * slot is computed from them). A network on which one camera pixel is one
+ * crop pixel and a tile away from the next: crop pixel (x, y) reads image
+ * pixel (40 x, y), or (x, 40 y) when `vertical`; the units read the crop
+ * pixels 15 and 16 along that axis, either side of a cell border, with 3 x 3
+ * kernels. Each frame is compared with the still path on the same frame. */
+constexpr size_t EDGE_LONG       = 960;
+constexpr size_t EDGE_SHORT      = 16;
+constexpr size_t EDGE_CROP_LONG  = 24;
+constexpr size_t EDGE_CROP_SHORT = 6;
+
+static struct geist_decknet *load_edges(bool vertical) {
+    const size_t crop_w = vertical ? EDGE_CROP_SHORT : EDGE_CROP_LONG;
+    struct tiny  m;
+    tiny_default(&m);
+    m.img_w  = (uint32_t) (vertical ? EDGE_SHORT : EDGE_LONG);
+    m.img_h  = (uint32_t) (vertical ? EDGE_LONG : EDGE_SHORT);
+    m.crop_w = (uint32_t) crop_w;
+    m.crop_h = (uint32_t) (vertical ? EDGE_CROP_LONG : EDGE_CROP_SHORT);
+    float hm[11 * 9];
+    for (size_t i = 0; i < 11; i++) {
+        const float along[9]  = {40, 0, 0.5f, 0, 1, 0.5f, 0, 0, 1};
+        const float across[9] = {1, 0, 0.5f, 0, 40, 0.5f, 0, 0, 1};
+        memcpy(hm + i * 9, vertical ? across : along, sizeof along);
+    }
+    tiny_set(&m.t[TINY_T_HOMOGRAPHY], "decknet.homography", 3, 11, 3, 3, 99, hm);
+    /* Crop pixel k along the long axis, two in from the edge on the other. */
+#define AT(k) ((float) (vertical ? (k) * crop_w + 2 : 2 * crop_w + (k)))
+    const float on[6]   = {0, AT(15), 1, 1, AT(16), 1};
+    const float off[6]  = {0, AT(14), 1, 1, AT(17), 1};
+    const float tube[6] = {0, AT(15), 1, 1, AT(16), 1};
+    tiny_pool(&m.t[TINY_T_POOL_ON], "decknet.pool.on", 2, on);
+    tiny_pool(&m.t[TINY_T_POOL_OFF], "decknet.pool.off", 2, off);
+    tiny_pool(&m.t[TINY_T_POOL_TUBE], "decknet.pool.tube", 2, tube);
+#undef AT
+    static struct tiny_buf buf;
+    tiny_write(&m, &buf);
+    struct geist_decknet *d = nullptr;
+    if (geist_decknet_load_from_memory(buf.n, buf.b, &d) != GEIST_OK) {
+        broken(geist_last_create_error(), "decknet_tiny, edges");
+    }
+    return d;
+}
+
+static void test_gate_edges(bool vertical) {
+    const size_t w = vertical ? EDGE_SHORT : EDGE_LONG, h = vertical ? EDGE_LONG : EDGE_SHORT;
+    struct geist_decknet     *still = load_edges(vertical), *d = load_edges(vertical);
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+
+    const size_t n_rgb = w * h * 3;
+    uint8_t     *ref   = xmalloc(n_rgb);
+    uint8_t     *img   = xmalloc(n_rgb);
+    memset(ref, 120, n_rgb);
+    struct geist_decknet_frame   f = {.format  = GEIST_DECKNET_FORMAT_RGB8,
+                                      .width   = w,
+                                      .height  = h,
+                                      .stride  = w * 3,
+                                      .n_bytes = n_rgb,
+                                      .data    = ref};
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    f.data = img;
+
+    /* Per frame: which crop pixels along the axis are brighter, and whether
+     * the first pixel of the worktable strip is white (not checkable). */
+    const struct {
+        bool   bright15, bright16, strip;
+        size_t tiles_changed; /* SIZE_MAX: not asserted */
+    } frames[] = {
+            {false, false, false, SIZE_MAX}, /* the first: taken whole */
+            {false, true, false, 1},         /* 16 changes: the unit at 15 reads it */
+            {true, false, false, 2},         /* 15 changes, 16 back: the unit at 16 reads 15 */
+            {true, false, false, 0},         /* nothing */
+            {true, true, true, 2},           /* not checkable, and 16 changes */
+            {true, true, false, 1}, /* only the strip changes back: 16 is of the frame before */
+    };
+    size_t n_outputs = 0;
+    for (size_t k = 0; k < sizeof frames / sizeof frames[0]; k++) {
+        memset(img, 120, n_rgb);
+        const size_t along[2] = {15 * 40, 16 * 40};
+        const bool   on_[2]   = {frames[k].bright15, frames[k].bright16};
+        for (size_t i = 0; i < 2; i++) {
+            const size_t x = vertical ? 2 : along[i], y = vertical ? along[i] : 2;
+            memset(img + (y * w + x) * 3, on_[i] ? 160 : 120, 3);
+        }
+        if (frames[k].strip) {
+            memset(img, 255, 3);
+        }
+        struct geist_decknet_result        want;
+        struct geist_decknet_stream_result got;
+        CHECK(geist_decknet_run(still, n_rgb, img, ref, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+        CHECK(want.checkable == !frames[k].strip);
+        CHECK(frames[k].tiles_changed == SIZE_MAX ||
+              got.n_tiles_changed == frames[k].tiles_changed);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr,
+                    "FAIL gate edges (%s): frame %zu differs from the still path\n",
+                    vertical ? "vertical" : "horizontal",
+                    k);
+            g_fail = 1;
+        }
+        if (want.checkable && k > 0) { /* a bright pixel shows in the units at all */
+            struct geist_decknet_slot slot;
+            CHECK(geist_decknet_stream_slot(s, 0, &slot) == GEIST_OK &&
+                  (slot.plate > 0.0f || slot.rack > 0.0f));
+        }
+    }
+    printf("gated, a window across a cell border, %-10s %zu outputs bit-identical to the still "
+           "path\n",
+           vertical ? "vertical:" : "horizontal:",
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    free(img);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* The threshold itself: a tile that differs from the kept one by exactly the
+ * threshold is kept, by one more it is taken. On the network above, crop
+ * pixel 16 of the long axis moves by 30 and then by 31 in all against the
+ * empty deck's grey, at threshold 30. */
+static void test_gate_threshold(void) {
+    constexpr size_t          w     = EDGE_LONG;
+    constexpr size_t          h     = EDGE_SHORT;
+    constexpr size_t          n_rgb = w * h * 3;
+    struct geist_decknet     *still = load_edges(false), *d = load_edges(false);
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    uint8_t *ref = xmalloc(n_rgb), *img = xmalloc(n_rgb);
+    memset(ref, 120, n_rgb);
+    struct geist_decknet_frame   f = {.format  = GEIST_DECKNET_FORMAT_RGB8,
+                                      .width   = w,
+                                      .height  = h,
+                                      .stride  = w * 3,
+                                      .n_bytes = n_rgb,
+                                      .data    = ref};
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_gate(s, true, 30) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK); /* the grey frame is the kept one */
+    f.data = img;
+
+    const uint8_t by[2][3]  = {{130, 130, 130}, {131, 130, 130}}; /* 30 in all, then 31 */
+    size_t        n_outputs = 0;
+    for (size_t k = 0; k < 2; k++) {
+        memset(img, 120, n_rgb);
+        memcpy(img + (2 * w + 16 * 40) * 3, by[k], 3);
+        struct geist_decknet_result        want;
+        struct geist_decknet_stream_result got;
+        /* What the still path gives for the image of the kept tiles: the
+         * grey one while the tile is kept, the frame once it is taken. */
+        CHECK(geist_decknet_run(still, n_rgb, k == 0 ? ref : img, ref, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+        CHECK(got.n_tiles_changed == k);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr, "FAIL gate threshold: a difference of %zu\n", 30 + k);
+            g_fail = 1;
+        }
+    }
+    printf("gated, a tile at the threshold is kept and one above it taken: %zu outputs "
+           "bit-identical\n",
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    free(img);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* Every tile on its own. A gated stream skips whole stretches of its sample
+ * tables when no tile they read was taken; a stretch skipped wrongly is a
+ * stale result. On the invented network, frame k differs from the image in
+ * two pixels at a corner of tile k alone (and so from the frame before in
+ * tile k - 1 as well); each is compared with the still path on that frame. */
+static void test_gate_each_tile(void) {
+    struct geist_decknet     *still = load_synth();
+    struct geist_decknet     *d     = load_synth();
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    const size_t                 w = info.image_width, h = info.image_height, n_rgb = w * h * 3;
+    uint8_t                     *cur = read_ppm("tests/data/decknet_synth/cur.ppm", w, h);
+    uint8_t                     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
+    uint8_t                     *img = xmalloc(n_rgb);
+    struct geist_decknet_frame   f   = {.format  = GEIST_DECKNET_FORMAT_RGB8,
+                                        .width   = w,
+                                        .height  = h,
+                                        .stride  = w * 3,
+                                        .n_bytes = n_rgb,
+                                        .data    = ref};
+    struct geist_decknet_stream *s   = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    f.data = img;
+
+    const size_t tiles_w   = (w + GEIST_DECKNET_TILE - 1) / GEIST_DECKNET_TILE;
+    const size_t tiles_h   = (h + GEIST_DECKNET_TILE - 1) / GEIST_DECKNET_TILE;
+    size_t       n_outputs = 0, n_read = 0, n_checkable = 0;
+    for (size_t k = 0; k < tiles_w * tiles_h * 4; k++) {
+        const size_t t = k / 4, corner = k % 4;
+        const size_t x0 = t % tiles_w * GEIST_DECKNET_TILE, y0 = t / tiles_w * GEIST_DECKNET_TILE;
+        const size_t x1 = x0 + GEIST_DECKNET_TILE < w ? x0 + GEIST_DECKNET_TILE : w;
+        const size_t y1 = y0 + GEIST_DECKNET_TILE < h ? y0 + GEIST_DECKNET_TILE : h;
+        const size_t x = corner % 2 == 0 ? x0 : x1 - 2, y = corner / 2 == 0 ? y0 : y1 - 1;
+        memcpy(img, cur, n_rgb);
+        for (size_t i = 0; i < 6; i++) { /* two pixels, well off what they were */
+            img[(y * w + x) * 3 + i] = (uint8_t) (img[(y * w + x) * 3 + i] + 90);
+        }
+        struct geist_decknet_result        want;
+        struct geist_decknet_stream_result got;
+        CHECK(geist_decknet_run(still, n_rgb, img, ref, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+        CHECK(k == 0 || got.n_tiles_changed <= 2);
+        n_read += k > 0 && got.n_tiles_changed > 0;
+        n_checkable += want.checkable;
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr,
+                    "FAIL gate, tile %zu, corner %zu: differs from the still path\n",
+                    t,
+                    corner);
+            g_fail = 1;
+        }
+    }
+    /* Most tiles are read by the network, and most frames are checkable:
+     * otherwise this compares little. */
+    CHECK(n_read > tiles_w * tiles_h * 2 && n_checkable > tiles_w * tiles_h * 2);
+    printf("gated, each of %zu tiles changed on its own at each corner: %zu outputs bit-identical "
+           "to the still path (%zu frames checkable)\n",
+           tiles_w * tiles_h,
+           n_outputs,
+           n_checkable);
+    geist_decknet_stream_destroy(s);
+    free(img);
+    free(cur);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* The same at the seams of the sample tables. They are skipped in stretches
+ * of 256 samples, by the rectangle of tiles a stretch reads, and the sample
+ * that ends a stretch is the one a rectangle is most easily short of. A
+ * network whose samples walk down the image, three to a crop row and each
+ * crop row in tiles of its own (crop pixel (x, y) reads image pixel
+ * (x, 40 y), kernels at every row), so that the sample that ends the first
+ * stretch is alone in its tile. Around that row, one image pixel changes at
+ * a time. */
+static void test_gate_seams(void) {
+    constexpr size_t w      = 16;
+    constexpr size_t h      = 3840;
+    constexpr size_t crop_w = 6;
+    constexpr size_t n_rgb  = w * h * 3;
+    struct tiny      m;
+    tiny_default(&m);
+    m.img_w  = (uint32_t) w;
+    m.img_h  = (uint32_t) h;
+    m.crop_w = (uint32_t) crop_w;
+    m.crop_h = 96;
+    float hm[11 * 9];
+    for (size_t i = 0; i < 11; i++) {
+        const float down[9] = {1, 0, 0.5f, 0, 40, 0.5f, 0, 0, 1};
+        memcpy(hm + i * 9, down, sizeof down);
+    }
+    tiny_set(&m.t[TINY_T_HOMOGRAPHY], "decknet.homography", 3, 11, 3, 3, 99, hm);
+    /* The units read crop pixel (2, y) for y = 1 .. 94: pool.off the rows
+     * 1 to 48 and pool.on the rows 49 to 94, two units each. A brighter pixel
+     * next to a row of pool.on shows in its unit; next to one of pool.off it
+     * would be cut off at 0. */
+    float on[46 * 3], off[48 * 3];
+    for (size_t y = 1; y <= 94; y++) {
+        float *row = y <= 48 ? off + (y - 1) * 3 : on + (y - 49) * 3;
+        row[0]     = (float) ((y - 1) % 48 / 24);
+        row[1]     = (float) (y * crop_w + 2);
+        row[2]     = 1.0f / 24.0f;
+    }
+    const float tube[6] = {0, 15 * crop_w + 2, 1, 1, 16 * crop_w + 2, 1};
+    tiny_pool(&m.t[TINY_T_POOL_ON], "decknet.pool.on", 46, on);
+    tiny_pool(&m.t[TINY_T_POOL_OFF], "decknet.pool.off", 48, off);
+    tiny_pool(&m.t[TINY_T_POOL_TUBE], "decknet.pool.tube", 2, tube);
+    static struct tiny_buf buf;
+    tiny_write(&m, &buf);
+    struct geist_decknet *still = nullptr, *d = nullptr;
+    if (geist_decknet_load_from_memory(buf.n, buf.b, &still) != GEIST_OK ||
+        geist_decknet_load_from_memory(buf.n, buf.b, &d) != GEIST_OK) {
+        broken(geist_last_create_error(), "decknet_tiny, seams");
+    }
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+
+    uint8_t *ref = xmalloc(n_rgb), *img = xmalloc(n_rgb);
+    memset(ref, 120, n_rgb);
+    struct geist_decknet_frame   f = {.format  = GEIST_DECKNET_FORMAT_RGB8,
+                                      .width   = w,
+                                      .height  = h,
+                                      .stride  = w * 3,
+                                      .n_bytes = n_rgb,
+                                      .data    = ref};
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+    struct geist_decknet_stream_result got;
+    CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+    /* 6 floor samples and 96 rows of 3 on each other plane, per slot: the
+     * first stretch of 256 ends on the first sample of a crop row. */
+    CHECK(got.n_samples == 20 + 2 * (6 + 4 * 288));
+    f.data = img;
+
+    size_t n_outputs = 0;
+    for (size_t y = 78; y <= 92; y++) {
+        for (size_t x = 1; x <= 3; x++) {
+            memset(img, 120, n_rgb);
+            memset(img + (y * 40 * w + x) * 3, 170, 3);
+            struct geist_decknet_result want;
+            CHECK(geist_decknet_run(still, n_rgb, img, ref, &want) == GEIST_OK);
+            CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+            CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+            CHECK(want.checkable && got.n_tiles_changed >= 1 && got.n_tiles_changed <= 2);
+            struct geist_decknet_slot slot;
+            CHECK(geist_decknet_slot(still, 0, &slot) == GEIST_OK && slot.plate > 0.0f);
+            if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+                fprintf(stderr, "FAIL gate seams: crop pixel (%zu, %zu)\n", x, y);
+                g_fail = 1;
+            }
+        }
+    }
+    printf("gated, one sample at a time across the seam of two stretches of the tables: %zu "
+           "outputs bit-identical to the still path\n",
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    free(img);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
+/* ---- the sample ------------------------------------------------------- */
+
+/* decknet_weights and decknet_blend, which every crop pixel of the still
+ * path and of a stream goes through. */
+static void test_sample(void) {
+    constexpr size_t n_f   = 12;
+    const double     whole = (double) DECKNET_WEIGHT;
+    /* Fractions of a pixel: the ends, the middle, and pairs just below 1 at
+     * which the three rounded weights add up to more than the whole. */
+    const double  f[n_f]      = {0.0,
+                                 0x1p-30,
+                                 1.0 / 3.0,
+                                 0.5,
+                                 0.999,
+                                 1.0 - 1831.8 / whole,
+                                 1.0 - 1831.77 / whole,
+                                 1.0 - 0x1p-13,
+                                 1.0 - 0x1p-24,
+                                 1.0 - 0x1p-25,
+                                 1.0 - 0x1p-40,
+                                 1.0 - 0x1p-50};
+    const uint8_t bytes[6][4] = {{0, 0, 0, 0},
+                                 {255, 255, 255, 255},
+                                 {1, 1, 1, 1},
+                                 {0, 255, 0, 255},
+                                 {255, 0, 0, 255},
+                                 {17, 200, 254, 3}};
+    size_t        n_over = 0, n_checked = 0;
+    for (size_t i = 0; i < n_f; i++) {
+        for (size_t j = 0; j < n_f; j++) {
+            /* The fraction a coordinate between two pixels has, as the
+             * function takes it. */
+            const double u = 3.0 + f[i], v = 5.0 + f[j];
+            const double fu = u - 3.0, fv = v - 5.0;
+            uint32_t     w[3];
+            CHECK(u < 4.0 && v < 6.0);
+            decknet_weights(u, v, w);
+            /* Rounded on their own they may exceed the whole ... */
+            const double sum = floor(fu * (1.0 - fv) * whole + 0.5) +
+                               floor((1.0 - fu) * fv * whole + 0.5) + floor(fu * fv * whole + 0.5);
+            n_over += sum > whole;
+            /* ... the weights never do. */
+            CHECK((uint64_t) w[0] + w[1] + w[2] <= DECKNET_WEIGHT);
+            for (size_t k = 0; k < 6; k++) {
+                const uint8_t *b = bytes[k];
+                const uint32_t q = decknet_blend(w, b[0], b[1], b[2], b[3]);
+                const double   exact =
+                        ((double) b[0] * (1.0 - fu) + (double) b[1] * fu) * (1.0 - fv) +
+                        ((double) b[2] * (1.0 - fu) + (double) b[3] * fu) * fv;
+                CHECK(q <= DECKNET_Q_ONE);
+                CHECK(fabs((double) q - exact * 65536.0) <= 2.0);
+                if (b[0] == b[1] && b[1] == b[2] && b[2] == b[3]) {
+                    CHECK(q == (uint32_t) b[0] << 16U); /* a flat image samples to itself */
+                }
+                n_checked++;
+            }
+        }
+    }
+    CHECK(n_over > 0); /* the fractions reach the case the clamp is for */
+    printf("the fixed-point sample: %zu samples within 2 / 65536 of a byte value of the exact one, "
+           "%zu pairs of fractions whose rounded weights exceed the whole\n",
+           n_checked,
+           n_over);
+}
+
+/* A kernel whose pixels do not sum in 32 bits: 17 x 17 taps of one weight on
+ * a white image are 289 x 255 x 65536, more than 2^32. The loader splits a
+ * weight with more than 256 taps, and the sum goes on in 64 bits. The mean
+ * of a flat image is the image, so every tube unit is sat(3 x 0.5) = 1, at
+ * the crop's edge (taps clamped) and inside it. */
+static void test_kernel_sum(void) {
+    constexpr size_t side = 17;
+    constexpr size_t size = 48;
+    struct tiny      m;
+    tiny_default(&m);
+    m.img_w = m.img_h = (uint32_t) size;
+    m.crop_w = m.crop_h = 40;
+    float flat[side * side];
+    for (size_t i = 0; i < side * side; i++) {
+        flat[i] = 1.0f / (float) (side * side);
+    }
+    tiny_set(&m.t[TINY_T_TUBE], "decknet.conv.tube", 2, side, side, 0, side * side, flat);
+    const float tube[6] = {0, 19, 1, 1, 20 * 40 + 20, 1}; /* in the first row, and in the middle */
+    tiny_pool(&m.t[TINY_T_POOL_TUBE], "decknet.pool.tube", 2, tube);
+    static struct tiny_buf buf;
+    tiny_write(&m, &buf);
+    struct geist_decknet *d = nullptr;
+    if (geist_decknet_load_from_memory(buf.n, buf.b, &d) != GEIST_OK) {
+        broken(geist_last_create_error(), "decknet_tiny, 17 x 17 kernel");
+    }
+    uint8_t *white = xmalloc(size * size * 3);
+    memset(white, 255, size * size * 3);
+    struct geist_decknet_result res;
+    struct geist_decknet_slot   slot;
+    CHECK(geist_decknet_run(d, size * size * 3, white, white, &res) == GEIST_OK && res.checkable);
+    CHECK(geist_decknet_slot(d, 0, &slot) == GEIST_OK);
+    CHECK(slot.tubes[0] == 1.0f && slot.tubes_rot[0] == 1.0f);
+    printf("a kernel of 289 taps of one weight on a white image: summed past 32 bits\n");
+    free(white);
+    geist_decknet_destroy(d);
+}
+
+/* The conversion over the whole range of its bytes. The frames of the parity
+ * tests come from RGB images, so their Y, U and V stay inside what a colour
+ * gives; a camera's need not. On the network above (its worktable strip
+ * reads image columns 0 to 120, its units columns 520 to 720) every byte of
+ * the columns from 500 on is drawn anew for each frame, and the stream has
+ * to give the bits of the still path on the frame as this file converts
+ * it. */
+static void test_conversion_range(enum geist_decknet_format format) {
+    constexpr size_t          w     = EDGE_LONG;
+    constexpr size_t          h     = EDGE_SHORT;
+    struct geist_decknet     *still = load_edges(false), *d = load_edges(false);
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    uint8_t *grey = xmalloc(w * h * 3);
+    memset(grey, 120, w * h * 3);
+    struct geist_decknet_frame   f    = make_frame(format, w, h, 5, grey);
+    uint8_t                     *ref8 = frame_to_rgb8(&f);
+    struct geist_decknet_stream *s    = nullptr;
+    CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_reference(s, &f) == GEIST_OK);
+    uint8_t *bytes = (uint8_t *) (uintptr_t) f.data;
+
+    uint64_t         seed      = 0x533;
+    size_t           n_outputs = 0, n_extreme = 0;
+    constexpr size_t n_frames = 200;
+    for (size_t k = 0; k < n_frames; k++) {
+        for (size_t y = 0; y < h; y++) {
+            for (size_t x = 500; x < w; x++) {
+                /* a third of the bytes at an end of the range */
+                seed            = seed * 6364136223846793005ull + 1442695040888963407ull;
+                const uint8_t v = (uint8_t) (seed >> 33U);
+                const uint8_t b = (seed >> 41U) % 3 == 0 ? (v & 1 ? 255 : 0) : v;
+                n_extreme += b == 0 || b == 255;
+                if (format == GEIST_DECKNET_FORMAT_NV12) {
+                    bytes[y * f.stride + x] = b;
+                    if (y % 2 == 0) {
+                        bytes[(h + y / 2) * f.stride + x] = (uint8_t) (b * 7 + v);
+                    }
+                } else {
+                    bytes[y * f.stride + x * 2]     = b;
+                    bytes[y * f.stride + x * 2 + 1] = (uint8_t) (b * 7 + v);
+                }
+            }
+        }
+        uint8_t                    *img8 = frame_to_rgb8(&f);
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, w * h * 3, img8, ref8, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        CHECK(want.checkable);
+        if (!same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr, "FAIL conversion range, format %u: frame %zu\n", (unsigned) format, k);
+            g_fail = 1;
+        }
+        free(img8);
+    }
+    printf("%-34s %zu frames of arbitrary bytes (%zu of them 0 or 255), %zu outputs bit-identical "
+           "to the still path\n",
+           format == GEIST_DECKNET_FORMAT_NV12 ? "NV12, the whole byte range"
+                                               : "YUYV, the whole byte range",
+           (size_t) n_frames,
+           n_extreme,
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    free(bytes);
+    free(ref8);
+    free(grey);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
 /* The second implementation of the conversion gives the colours BT.601
  * names for its limited-range code points, and clamps outside them. */
 static void test_conversion_reference(void) {
@@ -377,16 +1086,29 @@ static void test_no_alloc(void) {
     const uint64_t               before_create = heap_alloc_count();
     struct geist_decknet_stream *s             = nullptr;
     CHECK(geist_decknet_stream_create(d, &s) == GEIST_OK);
+    const uint64_t before_gate = heap_alloc_count();
+    CHECK(before_gate > before_create); /* the counter sees the stream's allocations */
+    /* Gating allocates once, when it is first turned on, and not when it is
+     * turned off, on again or given another threshold. */
+    CHECK(geist_decknet_stream_set_gate(s, false, 0) == GEIST_OK);
+    CHECK(heap_alloc_count() == before_gate);
+    CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
     const uint64_t before = heap_alloc_count();
-    CHECK(before > before_create); /* the counter sees the stream's allocations */
+    CHECK(before > before_gate);
+    CHECK(geist_decknet_stream_set_gate(s, false, 0) == GEIST_OK);
 
     size_t n_calls = 0;
-    for (int round = 0; round < 3; round++) {
+    for (int round = 0; round < 4; round++) {
         for (uint32_t f = 0; f < 3; f++) {
             struct geist_decknet_stream_result res;
             struct geist_decknet_slot          slot;
+            /* rounds 0 and 3 without gating, 1 and 2 with; 2 and 3 on two threads */
+            CHECK(geist_decknet_stream_set_gate(s, round == 1 || round == 2, (uint32_t) round) ==
+                  GEIST_OK);
+            CHECK(geist_decknet_stream_set_threads(s, round >= 2 ? 2 : 1) == GEIST_OK);
             CHECK(geist_decknet_stream_set_reference(s, &refs[f]) == GEIST_OK);
             CHECK(geist_decknet_stream_push_frame(s, &frames[f]) == GEIST_OK);
+            CHECK(geist_decknet_stream_push_frame(s, &frames[f]) == GEIST_OK); /* nothing changed */
             CHECK(geist_decknet_stream_result(s, &res) == GEIST_OK && res.image.checkable);
             CHECK(geist_decknet_stream_slot(s, 0, &slot) == GEIST_OK);
             /* the other exit of a pass, and a refused frame */
@@ -395,7 +1117,7 @@ static void test_no_alloc(void) {
             struct geist_decknet_frame bad = frames[f];
             bad.n_bytes--;
             CHECK(geist_decknet_stream_push_frame(s, &bad) == GEIST_E_INVALID_ARG);
-            n_calls += 7;
+            n_calls += 10;
             const uint64_t now = heap_alloc_count();
             if (now != before) {
                 fprintf(stderr,
@@ -407,8 +1129,8 @@ static void test_no_alloc(void) {
             }
         }
     }
-    printf("no allocation in %zu calls after geist_decknet_stream_create, the first frame "
-           "included\n",
+    printf("no allocation in %zu calls after geist_decknet_stream_create and the first "
+           "geist_decknet_stream_set_gate, the first frame included\n",
            n_calls);
     geist_decknet_stream_destroy(s);
     for (uint32_t f = 0; f < 3; f++) {
@@ -594,6 +1316,32 @@ static void test_state(void) {
     }
     CHECK(n >= 9 && s != nullptr); /* the handle, a mark, five pixel lists, tables, the reference */
 
+    /* The same for the first set_gate that turns gating on; a failed one
+     * leaves a stream that works, and off needs no memory. */
+    CHECK(geist_decknet_stream_set_gate(nullptr, true, 0) == GEIST_E_INVALID_ARG);
+    CHECK(geist_decknet_stream_set_threads(nullptr, 1) == GEIST_E_INVALID_ARG);
+    CHECK(geist_decknet_stream_set_threads(s, 0) == GEIST_E_INVALID_ARG);
+    CHECK(geist_decknet_stream_set_threads(s, 3) == GEIST_E_INVALID_ARG);
+    CHECK(geist_decknet_stream_set_threads(s, 2) == GEIST_OK);
+    CHECK(geist_decknet_stream_set_threads(s, 1) == GEIST_OK);
+    int64_t n_gate = 0;
+    for (;; n_gate++) {
+        heap_fail_after(n_gate);
+        const enum geist_status off = geist_decknet_stream_set_gate(s, false, 0);
+        const enum geist_status st  = geist_decknet_stream_set_gate(s, true, 3);
+        heap_fail_after(-1);
+        CHECK(off == GEIST_OK);
+        if (st == GEIST_OK) {
+            break;
+        }
+        CHECK(st == GEIST_E_OOM);
+        if (n_gate > 100) {
+            CHECK(!"a set_gate never succeeded");
+            break;
+        }
+    }
+    CHECK(n_gate >= 5); /* the kept tiles, the crops, the kernel sums twice, the 1x1 values */
+
     struct geist_decknet_stream_result res = {.timestamp = 1};
     struct geist_decknet_slot          slot;
     CHECK(geist_decknet_stream_result(s, &res) == GEIST_E_INVALID_STATE && res.timestamp == 0);
@@ -618,19 +1366,40 @@ static void test_state(void) {
     CHECK(geist_decknet_stream_slot(s, 2, &slot) == GEIST_E_INVALID_ARG); /* two slots */
     geist_decknet_stream_destroy(s);
     geist_decknet_destroy(d);
-    printf("a create survives each of its %lld allocations failing; state and argument checks\n",
-           (long long) n);
+    printf("a create survives each of its %lld allocations failing, a set_gate each of its %lld; "
+           "state and argument checks\n",
+           (long long) n,
+           (long long) n_gate);
 }
 
 int main(void) {
     test_conversion_reference();
-    test_parity(GEIST_DECKNET_FORMAT_RGB8, 0, false, "RGB8");
-    test_parity(GEIST_DECKNET_FORMAT_RGB8, 37, false, "RGB8, padded rows");
-    test_parity(GEIST_DECKNET_FORMAT_RGB8, 0, true, "RGB8, replaced homographies");
-    test_parity(GEIST_DECKNET_FORMAT_NV12, 0, false, "NV12");
-    test_parity(GEIST_DECKNET_FORMAT_NV12, 37, true, "NV12, padded, replaced homographies");
-    test_parity(GEIST_DECKNET_FORMAT_YUYV, 0, false, "YUYV");
-    test_parity(GEIST_DECKNET_FORMAT_YUYV, 37, true, "YUYV, padded, replaced homographies");
+    test_parity(GEIST_DECKNET_FORMAT_RGB8, 0, false, 1, "RGB8");
+    test_parity(GEIST_DECKNET_FORMAT_RGB8, 37, false, 1, "RGB8, padded rows");
+    test_parity(GEIST_DECKNET_FORMAT_RGB8, 0, true, 1, "RGB8, replaced homographies");
+    test_parity(GEIST_DECKNET_FORMAT_NV12, 0, false, 1, "NV12");
+    test_parity(GEIST_DECKNET_FORMAT_NV12, 37, true, 1, "NV12, padded, replaced homographies");
+    test_parity(GEIST_DECKNET_FORMAT_YUYV, 0, false, 1, "YUYV");
+    test_parity(GEIST_DECKNET_FORMAT_YUYV, 37, true, 1, "YUYV, padded, replaced homographies");
+    test_parity(GEIST_DECKNET_FORMAT_RGB8, 37, true, 2, "RGB8, two threads");
+    test_parity(GEIST_DECKNET_FORMAT_NV12, 0, false, 2, "NV12, two threads");
+    test_gate(GEIST_DECKNET_FORMAT_RGB8, 0, 0, 1, "gated, threshold 0, RGB8");
+    test_gate(GEIST_DECKNET_FORMAT_NV12, 37, 0, 1, "gated, threshold 0, NV12, padded");
+    test_gate(GEIST_DECKNET_FORMAT_YUYV, 0, 0, 1, "gated, threshold 0, YUYV");
+    test_gate(GEIST_DECKNET_FORMAT_RGB8, 37, 40, 1, "gated, threshold 40, RGB8, padded");
+    test_gate(GEIST_DECKNET_FORMAT_NV12, 0, 40, 1, "gated, threshold 40, NV12");
+    test_gate(GEIST_DECKNET_FORMAT_YUYV, 37, 40, 1, "gated, threshold 40, YUYV, padded");
+    test_gate(GEIST_DECKNET_FORMAT_YUYV, 0, 0, 2, "gated, 0, YUYV, two threads");
+    test_gate(GEIST_DECKNET_FORMAT_RGB8, 0, 40, 2, "gated, 40, RGB8, two threads");
+    test_conversion_range(GEIST_DECKNET_FORMAT_NV12);
+    test_conversion_range(GEIST_DECKNET_FORMAT_YUYV);
+    test_sample();
+    test_kernel_sum();
+    test_gate_edges(false);
+    test_gate_edges(true);
+    test_gate_threshold();
+    test_gate_each_tile();
+    test_gate_seams();
     test_no_alloc();
     test_geometry();
     test_state();
@@ -638,7 +1407,7 @@ int main(void) {
         return GEIST_TEST_FAIL;
     }
     printf("a decknet stream gives the still path's outputs bit for bit: RGB8 as it is, NV12 and "
-           "YUYV "
-           "as converted by the formula of docs/DECKNET.md\n");
+           "YUYV as converted by the formula of docs/DECKNET.md; a gated one on the image of its "
+           "kept tiles\n");
     return GEIST_TEST_PASS;
 }

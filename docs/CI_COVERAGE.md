@@ -346,9 +346,13 @@ model or the network, because the input *is* the format:
   description out of the input (format, width, height, stride, extent) on a
   buffer of exactly that extent, optionally with homographies out of the
   input. The harness computes for itself whether the description fits the
-  buffer and aborts on a wrong verdict in either direction; the deterministic
-  driver fails when fewer than 100 frames are accepted or fewer than 100
-  refused.
+  buffer and aborts on a wrong verdict in either direction. A third of the
+  inputs also run a gating sequence (`geist_decknet_stream_set_gate`): four
+  frames through a gated stream and through one without gating, which have
+  to agree in every bit at threshold 0, and the same frame twice has to give
+  one result at any threshold. The deterministic driver fails when fewer
+  than 100 frames are accepted, fewer than 100 refused, or fewer than 100
+  gating sequences take a part of their tiles.
 
 All are entry points for libFuzzer *and* carry a deterministic PRNG driver
 behind `GEIST_FUZZ_STANDALONE`, which is what lets them run in a gcc job:
