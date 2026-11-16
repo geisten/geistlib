@@ -33,7 +33,7 @@
  * Run it under the host lock like every timing (CONTRIBUTING.md):
  *   make DECKNET=1 bin/<target>/release/tools/bench_stream
  *   bench_stream [--frames N] [--threads 1|2] [--scene block|all]
- *                [--only still|stream|gated]
+ *                [--only still|stream|gated] [--size 720|1080]
  */
 #define _POSIX_C_SOURCE 200809L
 #include <geist.h>
@@ -750,6 +750,7 @@ int main(int argc, char **argv) {
     size_t      threads  = 1;
     bool        all      = false;
     const char *only     = nullptr;
+    size_t      height   = 0; /* both sizes */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             n_frames = (size_t) strtoul(argv[++i], nullptr, 10);
@@ -762,10 +763,13 @@ int main(int argc, char **argv) {
                    (strcmp(argv[i + 1], "still") == 0 || strcmp(argv[i + 1], "stream") == 0 ||
                     strcmp(argv[i + 1], "gated") == 0)) {
             only = argv[++i];
+        } else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc &&
+                   (strcmp(argv[i + 1], "720") == 0 || strcmp(argv[i + 1], "1080") == 0)) {
+            height = (size_t) strtoul(argv[++i], nullptr, 10);
         } else {
             fprintf(stderr,
-                    "usage: bench_stream [--frames N] [--threads 1|2] [--only "
-                    "still|stream|gated]\n");
+                    "usage: bench_stream [--frames N] [--threads 1|2] [--scene block|all] "
+                    "[--only still|stream|gated] [--size 720|1080]\n");
             return 2;
         }
     }
@@ -790,6 +794,9 @@ int main(int argc, char **argv) {
     const size_t sizes[2][2] = {{1280, 720}, {1920, 1080}};
     bool         same        = true;
     for (size_t i = 0; i < 2; i++) {
+        if (height != 0 && sizes[i][1] != height) {
+            continue;
+        }
         for (uint32_t f = 0; f < 3; f++) {
             same = measure(sizes[i][0],
                            sizes[i][1],

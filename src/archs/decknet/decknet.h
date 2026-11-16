@@ -318,15 +318,22 @@ void decknet_plane_pixels(const struct geist_decknet *d, enum decknet_plane plan
 
 /* ---- stream (stream.c, #533) ------------------------------------------ */
 
-/* One bilinear sample: crop pixel `px` reads the 2 x 2 camera pixels at
- * (x, y) with the weights w (decknet_weights). What decknet_sample_at gives
- * for a homography, kept so that a frame costs no coordinate arithmetic. */
+/* One bilinear sample: a crop pixel reads the 2 x 2 camera pixels at (x, y)
+ * with the weights w (decknet_weights). What decknet_sample_at gives for a
+ * homography, kept so that a frame costs no coordinate arithmetic. Which
+ * crop pixel it is the table does not say: decknet_run does. */
 struct decknet_sample {
     uint32_t w[3];
-    uint32_t px;
     uint16_t x, y; /* at most DECKNET_MAX_IMAGE_DIM - 2 */
 };
 static_assert(DECKNET_MAX_IMAGE_DIM <= (size_t) UINT16_MAX + 1);
+static_assert(sizeof(struct decknet_sample) == 16, "four 32-bit lanes, three of them the weights");
+
+/* The crop pixels px .. px + n - 1, whose samples a table has side by side:
+ * what a plane reads of its crop is a few hundred such runs. */
+struct decknet_run {
+    uint32_t px, n;
+};
 
 /* The side of the squares of camera pixels a stream reads, converts,
  * compares and keeps as a whole. Part of the contract of a gated stream
@@ -334,6 +341,10 @@ static_assert(DECKNET_MAX_IMAGE_DIM <= (size_t) UINT16_MAX + 1);
 constexpr size_t DECKNET_TILE = GEIST_DECKNET_TILE;
 /* A stream computes its slots on one thread or on two. */
 constexpr size_t DECKNET_STREAM_THREADS = 2;
+
+/* A sample is computed from 16 bytes of each of its two rows, of which the
+ * first six are its pixels, where that many are there to read. */
+constexpr size_t DECKNET_SAMPLE_BYTES = 16;
 
 /* Tiles [x0, x1] x [y0, y1]. */
 struct decknet_box {
@@ -343,17 +354,18 @@ constexpr size_t DECKNET_CHUNK = 256;
 
 struct geist_decknet_stream {
     struct geist_decknet *d; /* borrowed; the pass runs in its workspace */
-    /* The crop pixels each plane reads, ascending (decknet_plane_pixels). */
-    size_t    n_px[DECKNET_PLANES];
-    uint32_t *px[DECKNET_PLANES];
-    size_t    per_slot; /* sum of n_px */
+    /* The crop pixels each plane reads (decknet_plane_pixels), ascending, as
+     * runs of neighbours: n_px pixels in n_runs runs. */
+    size_t              n_px[DECKNET_PLANES], n_runs[DECKNET_PLANES];
+    struct decknet_run *run[DECKNET_PLANES];
+    size_t              per_slot; /* sum of n_px */
     /* Sample tables of the current image's homographies. */
     struct decknet_sample *bg;  /* bg_px */
     struct decknet_sample *tab; /* n_slots x per_slot: slot by slot, plane by plane */
     /* The empty deck, sampled once: its strip, and the floor crop of each
      * slot with the gain already applied. */
     float   *bg_ref;    /* bg_px x 3 */
-    float   *floor_ref; /* n_slots x crop_px x 3, written at px[DECKNET_PLANE_FLOOR] */
+    float   *floor_ref; /* n_slots x crop_px x 3, written at the floor plane's pixels */
     bool     have_ref;
     uint64_t h_gen; /* d->h_gen the tables and the reference were made at */
     bool     have_result;
@@ -372,8 +384,9 @@ struct geist_decknet_stream {
     /* Per DECKNET_CHUNK samples of `tab`, the rectangle of tiles their first
      * pixels lie in: a chunk with no changed tile in it is not looked at. */
     struct decknet_box *box;
-    /* img_w x img_h x 3, written at the used tiles: an NV12 or YUYV frame as
-     * RGB8, and for a gated stream the kept tiles of any frame as RGB8. */
+    /* img_w x img_h x 3 and DECKNET_SAMPLE_BYTES behind them, written at the
+     * used tiles: an NV12 or YUYV frame as RGB8, and for a gated stream the
+     * kept tiles of any frame as RGB8. */
     uint8_t *rgb;
 
     /* ---- gating: allocated by the first set_gate that turns it on ---- */
