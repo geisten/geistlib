@@ -2,6 +2,14 @@ name: Trace Qwen pilot case 47 on Mac mini
 
 on:
   workflow_dispatch:
+    inputs:
+      experiment:
+        description: SIMD reductions or first-token QKV replacement
+        default: simd
+        type: choice
+        options:
+          - simd
+          - causal
 
 permissions:
   contents: read
@@ -22,7 +30,9 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Replay the pinned case 47 prompt
-        run: /bin/sh tools/probes/qwen47-prefix.sh "$RUNNER_TEMP/qwen47-prefix"
+        env:
+          QWEN47_EXPERIMENT: ${{ inputs.experiment }}
+        run: /bin/sh tools/probes/qwen47-prefix.sh "$RUNNER_TEMP/qwen47-prefix" "${QWEN47_EXPERIMENT:-simd}"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
