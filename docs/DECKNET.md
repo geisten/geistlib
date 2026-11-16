@@ -274,12 +274,22 @@ is the same bits. The conversion of an NV12 or YUYV frame is split the
 same way, by rows of tiles; the tile comparison of a gated stream and the
 worktable check stay on the calling thread.
 
-The second thread sleeps between two frames of a camera, and waking it is
-part of the next pass. With OpenMP, `OMP_WAIT_POLICY=active` in the
-environment keeps it spinning instead, at the price of a core that is busy
-all the time. Measured at 60 frames per second it made no difference that
-held from one run to the next (see "Measured"); the library does not set
-it.
+The second thread is the pool's, and between two frames of a camera it has
+nothing to do. Waking it is not what a frame waits for: behind a camera at
+60 frames per second on a Raspberry Pi 5 (libgomp) its half of a frame
+starts 2 to 20 µs after the first thread's, in the conversion's region and
+in the slots'. With OpenMP, `OMP_WAIT_POLICY=active` in the environment
+keeps it spinning instead, at the price of a core that is busy all the
+time; in five runs per format it changed nothing (see "The tail behind a
+camera"), and the library does not set it.
+
+**Binding the threads to cores needs `OMP_NUM_THREADS` as well.** The pool
+takes no more threads than the calling thread may run on CPUs
+(`src/base/par.c`), unless `OMP_NUM_THREADS` sizes the team. `OMP_PROC_BIND`
+and `GOMP_CPU_AFFINITY` bind the calling thread to one core, so with either
+of them alone the stream's second thread is not used, without a word:
+28 ms a frame on the Pi 5 where two threads take 12. With
+`OMP_NUM_THREADS=2` next to the binding both run.
 
 ### A queue of one
 
@@ -342,8 +352,8 @@ a second thread that offers without waiting; both under ThreadSanitizer.
 **The result is that of `geist_decknet_run` on the same two images, bit for
 bit**: for RGB8 as they are, for NV12 and YUYV as converted to RGB8 by the
 formula above; for a gated stream on the image of its kept tiles. Nothing is
-approximated: a stream and the still path compute a crop pixel, a kernel
-sum and a unit with the same functions of `run.c`.
+approximated: a stream and the still path compute a crop pixel and a unit
+with the same functions of `run.c`, and a kernel sum as the same integers.
 `tests/test_decknet_stream_unit.c` compares every output of every slot with
 `memcmp`, and `tools/bench_stream` hashes every output of every frame it
 times and fails on a difference.
@@ -367,6 +377,11 @@ What a stream does not repeat (`src/archs/decknet/stream.c`):
 - **Tiles.** RGB8 is sampled in place; of an NV12 or YUYV frame only the
   tiles a sample reads are converted, each pixel once.
 - **The empty deck** is sampled once, when it is set.
+- **A kernel's taps one by one.** Where both kernels have few weights (see
+  "Integer crops"), a plane is sampled as prefix sums along its runs of crop
+  pixels instead of as the pixels, and a kernel takes the sum of a row of
+  equal weights from two of them. Not in a gated stream's kept crops, which
+  change pixel by pixel.
 
 The reference also fixes the homographies. After
 `geist_decknet_set_homographies` the tables are those of the old pose, so
@@ -396,24 +411,24 @@ frame. One thread:
 
 | size | format | still frames/s | p50 | p99 | stream frames/s | p50 | p99 | gated frames/s | p50 | p99 |
 | :-- | :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: |
-| 1280 x 720 | RGB8 | 16.1 | 61.9 | 62.7 | 54.0 | 18.5 | 18.7 | 212.3 | 4.7 | 5.0 |
-| 1280 x 720 | NV12 | 15.3 | 65.5 | 66.2 | 51.8 | 19.3 | 19.4 | 222.0 | 4.5 | 4.8 |
-| 1280 x 720 | YUYV | 15.2 | 65.6 | 65.9 | 51.3 | 19.5 | 19.6 | 220.3 | 4.6 | 5.0 |
-| 1920 x 1080 | RGB8 | 15.9 | 62.9 | 63.3 | 50.4 | 19.8 | 20.7 | 170.1 | 5.9 | 8.0 |
-| 1920 x 1080 | NV12 | 14.0 | 71.3 | 71.5 | 44.2 | 22.6 | 23.4 | 185.2 | 5.4 | 5.7 |
-| 1920 x 1080 | YUYV | 13.9 | 72.1 | 72.4 | 43.9 | 22.7 | 25.1 | 186.8 | 5.3 | 5.8 |
+| 1280 x 720 | RGB8 | 16.1 | 62.0 | 62.3 | 60.6 | 16.5 | 16.7 | 205.7 | 4.9 | 5.3 |
+| 1280 x 720 | NV12 | 15.2 | 65.6 | 66.4 | 57.3 | 17.4 | 17.8 | 213.8 | 4.7 | 5.0 |
+| 1280 x 720 | YUYV | 15.2 | 65.7 | 66.1 | 56.7 | 17.6 | 17.8 | 214.0 | 4.6 | 5.0 |
+| 1920 x 1080 | RGB8 | 16.0 | 62.5 | 65.0 | 58.7 | 17.0 | 17.4 | 167.5 | 5.9 | 6.4 |
+| 1920 x 1080 | NV12 | 13.9 | 71.8 | 73.2 | 51.6 | 19.4 | 19.5 | 185.1 | 5.4 | 5.7 |
+| 1920 x 1080 | YUYV | 13.8 | 72.6 | 73.9 | 49.0 | 20.4 | 21.5 | 183.1 | 5.5 | 5.9 |
 
 The streams on two threads (`--threads 2`; the still path has no second
 thread):
 
 | size | format | stream frames/s | p50 | p99 | gated frames/s | p50 | p99 |
 | :-- | :-- | --: | --: | --: | --: | --: | --: |
-| 1280 x 720 | RGB8 | 96.9 | 10.3 | 12.0 | 273.4 | 3.8 | 4.2 |
-| 1280 x 720 | NV12 | 84.5 | 11.8 | 12.1 | 276.9 | 3.7 | 4.2 |
-| 1280 x 720 | YUYV | 83.8 | 11.9 | 15.2 | 283.4 | 3.6 | 4.0 |
-| 1920 x 1080 | RGB8 | 81.6 | 12.2 | 12.8 | 207.6 | 5.0 | 5.4 |
-| 1920 x 1080 | NV12 | 71.0 | 14.1 | 14.5 | 230.4 | 4.6 | 4.7 |
-| 1920 x 1080 | YUYV | 69.0 | 14.5 | 14.9 | 224.5 | 4.5 | 5.1 |
+| 1280 x 720 | RGB8 | 103.0 | 9.7 | 10.1 | 266.1 | 3.9 | 4.3 |
+| 1280 x 720 | NV12 | 95.1 | 10.5 | 10.9 | 278.7 | 3.7 | 4.1 |
+| 1280 x 720 | YUYV | 93.7 | 10.7 | 11.2 | 279.7 | 3.7 | 4.1 |
+| 1920 x 1080 | RGB8 | 86.0 | 11.6 | 12.0 | 203.3 | 5.0 | 5.5 |
+| 1920 x 1080 | NV12 | 75.0 | 13.2 | 17.6 | 229.7 | 4.5 | 4.7 |
+| 1920 x 1080 | YUYV | 72.7 | 13.6 | 16.8 | 226.7 | 4.5 | 4.9 |
 
 What gating costs when it saves little or nothing, same board,
 1920 x 1080, p50 / p99 in ms. `--scene all`: every pixel of a frame differs
@@ -425,37 +440,42 @@ by the first thread:
 
 | | RGB8 | NV12 | YUYV |
 | :-- | --: | --: | --: |
-| all: stream, one thread | 19.7 / 19.9 | 22.5 / 22.9 | 22.7 / 23.0 |
-| all: gated, one thread | 21.3 / 25.7 | 23.2 / 23.4 | 23.7 / 23.9 |
-| all: stream, two threads | 11.8 / 14.0 | 13.8 / 18.6 | 14.2 / 14.5 |
-| all: gated, two threads | 13.9 / 14.3 | 15.8 / 16.3 | 16.6 / 18.7 |
-| burst: gated, one thread | 21.4 / 24.0 | 23.4 / 24.3 | 23.8 / 24.2 |
-| burst: gated, two threads | 13.0 / 18.2 | 15.6 / 18.6 | 16.3 / 16.9 |
-| half: stream, one thread | 19.5 / 19.7 | 22.3 / 22.6 | 22.6 / 22.8 |
-| half: gated, one thread | 17.0 / 18.0 | 17.8 / 19.8 | 17.8 / 18.8 |
-| half: stream, two threads | 12.1 / 12.5 | 14.0 / 14.4 | 14.4 / 16.8 |
-| half: gated, two threads | 13.9 / 14.5 | 14.4 / 15.0 | 15.0 / 15.5 |
+| all: stream, one thread | 17.6 / 17.9 | 20.2 / 20.4 | 20.6 / 20.8 |
+| all: gated, one thread | 19.1 / 19.9 | 20.7 / 26.7 | 21.3 / 21.5 |
+| all: stream, two threads | 11.2 / 11.6 | 13.0 / 13.6 | 13.5 / 17.4 |
+| all: gated, two threads | 12.6 / 13.2 | 15.0 / 16.3 | 16.0 / 16.8 |
+| burst: gated, one thread | 19.4 / 24.3 | 21.1 / 23.0 | 21.6 / 22.7 |
+| burst: gated, two threads | 13.2 / 17.4 | 15.0 / 16.5 | 16.1 / 18.2 |
+| half: stream, one thread | 17.2 / 19.2 | 19.5 / 19.8 | 20.1 / 20.3 |
+| half: gated, one thread | 17.1 / 18.1 | 17.6 / 18.7 | 18.0 / 19.1 |
+| half: stream, two threads | 11.1 / 11.7 | 12.5 / 13.2 | 13.5 / 14.5 |
+| half: gated, two threads | 14.0 / 14.4 | 14.5 / 15.0 | 15.2 / 15.6 |
 
 A gated frame that changed all over is computed whole (see "Gating"), so
 what it costs beyond a frame that is not gated is its tiles compared and
-copied: 0.7 to 1.6 ms on one thread (3 to 8 %), where it was a third
-before that rule (25.7, 28.3 and 29.0 ms against 19.2, 21.6 and 22.6). On
-two threads it is 2.0 to 2.4 ms (14 to 18 %), because the comparison and
-the copy stay on the calling thread while the rest is halved. The frame
-that fills the caches again after such a stretch is the slowest of a burst:
-its p99 above. With half of the frame changing, a gated stream on one
-thread is ahead of one that is not gated; on two threads it is behind
-here, because the three slots that change are the first thread's and the
-second has nothing to do: which slots change decides it, and the rule
-above looks at the frame, not at a slot.
+copied: 0.5 to 1.5 ms on one thread (3 to 8 %), where it was a third
+before that rule (25.7, 28.3 and 29.0 ms against 19.2, 21.6 and 22.6, at
+the third step). On two threads it is 1.4 to 2.5 ms (12 to 18 %), because
+the comparison and the copy stay on the calling thread while the rest is
+halved. The frame that fills the caches again after such a stretch is the
+slowest of a burst: its p99 above. With half of the frame changing, a
+gated stream on one thread is ahead of one that is not gated for NV12 and
+YUYV and level with it for RGB8 (what it computes from kept crops sums its
+kernels tap by tap, and the other no longer does); on two threads it is
+behind here, because the three slots that change are the first thread's
+and the second has nothing to do: which slots change decides it, and the
+rule above looks at the frame, not at a slot.
 
 Every row hashes every output of every frame, and the three ways agree in
 every bit.
 
 Where the frame went, same board, 1920 x 1080, one thread, ms per frame
-(300 frames, measured with timers that are not in the tree; the first
-column is the stream as the second step of #533 left it, the last a gated
-stream when every tile changes):
+(300 frames, measured with timers that are not in the tree, at the third
+step of #533; the first column is the stream as the second step left it,
+the last a gated stream when every tile changes). The fourth step's
+kernels by spans are not in it: they took 2 ms off a frame that is not
+gated, which can only be the 9 x 9 row's; the parts were not timed
+again:
 
 | | before, RGB8 | RGB8 | NV12 | YUYV | gated, RGB8 | gated, all tiles, RGB8 |
 | :-- | --: | --: | --: | --: | --: | --: |
@@ -474,31 +494,17 @@ the conversion of an NV12 frame 1.8 ms of wall time where it takes 2.6 on
 one thread.
 
 With a camera (`--camera 60 --frames 600`: a second thread offers a frame
-every 16.7 ms, the pass takes what waits; see "A queue of one"), same
-board, 1920 x 1080, the pass on two threads, not gated: time from the offer
-of a frame to its result, p50 / p99 in ms, and how many of the 600 frames
-had their result later than a frame period. Three runs, and two with
-`OMP_WAIT_POLICY=active`:
-
-| | RGB8 | NV12 | YUYV |
-| :-- | --: | --: | --: |
-| run 1 | 12.4 / 13.3, 0 late | 14.3 / 20.4, 12 late | 14.1 / 18.3, 9 late |
-| run 2 | 12.4 / 14.0, 4 late | 14.3 / 18.0, 8 late | 14.2 / 17.8, 6 late |
-| run 3 | 12.3 / 13.7, 2 late | 14.3 / 15.1, 4 late | 14.2 / 25.7, 28 late |
-| active, run 1 | 11.9 / 14.4, 2 late | 14.2 / 15.1, 3 late | 14.3 / 14.8, 0 late |
-| active, run 2 | 12.3 / 12.9, 2 late | 14.3 / 20.5, 11 late | 14.1 / 14.7, 1 late |
-
-Of the 9300 frames offered in those rows two were dropped; a pass that is
-late makes the next one start late, which is why late frames come in
-groups. Gated at threshold 0 with the block moving, the same camera, two
-runs: 4.7 to 5.3 ms, p99 at most 6.7 ms, on two threads, two frames of 3600
-later than a period; on one thread 6.1 to 6.3 ms and at most 7.7 ms, one
-of 1800 late. At 30 frames per second on one thread, not gated:
-19.5 / 19.7, 21.7 / 26.6 and 22.1 / 26.1 ms, none late and none dropped.
-The median is the pass; the tail is single passes of 17 to 36 ms, a few in
-600 frames, in every format, with and without the active wait. Where they
-come from was not found: the board also runs CI runner services, and
-nothing was pinned to a core.
+every 16.7 ms, the pass takes what waits; see "A queue of one") the time
+from the offer of a frame to its result is the pass at the median, and it
+has a tail that is not the pass's. The runs at 60 frames per second, not
+gated, and where their tail comes from are under "The tail behind a
+camera". Gated at threshold 0 with the block moving, the same camera, two
+runs (the third step's tree; what a gated stream computes from its kept
+crops has not changed since): 4.7 to 5.3 ms, p99 at most 6.7 ms, on two
+threads, two frames of 3600 later than a period; on one thread 6.1 to
+6.3 ms and at most 7.7 ms, one of 1800 late. At 30 frames per second on one
+thread, not gated (the third step's tree as well): 19.5 / 19.7, 21.7 / 26.6
+and 22.1 / 26.1 ms, none late and none dropped.
 
 What each part gained, same board, 1920 x 1080, p50 in ms, one thread
 unless the row says two (200 or 300 frames; each row is the tree at that
@@ -520,6 +526,10 @@ point of the work, measured then):
 | the same on two threads, before and after | 13.2, 12.0 | 15.2, 14.1 | 14.9, 14.0 |
 | gated, every tile changes, one thread, before | 25.7 | 28.3 | 29.0 |
 | + such a frame computed whole, its tiles copied in runs | 20.9 | 23.1 | 23.4 |
+| the fourth step of #533 starts from: one thread | 19.4 | 22.1 | 22.4 |
+| + a row of equal kernel weights from two prefix sums: one thread | 17.5 | 19.9 | 20.4 |
+| the same on two threads, before and after | 12.0, 11.2 | 13.9, 13.1 | 14.2, 13.7 |
+| the prefix sums next to the crop instead of in its place, two threads (not taken) | 16.4 | 18.7 | 19.5 |
 
 The still path gained from the integer crops as well (1920 x 1080 RGB8:
 106.5 to 62.9 ms). The rows of one step were measured in one session; the
@@ -539,29 +549,169 @@ crop) is the smaller part.
 **Against the target of #533** (a Pi 5, 1920 x 1080 at 60 frames per
 second, p99 below one frame period of 16.7 ms, on at most two cores, six
 slots), on the bench's network: a stream on two threads has its median
-inside it for all three formats, with 4.5 ms to spare for RGB8 and 2.2 to
-2.6 ms for NV12 and YUYV (12.2, 14.1 and 14.5 ms; they were 13.1, 15.0 and
-15.4 before the third step). Fed one frame after the other, its p99 is
-inside as well in the table above (12.8, 14.5, 14.9 ms), and was up to
-18.6 ms for a format in other runs of the same. Fed by a camera thread at
-60 frames per second, which is the target as it is written, RGB8 is inside
-in every run (p99 12.9 to 14.4 ms, at most 4 frames of 600 late) and NV12
-and YUYV are not in every run: their p99 was between 14.7 and 25.7 ms, with
-0 to 28 frames of 600 late. So RGB8 meets the target; NV12 and YUYV meet it at the
-median and miss it in the tail, by single slow passes and not by the cost
-of the pass. On one thread a stream is not inside (20 to 23 ms) unless it
-is gated and the scene is mostly still: 5.3 to 5.9 ms, and 6.1 to 6.3 ms
-behind a camera at 60 frames per second with p99 at most 7.7 ms. A gated
-stream on two threads whose every tile changes is at 13.9, 15.8 and
-16.6 ms: inside for RGB8, at the limit for the other two. None of this is
-the device's network or a camera; see "Not covered".
+inside it for all three formats, with 5.1 ms to spare for RGB8 and 3.1 to
+3.5 ms for NV12 and YUYV (11.6, 13.2 and 13.6 ms; they were 12.2, 14.1 and
+14.5 before the fourth step). Fed one frame after the other its p99 was
+12.0, 17.6 and 16.8 ms in the table above: a run of 300 frames has a slow
+pass or has none. Fed by a camera thread at 60 frames per second, which is
+the target as it is written, RGB8 is inside in all 20 runs of "The tail
+behind a camera" (p99 11.6 to 15.7 ms, at most 4 results of 600 late). NV12
+and YUYV are inside in most runs and not in every one: with the two threads
+bound to two cores p99 was below a frame period in 7 of 10 runs for NV12
+and in all 10 for YUYV (13.6 to 21.4 and 13.8 to 16.6 ms), not bound in 3
+and 4 of 5. What is missing is not in the pass: the worst result of five
+runs was 21.5 to 25.4 ms in every row, from the board's memory compaction
+and its other processes, and a format with 3 ms to spare is late two or
+three times after such a pass. So RGB8 meets the target; NV12 and YUYV
+meet it at the median and, on this board as it is, in most runs but not in
+all; a board that does neither of the two was not there to measure. On one
+thread a stream is not inside (17 to 20 ms) unless it is gated and the
+scene is mostly still: 5.4 to 5.9 ms, and 6.1 to 6.3 ms behind a camera at
+60 frames per second with p99 at most 7.7 ms. A gated stream on two
+threads whose every tile changes is at 12.6, 15.0 and 16.0 ms: inside for
+RGB8 and NV12, at the limit for YUYV. None of this is the device's network
+or a camera; see "Not covered".
 
 ```sh
 make DECKNET=1 bin/<target>/release/tools/bench_stream
 ~/bin/with-mac-lock bin/<target>/release/tools/bench_stream \
     [--frames N] [--threads 1|2] [--scene block|all|half|burst] \
-    [--only still|stream|gated] [--size 720|1080] [--camera FPS]
+    [--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace]
 ```
+
+### The tail behind a camera
+
+Fed by a camera at 60 frames per second, a stream on two threads has a few
+passes in 600 that take 17 to 36 ms where the median is 12 to 14, and
+they are what kept NV12 and YUYV from the target of #533 after its third
+step. The fourth step looked for where they come from, on the same
+Raspberry Pi 5 (Debian 13, kernel 6.18 with 16 KB pages; the board also
+runs other services, among them a metrics exporter and CI runner
+services). **They come from the board and not from the pass**, and of what
+a library can do about them only a faster pass and a word about binding
+are left.
+
+How: timers in the stream and the bench (not in the tree) recorded, for
+every frame, when it was offered, taken and done, when each thread began
+and ended its half of the conversion and of the slots and on which core,
+the process's page faults and context switches (`getrusage`), how long each
+thread ran and how long it waited for a core
+(`/proc/self/task/*/schedstat`), the frequency of the four cores, and the
+system's counters in `/proc/vmstat`. 44 runs of 600 frames in the three
+formats, threads not bound: 26 399 passes, of which 221 results (0.84 %)
+came later than a frame period. `tools/bench_stream --camera 60 --trace`
+prints the part of this that needs nothing in the library: each slow pass
+with the minor faults, the involuntary switches and the pages migrated
+since the pass before it.
+
+- **Memory compaction: 131 of the 221 late results (59 %).** While the bench
+  runs, the kernel's compaction thread migrates 160 to 1750 pages every
+  2.05 s (`pgmigrate_success` and `compact_isolated` in `/proc/vmstat`; 25
+  of the 32 gaps between two such moments in a run are multiples of 2.05 s;
+  on the idle board it was 9 pages in 10 s). `compact_stall` stays 0, so it
+  is not this process allocating, and `compact_daemon_wake` moved by 2
+  while dozens of such moments passed, so nothing woke the thread either:
+  it is the proactive compaction `kcompactd` does on its own timer, with
+  `vm.compaction_proactiveness` at its default of 20, on a board whose
+  4 GB are eight NUMA nodes of 512 MB (`numa=fake=8` on the kernel's
+  command line). The pages it moves are also the stream's. A pass that
+  runs meanwhile takes minor faults (5 at the median, 18 at most), each on
+  a page that is on its way, and waits for it; both threads are slow in
+  the same pass, and in 10 of the 68 passes during which pages were
+  migrated one of them also waited more than a millisecond for its core.
+  67 of the 68 took more than 1.5 ms longer than the median: 7.1 ms longer
+  at the median, 17 ms at most.
+- **Another process at work: 75 (34 %).** Three or four passes in a row
+  take 2 to 6 ms longer while the system counts 400 to 520 page faults that
+  are not the stream's within one frame period: a metrics exporter is
+  scraped every 30 s, another service is busy every few seconds. The
+  stream's threads mostly keep their cores (they wait 0.03 ms for one at
+  the median of these passes, 1.7 ms at most) and run slower: the four
+  cores share 2 MB of cache and the memory behind it, which is what a frame
+  is made of.
+- **Neither: 15 (7 %)**, after passes that were 1.5 to 5 ms slow.
+- **One slow pass makes several late results.** The next frame waits while
+  it finishes, and each pass after it catches up by what a pass is shorter
+  than the period: 2.3 ms for NV12 and YUYV, 4.4 ms for RGB8. A pass of
+  27 to 30 ms was followed by five late results in YUYV and by two in
+  RGB8. The queue of one drops nothing as long as one frame waits; it
+  gives late results for lost ones.
+
+What it is not, each of them measured: the frequency (all four cores at
+2400 MHz at every frame, governor `ondemand`); the temperature (below
+60 °C, `vcgencmd get_throttled` unchanged); a core taken away (0.1 to 0.3
+involuntary switches a frame; the wait for a core 0 at the median and
+0.08 ms at the 99th percentile of all passes); the second thread's
+wake-up (2 to 20 µs); the camera thread's timer (it offers 57 µs
+late at the median, and that is not in the latency); major faults (none);
+the bench's own frames (16 of them, 4 to 6 MB each, in `malloc` memory,
+which a camera does not hand out: with the frames in `/dev/dma_heap/system`,
+which is where capture buffers come from and which compaction does not
+move, three runs had 4, 0 and 31 late results against 7, 11 and 23; the
+stream's 14 MB of tables and its converted tiles are still moved).
+
+What was tried against it. `--camera 60 --frames 600`, two threads,
+1920 x 1080, five runs per row and format, the rows of a session in turn:
+the median of p50 in ms, the range of p99 over the five runs (its median
+in brackets), and the late results of 3000. "Bound" is
+`OMP_NUM_THREADS=2 OMP_PROC_BIND=true OMP_PLACES=cores taskset -c 2,3`:
+
+| | RGB8 | NV12 | YUYV |
+| :-- | --: | --: | --: |
+| first session: the third step's tree | 12.2, 12.8 to 22.0 (15.7), 20 late | 14.3, 16.2 to 21.2 (20.0), 48 late | 14.2, 14.8 to 18.0 (15.1), 18 late |
+| kernels by spans | 11.4, 11.8 to 13.2 (13.0), 4 late | 13.8, 14.3 to 20.1 (16.5), 28 late | 13.9, 14.4 to 19.9 (15.3), 13 late |
+| kernels by spans, `taskset -c 2,3` | 11.3, 11.7 to 15.7 (13.3), 10 late | 13.7, 15.7 to 18.1 (17.5), 29 late | 13.8, 14.2 to 15.5 (14.5), 12 late |
+| kernels by spans, bound | 11.2, 11.6 to 14.9 (12.5), 5 late | 13.1, 13.6 to 16.9 (15.7), 17 late | 13.3, 13.8 to 16.6 (14.3), 8 late |
+| second session: the third step's tree, bound | 11.6, 12.4 to 16.5 (14.2), 10 late | 14.2, 14.7 to 24.6 (15.6), 22 late | 14.4, 14.8 to 19.9 (15.2), 22 late |
+| kernels by spans, bound | 11.2, 11.7 to 13.8 (12.1), 9 late | 13.1, 13.6 to 21.4 (14.8), 37 late | 13.4, 14.0 to 16.4 (14.4), 8 late |
+
+No frame was dropped in any of these 90 runs, and the worst single result
+of each row was between 21.5 and 29.4 ms.
+
+- **Kernels by spans** (see "Integer crops") make the pass shorter, by 0.3
+  to 0.8 ms at the median here and by 1.0 ms for NV12 and YUYV once the
+  threads are bound, so a slow pass is caught up with sooner and a small
+  one fits. The median of p99 fell in five of the six comparisons (by 0.8
+  to 3.5 ms) and stayed in one. How many results are late is the board's
+  doing more than the pass's: 86 and then 45 of 9000 in the first session,
+  54 and 54 in the second.
+- **Binding the two threads to two cores**
+  (`OMP_NUM_THREADS=2 OMP_PROC_BIND=true OMP_PLACES=cores taskset -c 2,3`;
+  without `OMP_NUM_THREADS` the second thread is not used, see "Two
+  threads"): the median 0.2 to 0.7 ms lower in the first session, the tail
+  as before. `taskset` alone, which keeps the process on two cores and lets
+  the threads change places, changes nothing.
+- **`OMP_WAIT_POLICY=active`**: five runs with it had 80 late results of
+  9000, five without it in the session before 70. Nothing.
+- **Locking the memory** (`mlockall`) is not open to a process without
+  privileges here (8 MB may be locked), and would not keep compaction away
+  by itself: `vm.compact_unevictable_allowed` is 1. A real-time priority is
+  not open either, and no core was taken away in the first place.
+
+What `--trace` prints for such a run (YUYV, the tree as it is; three
+passes during a migration, and a group next to another process):
+
+```
+1920x1080  yuyv  stream  camera at 60.0 frames/s: 620 frames, 0 dropped (warm-up included), offer to result p50  13.621 ms   p99  19.247 ms   worst  26.970 ms, 8 later than a frame period
+    frame  286 at  4.433 s: pass  19.18 ms after  0.02 ms in the queue, 3 minor faults, 0 involuntary switches, 372 pages migrated
+    frame  314 at  4.900 s: pass  15.70 ms after  0.03 ms in the queue, 0 minor faults, 0 involuntary switches, 0 pages migrated
+    frame  315 at  4.917 s: pass  15.72 ms after  0.01 ms in the queue, 0 minor faults, 0 involuntary switches, 0 pages migrated
+    frame  316 at  4.933 s: pass  16.41 ms after  0.02 ms in the queue, 0 minor faults, 0 involuntary switches, 0 pages migrated
+    frame  317 at  4.950 s: pass  15.97 ms after  0.10 ms in the queue, 0 minor faults, 0 involuntary switches, 0 pages migrated
+    frame  409 at  6.483 s: pass  25.27 ms after  0.09 ms in the queue, 10 minor faults, 0 involuntary switches, 935 pages migrated
+    frame  423 at  6.717 s: pass  15.10 ms after  0.06 ms in the queue, 0 minor faults, 0 involuntary switches, 0 pages migrated
+    frame  532 at  8.533 s: pass  26.88 ms after  0.09 ms in the queue, 6 minor faults, 2 involuntary switches, 1214 pages migrated
+    8 of 600 passes took more than 1.1 x the median 13.56 ms: 3 while the kernel migrated pages, 3 with minor faults of this process
+```
+
+The board's settings were not touched (it is shared), so what follows is
+read from the counters and not measured: `vm.compaction_proactiveness=0`
+is the setting that turns the proactive compaction off, which is behind
+59 % of the late results; `mlockall` with
+`vm.compact_unevictable_allowed=0` would keep the stream's pages where
+they are whatever else starts a compaction. The second group goes with
+the other services. A camera whose scene mostly stands still has the
+margin anyway: gated, a frame is 5 ms.
 
 ### Not covered
 
@@ -569,18 +719,18 @@ make DECKNET=1 bin/<target>/release/tools/bench_stream
   captures, what wakes the thread that computes and the buffers of the
   camera are the caller's. No camera was connected: the bench's "camera" is
   a thread with a clock.
-- **The slow passes.** Behind a camera at 60 frames per second a few passes
-  in 600 take 17 to 36 ms where the median is 14, and they are what keeps
-  NV12 and YUYV from the target. Not looked into: which core a thread runs
-  on, what else the board does, the frequency governor.
+- **A board of its own.** The slow passes behind a camera come from memory
+  compaction and from the board's other processes (see "The tail behind a
+  camera"). The board is shared, so its settings stayed as they are: no run
+  with `vm.compaction_proactiveness=0`, with locked memory, with isolated
+  cores or without the other services.
 - **A GPU path.** Not looked at.
-- **Integral images and separable kernels.** A kernel is summed per distinct
-  weight, tap by tap. For a disc or ring kernel that is integer additions
-  only, but as many as the kernel has taps: 5.9 ms of a 19 ms frame for the
-  bench's 9 x 9 kernel, now as much as the sampling was. The sum over the
-  weight with the most taps is the sum over the whole window less the
-  others, and the window is a few differences of row sums; that would be
-  the same integers. Not measured.
+- **More of the kernels.** A stream sums a row of equal weights from two
+  prefix sums: 38 reads instead of 81 for the bench's 9 x 9 kernel. The
+  weight with the most taps could be the whole window less the others (28
+  reads); sums down the columns as well (an integral image) would make a
+  rectangle four reads, which a disc is not; and the still path and a gated
+  stream's kept crops still sum tap by tap. None of it measured.
 - **8-bit crops and dot-product instructions.** #533 proposed u8 inputs with
   16- and 32-bit accumulators and SDOT. A crop pixel rounded to 8 bits is up
   to 2e-3 of the range away from the reference's F32 pixel, and behind the
@@ -597,8 +747,11 @@ make DECKNET=1 bin/<target>/release/tools/bench_stream
   cannot be much smaller than its 16 bytes.
 - **The conversion of NV12 and YUYV** is 2.6 and 3.1 ms of a frame, 1.8 and
   2.0 ms of wall time on two threads, in a region of its own before the
-  slots'. Converting the tiles of a slot on the thread that samples them was
-  not tried.
+  slots'. The region itself costs nothing that shows (the second thread is
+  in it 2 to 8 µs after the first), so converting the tiles of a slot on
+  the thread that samples them would save no waiting; whether tiles that
+  are sampled right after they are converted are cheaper to sample was not
+  tried.
 - **The whole-frame rule per slot.** A gated frame is computed whole when
   7 of 8 of all its tiles changed. A frame in which one slot changes all
   over and the others stand still is computed from the caches, that slot
@@ -712,6 +865,21 @@ the still path and a stream alike:
   operations and in the order one row took before; its `relu` selects
   instead of branching. Its values are the bits they were.
 
+- **A stream sums a row of equal weights from two prefix sums.** The loader
+  also writes each part of a kernel as spans, the neighbours of one kernel
+  row (`decknet_kernel.span`), and keeps them where the kernel has at least
+  three taps per span: a 9 x 9 kernel of a disc and a rim is 19 spans for 81
+  taps. A stream that samples a plane whole writes, per run of crop pixels
+  the plane reads, the sum of the run's pixels before each pixel instead of
+  the pixel (`decknet_work.prefix`; in 32 bits that wrap, in the buffer the
+  crop would take), and a span's sum is the difference of two of them: the
+  integer the taps give, since the sum itself fits 32 bits. A pixel is the
+  difference of the two around it, which is what the taps at the crop's
+  edge and the white unit read. The still path and a gated stream's kept
+  crops stay pixels, summed tap by tap, so the parity tests compare the two
+  ways with each other. A kernel whose weights are all different has no
+  spans, and nothing changes for it.
+
 What that buys: an integer sum needs no order, so the compiler's vector
 types can carry it (`run.c` uses GCC/Clang vector types, no intrinsics and
 no `#if`: the same source on every target, and a target without vectors
@@ -728,8 +896,8 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
 
 - `src/archs/decknet/load.c`: the file contract, `run.c`: the pass,
   `stream.c`: the same pass fed from a camera stream (sample tables, region
-  of interest, tiles, frame formats, gating, the second thread, the queue
-  of one). One
+  of interest, tiles, frame formats, gating, prefix sums for the kernels,
+  the second thread, the queue of one). One
   implementation in portable C, built without `-ffast-math` and without
   contraction. Its vectors are the compiler's (vector types for a crop pixel,
   for the sample that computes one and for four rows of the 1x1 layer,
@@ -753,7 +921,7 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
 | `tests/test_decknet_unit.c` | every output of every slot against the numpy reference, within 1e-4, on an invented network everywhere and on the device's network where its fixture exists; replaced homographies; a pair that is not checkable; no allocation per call, the first included; `geist_model_load` refuses the file |
 | `tests/test_decknet_malformed_unit.c` | 54 broken files, each refused with the expected status and message; every truncation; every allocation of a load failing once; units computed by hand (kernel orientation, pooling); argument checks |
 | `tests/fuzz_decknet.c` | the loader, and the forward pass on whatever the loader accepts, under libFuzzer and a deterministic driver |
-| `tests/test_decknet_stream_unit.c` | a stream against the still path, every output bit for bit: RGB8, NV12 and YUYV, padded rows, replaced homographies, across a frame that is not checkable, on one thread and on two; NV12 and YUYV frames of arbitrary bytes (the conversion over its whole range); a gated stream against the still path on the image of its kept tiles, which the test builds with its own tiles and its own sum of absolute differences, at threshold 0 and above it; gating at its edges (a kernel window across a cell of the crop, a tile exactly at the threshold and one above it, each tile changed on its own, one sample at a time across a seam of the sample tables, a frame that is not checkable between two that are); the fixed-point sample itself (weights that never exceed the whole, a flat image sampled to itself, any four bytes to within 2/65536 of the exact value) and a kernel whose pixel sum passes 32 bits; no allocation after the create and the first `set_gate`, the first frame included, the queue's calls among them; 227 frame descriptions refused, exact-fit frames accepted; samples at the last pixels of a frame with 0 to 20 bytes behind it; the queue of one, step by step on one thread, with a consumer that takes one pass per three offers of a second thread, and with that thread offering without waiting (every frame comes back once, dropped or computed, the computed ones in order and with the bits of `push_frame`); state and argument checks; every allocation of a create and of a `set_gate` failing once. The gating tests assert which frames were computed from what was kept (they sample less than a whole frame) |
+| `tests/test_decknet_stream_unit.c` | a stream against the still path, every output bit for bit: RGB8, NV12 and YUYV, padded rows, replaced homographies, across a frame that is not checkable, on one thread and on two; NV12 and YUYV frames of arbitrary bytes (the conversion over its whole range); a gated stream against the still path on the image of its kept tiles, which the test builds with its own tiles and its own sum of absolute differences, at threshold 0 and above it; gating at its edges (a kernel window across a cell of the crop, a tile exactly at the threshold and one above it, each tile changed on its own, one sample at a time across a seam of the sample tables, a frame that is not checkable between two that are); kernels with spans, which a stream sums from prefix sums and the still path tap by tap, at the corners and edges of a crop, one pixel inside them and in the middle, on one thread and two, and in a gated stream that goes both ways; the fixed-point sample itself (weights that never exceed the whole, a flat image sampled to itself, any four bytes to within 2/65536 of the exact value) and a kernel whose pixel sum passes 32 bits; no allocation after the create and the first `set_gate`, the first frame included, the queue's calls among them; 227 frame descriptions refused, exact-fit frames accepted; samples at the last pixels of a frame with 0 to 20 bytes behind it; the queue of one, step by step on one thread, with a consumer that takes one pass per three offers of a second thread, and with that thread offering without waiting (every frame comes back once, dropped or computed, the computed ones in order and with the bits of `push_frame`); state and argument checks; every allocation of a create and of a `set_gate` failing once. The gating tests assert which frames were computed from what was kept (they sample less than a whole frame) |
 | `tests/fuzz_decknet_stream.c` | frame geometry (format, size, stride, extent) and homographies from the input, on exact-size buffers; the harness decides for itself whether a frame fits and fails on a wrong verdict, not only on a crash. And gating: four frames (one, the same again, two with bytes changed) through a gated stream and one without, which have to agree in every bit at threshold 0, and the same frame twice has to give one result at any threshold. And the queue of one: every description goes through an offer as well, which has to give the verdict of a push, queue nothing it refuses and hand back the frame it replaces |
 
 `test_decknet_unit` compares against the numpy reference on two fixtures of
