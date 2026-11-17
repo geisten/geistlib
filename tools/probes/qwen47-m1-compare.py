@@ -9,7 +9,7 @@ def read_hashes(file):
     return {int(pos): digest for pos, digest in map(str.split, file.read_text().splitlines())}
 
 
-def compare(output, expected_v, expected_logits, name, vectors):
+def compare(output, expected_v, expected_logits, name, vectors, expected_k):
     hashes = {}
     for line in (output / f"{name}.txt").read_text().splitlines():
         cols = line.split()
@@ -22,24 +22,32 @@ def compare(output, expected_v, expected_logits, name, vectors):
         raise ValueError(f"incomplete {name} logit trace")
     matches = sum(hashes[pos] == digest for pos, digest in expected_logits.items())
     print(f"{name} logits: {matches}/{len(expected_logits)} exact hashes")
-    v_matches = 0
+    v_matches = k_matches = 0
     for pos, digest in expected_v.items():
         data = (output / vectors / f"{pos}-dn_qkv_after.f32").read_bytes()
         if len(data) != 6144 * 4:
-            raise ValueError(f"invalid {name} V trace")
-        match = hashlib.sha256(data[4096 * 4:]).hexdigest() == digest
-        v_matches += match
-        print(f"{name} V at token {pos}: {'exact' if match else 'different'}")
-    return matches == len(expected_logits) and v_matches == len(expected_v)
+            raise ValueError(f"invalid {name} QKV trace")
+        v_match = hashlib.sha256(data[4096 * 4:]).hexdigest() == digest
+        v_matches += v_match
+        print(f"{name} V at token {pos}: {'exact' if v_match else 'different'}")
+        if pos in expected_k:
+            k_match = hashlib.sha256(data[2048 * 4:4096 * 4]).hexdigest() == expected_k[pos]
+            k_matches += k_match
+            print(f"{name} K at token {pos}: {'exact' if k_match else 'different'}")
+    return (matches == len(expected_logits) and
+            v_matches == len(expected_v) and k_matches == len(expected_k))
 
 
-def main(diag, output):
+def main(diag, output, beta_k=False):
     expected_v = read_hashes(diag / "qwen47-m1-v.txt")
     expected_logits = read_hashes(diag / "qwen47-m1-logits.txt")
     if set(expected_v) != {0, 90} or set(expected_logits) != set(range(91)):
         raise ValueError("incomplete M1 reference hashes")
-    compare(output, expected_v, expected_logits, "default", "default-vectors")
-    if compare(output, expected_v, expected_logits, "calibrated", "calibrated-vectors"):
+    expected_k = read_hashes(diag / "qwen47-m1-k.txt") if beta_k else {}
+    if beta_k and set(expected_k) != {0, 90}:
+        raise ValueError("incomplete M1 K reference hashes")
+    compare(output, expected_v, expected_logits, "default", "default-vectors", expected_k)
+    if compare(output, expected_v, expected_logits, "calibrated", "calibrated-vectors", expected_k):
         print("Case 47 prompt parity passed")
         return 0
     print("Case 47 prompt parity failed")
@@ -47,4 +55,4 @@ def main(diag, output):
 
 
 if __name__ == "__main__":
-    sys.exit(main(Path(sys.argv[1]), Path(sys.argv[2])))
+    sys.exit(main(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3:] == ["m1-beta-k"]))

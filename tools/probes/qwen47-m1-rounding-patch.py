@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind the calibrated SiLU arithmetic in a scratch copy of the frozen engine."""
+"""Bind the calibrated DeltaNet arithmetic in a scratch copy of the frozen engine."""
 import json
 from pathlib import Path
 import sys
@@ -18,7 +18,7 @@ def update(file, *edits):
     file.write_text(text)
 
 
-def patch(engine, probe):
+def patch(engine, probe, beta_k=False):
     metal = engine / "src/backends/metal"
     for basename in ("qwen-m1-rounding.h", "qwen-m1-rounding-io.h", "qwen47-m1-rounding-metal.h"):
         (metal / basename).write_bytes((probe / basename).read_bytes())
@@ -46,6 +46,8 @@ def patch(engine, probe):
          '        return GEIST_E_BACKEND;\n'
          '    }'),
     )
+    if beta_k:
+        additional_buffers(metal)
     ops = metal / "ops.c"
     original = ops.read_text()
     start = original.index("metal_deltanet_mix(struct geist_backend *be,")
@@ -81,6 +83,11 @@ def patch(engine, probe):
         "    }\n"
         "    struct metal_deltanet_params params = ",
     )
+    if beta_k:
+        marker = "        metal_msg_send_set_buffer(st, enc, st->q1_rcp, 0, 15);"
+        mixer = once(mixer, marker, marker + "\n"
+            "        metal_msg_send_set_buffer(st, enc, st->q1_beta_neg, 0, 16);\n"
+            "        metal_msg_send_set_buffer(st, enc, st->q1_rsqrt, 0, 17);")
     ops.write_text(original[:start] + mixer + original[end:])
 
     shader = metal / "metal_shaders.h"
@@ -118,15 +125,73 @@ inline float q1_silu(float x, device const uint *exp_m1, device const uint *rcp_
     split = '        "kernel void dn_dec_v('
     decode = once(decode, split, '        "";\n\n'
                   'static const char metal_dn_decode_v_source[] =\n' + split)
+    sources = ["metal_dn_m1_rounding_source"]
+    if beta_k:
+        decode = beta_k_decode(decode)
+        additional = (probe / "qwen-m1-deltanet.h").read_text()
+        additional = once(additional, '#include "qwen-m1-rounding.h"', "")
+        additional = once(additional, '#include "qwen-m1-rsqrt-source.h"',
+                          (probe / "qwen-m1-rsqrt-source.h").read_text())
+        additional += """
+inline float q1_beta(float x, device const uint *exp_m1, device const uint *rcp_m1,
+                     device const uint *beta_neg_m1) {
+    const uint key = as_type<uint>(x);
+    const uint magnitude = key & 0x7fffffffu;
+    if (key >> 31)
+        return as_type<float>(q1_beta_neg_bits(magnitude, beta_neg_m1));
+    const float e = as_type<float>(q1_exp_bits(magnitude, exp_m1));
+    return as_type<float>(q1_lookup(as_type<uint>(1.0f + e), rcp_m1));
+}
+"""
+        literal = "".join(f"        {json.dumps(line)}\n" for line in additional.splitlines(keepends=True))
+        helper_source += "static const char metal_dn_m1_beta_k_source[] =\n" + literal.rstrip() + ";\n\n"
+        sources.append("metal_dn_m1_beta_k_source")
     shader.write_text(source[:start] + helper_source + decode + source[end:])
     update(
         metal / "pipelines.c",
         ("                  metal_dn_decode_source,",
-         "                  metal_dn_m1_rounding_source,\n"
-         "                  metal_dn_decode_source,\n"
-         "                  metal_dn_decode_v_source,"),
+         "".join(f"                  {name},\n" for name in sources)
+         + "                  metal_dn_decode_source,\n"
+         + "                  metal_dn_decode_v_source,"),
     )
 
 
+def additional_buffers(metal):
+    update(
+        metal / "metal_internal.h",
+        ("    struct metal_buffer_h *q1_rcp;",
+         "    struct metal_buffer_h *q1_rcp;\n"
+         "    struct metal_buffer_h *q1_beta_neg;\n"
+         "    struct metal_buffer_h *q1_rsqrt;"),
+    )
+    update(
+        metal / "lifecycle.c",
+        ('        metal_msg_send_void0(st, st->q1_rcp, "release");',
+         '        metal_msg_send_void0(st, st->q1_rcp, "release");\n'
+         '        metal_msg_send_void0(st, st->q1_beta_neg, "release");\n'
+         '        metal_msg_send_void0(st, st->q1_rsqrt, "release");'),
+        ('getenv("QWEN47_M1_RCP"), &st->q1_rcp, st)) {',
+         'getenv("QWEN47_M1_RCP"), &st->q1_rcp, st) ||\n'
+         '        !q1_load_buffer(Q1_EXP_FIRST, Q1_EXP_LAST, getenv("QWEN47_M1_BETA_NEG"), &st->q1_beta_neg, st) ||\n'
+         '        !q1_load_buffer(0x3f800000u, 0x407fffffu, getenv("QWEN47_M1_RSQRT"), &st->q1_rsqrt, st)) {'),
+    )
+
+
+def beta_k_decode(decode):
+    start = decode.index("static const char metal_dn_decode_v_source[]")
+    qk = decode[:start]
+    v = decode[start:]
+    marker = 'device const uint*rcp_m1[[buffer(15)]],"'
+    qk = once(qk, marker, marker + '\n        "device const uint*rsqrt_m1[[buffer(17)]],"')
+    v = once(v, marker, marker + '\n        "device const uint*beta_neg_m1[[buffer(16)]],"')
+    qk = once(qk, "float ki=rsqrt(red[0]+p.eps);",
+              "float ki=as_type<float>(q1_rsqrt_bits(as_type<uint>(red[0]+p.eps),rsqrt_m1));")
+    v = once(v, "float be=1.0f/(1.0f+exp(-beta[p.bo+h]));",
+             "float be=q1_beta(beta[p.bo+h],exp_m1,rcp_m1,beta_neg_m1);")
+    return qk + v
+
+
 if __name__ == "__main__":
-    patch(Path(sys.argv[1]), Path(__file__).resolve().parent)
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "m1-beta-k"):
+        sys.exit("usage: qwen47-m1-rounding-patch.py ENGINE [m1-beta-k]")
+    patch(Path(sys.argv[1]), Path(__file__).resolve().parent, beta_k=len(sys.argv) == 3)

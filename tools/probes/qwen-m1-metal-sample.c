@@ -1,3 +1,4 @@
+#include "qwen-m1-rsqrt-source.h"
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <stdint.h>
@@ -38,7 +39,18 @@ static const char *shader =
         "float x=as_type<float>(i+first);out[i]=as_type<uint>(exp(-fabs(x)));}\n"
         "kernel void rcp_bits(constant uint &first [[buffer(0)]],device uint *out "
         "[[buffer(1)]],uint i [[thread_position_in_grid]]){"
-        "float x=as_type<float>(i+first);out[i]=as_type<uint>(1.0f/x);}\n";
+        "float x=as_type<float>(i+first);out[i]=as_type<uint>(1.0f/x);}\n"
+        "\n" Q1_RSQRT_SHADER
+        "kernel void beta_neg_bits(constant uint &first [[buffer(0)]],device uint *out "
+        "[[buffer(1)]],uint i [[thread_position_in_grid]]){"
+        "float x=as_type<float>(i+first);out[i]=as_type<uint>(1.0f/(1.0f+exp(x)));}\n"
+        "kernel void rsqrt_bits(constant uint &first [[buffer(0)]],device uint *out "
+        "[[buffer(1)]],uint i [[thread_position_in_grid]]){"
+        "out[i]=as_type<uint>(rsqrt(as_type<float>(i+first)));}\n"
+        "kernel void rsqrt_scale(constant uint &first [[buffer(0)]],device uint *out "
+        "[[buffer(1)]],uint i [[thread_position_in_grid]]){uint x=i+first;"
+        "uint y=as_type<uint>(rsqrt(as_type<float>(q1_rsqrt_key(x))));"
+        "out[i]=as_type<uint>(rsqrt(as_type<float>(x)))^q1_rsqrt_scale(x,y);}\n";
 
 static bool arg_bits(const char *s, uint32_t *value) {
     char               *end;
@@ -53,15 +65,24 @@ int main(int argc, char **argv) {
     uint32_t first, last;
     if (argc != 5 || !arg_bits(argv[2], &first) || !arg_bits(argv[3], &last) || last < first)
         return 2;
-    const bool check_constant = !strcmp(argv[1], "check-exp");
+    const bool check_exp      = !strcmp(argv[1], "check-exp");
+    const bool check_beta     = !strcmp(argv[1], "check-beta-neg");
+    const bool check_rsqrt    = !strcmp(argv[1], "check-rsqrt-scale");
+    const bool check_constant = check_exp || check_beta || check_rsqrt;
     uint32_t   expected       = 0;
     if (check_constant && !arg_bits(argv[4], &expected))
         return 2;
     const char *kernel;
-    if (check_constant || !strcmp(argv[1], "exp"))
+    if (check_exp || !strcmp(argv[1], "exp"))
         kernel = "exp_bits";
     else if (!strcmp(argv[1], "rcp"))
         kernel = "rcp_bits";
+    else if (check_beta || !strcmp(argv[1], "beta-neg"))
+        kernel = "beta_neg_bits";
+    else if (!strcmp(argv[1], "rsqrt"))
+        kernel = "rsqrt_bits";
+    else if (check_rsqrt)
+        kernel = "rsqrt_scale";
     else
         return 2;
     FILE *target = (check_constant || !strcmp(argv[4], "-")) ? stdout : fopen(argv[4], "wb");

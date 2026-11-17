@@ -1,4 +1,5 @@
 #include "qwen-m1-rounding-io.h"
+#include "qwen-m1-deltanet.h"
 #include <float.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -199,6 +200,63 @@ static bool verify(FILE *source, FILE *table) {
     return true;
 }
 
+static bool check_deltanet(const char *const paths[static 4], const char *fixture) {
+    const uint32_t starts[] = {Q1_EXP_FIRST, Q1_RCP_FIRST, Q1_EXP_FIRST, Q1_RSQRT_FIRST};
+    const uint32_t ends[]   = {Q1_EXP_LAST, Q1_RCP_LAST, Q1_EXP_LAST, Q1_RSQRT_LAST};
+    enum { exp_idx, rcp_idx, beta_idx, rsqrt_idx, table_count };
+    uint32_t *table[table_count] = {0};
+    bool      ok                 = true;
+    for (size_t i = 0; ok && i < table_count; i++) {
+        FILE  *file = fopen(paths[i], "rb");
+        size_t count;
+        if (file == nullptr) {
+            ok = false;
+        } else {
+            table[i] = read_table(&count, file);
+            ok       = table[i] && table[i][2] == starts[i] && table[i][3] == ends[i];
+            fclose(file);
+        }
+    }
+    FILE  *ref          = fopen(fixture, "r");
+    size_t beta_matches = 0, rsqrt_matches = 0, rows = 0;
+    if (ok && ref != nullptr) {
+        uint32_t beta_input, beta_gold, rsqrt_input, rsqrt_gold;
+        int      fields;
+        while ((fields = fscanf(ref,
+                                "%" SCNx32 " %" SCNx32 " %" SCNx32 " %" SCNx32,
+                                &beta_input,
+                                &beta_gold,
+                                &rsqrt_input,
+                                &rsqrt_gold)) == 4) {
+            const uint32_t magnitude = beta_input & 0x7fffffffu;
+            uint32_t       beta;
+            if (beta_input >> 31) {
+                beta = q1_beta_neg_bits(magnitude, table[beta_idx]);
+            } else {
+                const float e = value(q1_exp_bits(magnitude, table[exp_idx]));
+                beta          = q1_lookup(bits(1.0f + e), table[rcp_idx]);
+            }
+            beta_matches += beta == beta_gold;
+            rsqrt_matches += q1_rsqrt_bits(rsqrt_input, table[rsqrt_idx]) == rsqrt_gold;
+            rows++;
+        }
+        ok = fields == EOF && !ferror(ref) && rows == 16 && beta_matches == rows &&
+             rsqrt_matches == rows;
+        printf("Archived beta %zu/%zu exact, K factors %zu/%zu exact\n",
+               beta_matches,
+               rows,
+               rsqrt_matches,
+               rows);
+    } else {
+        ok = false;
+    }
+    if (ref != nullptr)
+        fclose(ref);
+    for (size_t i = 0; i < table_count; i++)
+        free(table[i]);
+    return ok;
+}
+
 int main(int argc, char **argv) {
     bool ok = false;
     if (argc == 6 && !strcmp(argv[1], "encode")) {
@@ -245,12 +303,16 @@ int main(int argc, char **argv) {
             fclose(inputs);
         if (reference)
             fclose(reference);
+    } else if (argc == 7 && !strcmp(argv[1], "check-deltanet")) {
+        const char *paths[4] = {argv[2], argv[3], argv[4], argv[5]};
+        ok                   = check_deltanet(paths, argv[6]);
     } else {
         fputs("Usage: qwen-m1-rounding encode first-hex last-hex raw-u32 table\n"
               "       qwen-m1-rounding verify raw-u32 table\n"
               "       qwen-m1-rounding check table input-u32 expected-u32\n"
               "       qwen-m1-rounding check-silu exp-table rcp-table input-f32 "
-              "expected-f32\n",
+              "expected-f32\n"
+              "       qwen-m1-rounding check-deltanet exp rcp beta-neg rsqrt reference.txt\n",
               stderr);
         return 2;
     }
