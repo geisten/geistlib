@@ -18,7 +18,8 @@ def update(file, *edits):
     file.write_text(text)
 
 
-def patch(engine, probe, beta_k=False):
+def patch(engine, probe, experiment="m1-silu"):
+    beta_k = experiment != "m1-silu"
     metal = engine / "src/backends/metal"
     for basename in ("qwen-m1-rounding.h", "qwen-m1-rounding-io.h", "qwen47-m1-rounding-metal.h"):
         (metal / basename).write_bytes((probe / basename).read_bytes())
@@ -146,6 +147,16 @@ inline float q1_beta(float x, device const uint *exp_m1, device const uint *rcp_
         literal = "".join(f"        {json.dumps(line)}\n" for line in additional.splitlines(keepends=True))
         helper_source += "static const char metal_dn_m1_beta_k_source[] =\n" + literal.rstrip() + ";\n\n"
         sources.append("metal_dn_m1_beta_k_source")
+    if experiment == "m1-state":
+        decode = once(decode, '"float d=(vv[j]-mem)*be;float op=0.0f;"',
+                      '"float residual=vv[j]-mem;float op=0.0f;"')
+        decode = once(decode, "float sv=S[si]*decay+tk[i]*d;",
+                      "float sv=q1_state_update(tk[i],residual,be,S[si],decay);")
+        update_source = (probe / "qwen-m1-state-update.h").read_text()
+        literal = "".join(f"        {json.dumps(line)}\n"
+                          for line in update_source.splitlines(keepends=True))
+        helper_source += "static const char metal_dn_m1_state_source[] =\n" + literal.rstrip() + ";\n\n"
+        sources.append("metal_dn_m1_state_source")
     shader.write_text(source[:start] + helper_source + decode + source[end:])
     update(
         metal / "pipelines.c",
@@ -192,6 +203,6 @@ def beta_k_decode(decode):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] != "m1-beta-k"):
-        sys.exit("usage: qwen47-m1-rounding-patch.py ENGINE [m1-beta-k]")
-    patch(Path(sys.argv[1]), Path(__file__).resolve().parent, beta_k=len(sys.argv) == 3)
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("m1-beta-k", "m1-state")):
+        sys.exit("usage: qwen47-m1-rounding-patch.py ENGINE [m1-beta-k|m1-state]")
+    patch(Path(sys.argv[1]), Path(__file__).resolve().parent, *sys.argv[2:])
