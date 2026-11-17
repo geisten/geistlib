@@ -1,4 +1,4 @@
-name: Verify M1 FP32 SiLU rounding in the M6 case 47 replay
+name: Verify M1 DeltaNet rounding in the M6 case 47 replay
 
 on:
   workflow_dispatch:
@@ -14,18 +14,32 @@ jobs:
   calibrate:
     if: github.ref == 'refs/heads/main'
     runs-on: apple-m1max
-    timeout-minutes: 8
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Calibrate the M1 exp and reciprocal
+      - name: Calibrate M1 SiLU, beta sigmoid, and reciprocal square root
         run: /bin/sh tools/probes/qwen47-m1-calibrate.sh "$RUNNER_TEMP/qwen47-calibration"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: qwen47-calibration
-          path: ${{ runner.temp }}/qwen47-calibration/
+          path: |
+            ${{ runner.temp }}/qwen47-calibration/exp.qm1
+            ${{ runner.temp }}/qwen47-calibration/rcp.qm1
+            ${{ runner.temp }}/qwen47-calibration/source-platform.txt
+            ${{ runner.temp }}/qwen47-calibration/checksums.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qwen47-beta-k-calibration
+          path: |
+            ${{ runner.temp }}/qwen47-calibration/beta-neg.qm1
+            ${{ runner.temp }}/qwen47-calibration/rsqrt.qm1
+            ${{ runner.temp }}/qwen47-calibration/beta-k-checksums.txt
           if-no-files-found: error
           retention-days: 14
           compression-level: 1
@@ -43,10 +57,14 @@ jobs:
         with:
           name: qwen47-calibration
           path: ${{ runner.temp }}/qwen47-calibration/
-      - name: Replay the frozen baseline prompt with the calibrated SiLU
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: qwen47-beta-k-calibration
+          path: ${{ runner.temp }}/qwen47-calibration/
+      - name: Replay the frozen baseline prompt with calibrated SiLU, beta, and K
         run: >-
           /bin/sh tools/probes/qwen47-prefix.sh
-          "$RUNNER_TEMP/qwen47-rounding" m1-silu "$RUNNER_TEMP/qwen47-calibration"
+          "$RUNNER_TEMP/qwen47-rounding" m1-beta-k "$RUNNER_TEMP/qwen47-calibration"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
