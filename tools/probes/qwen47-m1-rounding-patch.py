@@ -147,7 +147,7 @@ inline float q1_beta(float x, device const uint *exp_m1, device const uint *rcp_
         literal = "".join(f"        {json.dumps(line)}\n" for line in additional.splitlines(keepends=True))
         helper_source += "static const char metal_dn_m1_beta_k_source[] =\n" + literal.rstrip() + ";\n\n"
         sources.append("metal_dn_m1_beta_k_source")
-    if experiment == "m1-state":
+    if experiment in ("m1-state", "m1-output"):
         decode = once(decode, '"float d=(vv[j]-mem)*be;float op=0.0f;"',
                       '"float residual=vv[j]-mem;float op=0.0f;"')
         decode = once(decode, "float sv=S[si]*decay+tk[i]*d;",
@@ -157,6 +157,24 @@ inline float q1_beta(float x, device const uint *exp_m1, device const uint *rcp_
                           for line in update_source.splitlines(keepends=True))
         helper_source += "static const char metal_dn_m1_state_source[] =\n" + literal.rstrip() + ";\n\n"
         sources.append("metal_dn_m1_state_source")
+    if experiment == "m1-output":
+        v_start = decode.index("static const char metal_dn_decode_v_source[]")
+        v = decode[v_start:]
+        beta_binding = 'device const uint*beta_neg_m1[[buffer(16)]],"'
+        v = once(v, beta_binding, beta_binding +
+                 '\n        "device const uint*rsqrt_m1[[buffer(17)]],"')
+        v = once(v, "float inv=rsqrt(ss/float(p.dv)+p.eps);",
+                 "float inv=as_type<float>(q1_rsqrt_bits(as_type<uint>(ss/float(p.dv)+p.eps),rsqrt_m1));")
+        v = once(v, "z[p.zo+h*p.dv+j]=out*inv*nw[p.no+j]*q1_silu(gate,exp_m1,rcp_m1);",
+                 "float e=as_type<float>(q1_exp_bits(as_type<uint>(gate)&0x7fffffffu,exp_m1));"
+                 "float r=as_type<float>(q1_lookup(as_type<uint>(1.0f+e),rcp_m1));"
+                 "z[p.zo+h*p.dv+j]=q1_deltanet_output(out,inv,nw[p.no+j],gate,e,r);")
+        decode = decode[:v_start] + v
+        output_source = (probe / "qwen-m1-deltanet-output.h").read_text()
+        literal = "".join(f"        {json.dumps(line)}\n"
+                          for line in output_source.splitlines(keepends=True))
+        helper_source += "static const char metal_dn_m1_output_source[] =\n" + literal.rstrip() + ";\n\n"
+        sources.append("metal_dn_m1_output_source")
     shader.write_text(source[:start] + helper_source + decode + source[end:])
     update(
         metal / "pipelines.c",
@@ -203,6 +221,6 @@ def beta_k_decode(decode):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("m1-beta-k", "m1-state")):
-        sys.exit("usage: qwen47-m1-rounding-patch.py ENGINE [m1-beta-k|m1-state]")
+    if len(sys.argv) not in (2, 3) or (len(sys.argv) == 3 and sys.argv[2] not in ("m1-beta-k", "m1-state", "m1-output")):
+        sys.exit("usage: qwen47-m1-rounding-patch.py ENGINE [m1-beta-k|m1-state|m1-output]")
     patch(Path(sys.argv[1]), Path(__file__).resolve().parent, *sys.argv[2:])
