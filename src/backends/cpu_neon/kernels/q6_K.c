@@ -1160,8 +1160,10 @@ struct q6k_stream4_job {
  * transposed into 4 k-groups of [row0..3][4 bytes], so one
  * vdotq_laneq_s32 adds a token's 4-byte k-group to all four rows; eight
  * tokens give eight independent chains. The int32 subblock sums are the
- * scalar-reduction kernel's; the float epilogue keeps its order per output,
- * (x_scale * ds) * dot accumulated over subblocks, up to contraction. */
+ * scalar-reduction kernel's; the float epilogue is kq_epi_dsx per lane,
+ * fma(ds * x_scale, dot, acc) over the subblocks, as the 4-token tile and
+ * the token tail of q6k_stream4_tiles spell it: a token's bits do not
+ * depend on which of the three took it (#554). */
 static void q6k_stream_sdot_tile4x8(const struct q6k_stream4_job       *job,
                                     const struct q6k_predecode_stream4 *tile,
                                     size_t                              mt,
@@ -1198,7 +1200,8 @@ static void q6k_stream_sdot_tile4x8(const struct q6k_stream4_job       *job,
                 acc                 = vdotq_laneq_s32(acc, w1, a, 1);
                 acc                 = vdotq_laneq_s32(acc, w2, a, 2);
                 acc                 = vdotq_laneq_s32(acc, w3, a, 3);
-                yacc[t] = vmlaq_f32(yacc[t], vmulq_n_f32(dsv, sx[t]), vcvtq_f32_s32(acc));
+                /* kq_epi_dsx per lane: the 4-token tile's and the tail's bits. */
+                yacc[t] = vfmaq_f32(yacc[t], vmulq_n_f32(dsv, sx[t]), vcvtq_f32_s32(acc));
             }
         }
     }
@@ -1248,16 +1251,16 @@ static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
                     const int8_t *xb3    = x_q8 + (mt + 3) * n_in + xb_off;
 
 /* A macro, not a function (#348): it adds into the caller's named accumulators. */
-#define Q6K_STREAM4_ACC(NR, A0, A1, A2, A3)                  \
-    do {                                                     \
-        if ((NR) < valid_nr) {                               \
-            const int8x16_t qv = vld1q_s8(blk->qs[is][NR]);  \
-            const float     ds = blk->ds[is][NR];            \
-            (A0) += sx0[b] * ds * (float) dot16_i8(xb0, qv); \
-            (A1) += sx1[b] * ds * (float) dot16_i8(xb1, qv); \
-            (A2) += sx2[b] * ds * (float) dot16_i8(xb2, qv); \
-            (A3) += sx3[b] * ds * (float) dot16_i8(xb3, qv); \
-        }                                                    \
+#define Q6K_STREAM4_ACC(NR, A0, A1, A2, A3)                                       \
+    do {                                                                          \
+        if ((NR) < valid_nr) {                                                    \
+            const int8x16_t qv = vld1q_s8(blk->qs[is][NR]);                       \
+            const float     ds = blk->ds[is][NR];                                 \
+            (A0)               = kq_epi_dsx((A0), ds, sx0[b], dot16_i8(xb0, qv)); \
+            (A1)               = kq_epi_dsx((A1), ds, sx1[b], dot16_i8(xb1, qv)); \
+            (A2)               = kq_epi_dsx((A2), ds, sx2[b], dot16_i8(xb2, qv)); \
+            (A3)               = kq_epi_dsx((A3), ds, sx3[b], dot16_i8(xb3, qv)); \
+        }                                                                         \
     } while (0)
                     Q6K_STREAM4_ACC(0, a00, a10, a20, a30);
                     Q6K_STREAM4_ACC(1, a01, a11, a21, a31);
@@ -1306,8 +1309,10 @@ static void q6k_stream4_tiles(void *ctx, size_t nt0, size_t nt1) {
                         const size_t    xb_off = b * Q6_K_BLOCK_ELEMS + (size_t) is * 16;
                         const int8_t   *xb     = x_q8 + mt * n_in + xb_off;
                         const int8x16_t qv     = vld1q_s8(blk->qs[is][nr]);
-                        const int32_t   dot    = dot16_i8(xb, qv);
-                        acc += x_scales[mt * n_blocks_per_row + b] * blk->ds[is][nr] * (float) dot;
+                        acc                    = kq_epi_dsx(acc,
+                                                            blk->ds[is][nr],
+                                                            x_scales[mt * n_blocks_per_row + b],
+                                                            dot16_i8(xb, qv));
                     }
                 }
                 y[mt * n_out + nt * 4 + nr] = acc;

@@ -279,7 +279,8 @@ struct geist_arch_ops_decoder {
     /* Optional: the session's resolved prefill geometry (geist_decision
      * prefix scoring, #5). *out_chunk is the number of tokens one prefill
      * pass takes at most (the session's m_max): a prefix whose length is a
-     * multiple of it splits a longer prompt the way one prefill would.
+     * multiple of it splits a longer prompt the way one prefill would,
+     * unless one token follows it (no pass of one token ends a prefill).
      * *out_kv_fp32 is true when the KV cache holds plain FP32 rows: no INT8,
      * INT4, F16 or KIVI storage and no rotation or simulated quantization.
      * Both outputs are written on GEIST_OK only. nullptr when the

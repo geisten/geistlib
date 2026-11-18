@@ -391,12 +391,27 @@ offload_takes(const struct transformer_arch_session *sess, size_t q_position, si
 size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
                                  size_t                                 q_position,
                                  size_t                                 n) {
-    const size_t m = n < sess->m_max ? n : sess->m_max;
-    if (offload_takes(sess, q_position, m)) {
-        return m;
+    size_t     m    = n < sess->m_max ? n : sess->m_max;
+    const bool twin = offload_takes(sess, q_position, m);
+    if (!twin) {
+        const size_t cap = load_m_cap(sess->model);
+        m                = m < cap ? m : cap;
     }
-    const size_t cap = load_m_cap(sess->model);
-    return m < cap ? m : cap;
+    /* Never leave one row for the next chunk (#554): seq == 1 is a decode
+     * step, on the M=1 kernels and fusions, which sum in another order than
+     * a chunk's M>1 GEMMs, so that token's bits, and the logits, would
+     * depend on where the chunk boundary falls. This chunk gives rows to
+     * the last one instead, still ceil(n / m) chunks: 8 rows there, a whole
+     * token tile of the CPU prefill kernels, where m allows, else 4, else 2
+     * (Llama 3.2 3B on the M1 Max, 65 tokens at m_max 64: 63 + 2 took 336
+     * ms, 61 + 4 303 ms, 57 + 8 287 ms; 64 + 1 was 278 ms). Not for m < 3
+     * (2 + 1 has no other split), and not when the smaller chunk would
+     * leave the twins. A call of one token stays the decode step it is. */
+    const size_t give = m >= 16 ? 7 : m >= 8 ? 3 : 1;
+    if (n - m == 1 && m > 2 && (!twin || offload_takes(sess, q_position, m - give))) {
+        m -= give;
+    }
+    return m;
 }
 
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
