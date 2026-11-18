@@ -6,7 +6,7 @@ repo=$(git rev-parse --show-toplevel)
 out="$1"
 experiment=${2:-simd}
 case "$experiment" in
-  simd | causal | activation | m1-silu | m1-beta-k | m1-state) ;;
+  simd | causal | activation | m1-silu | m1-beta-k | m1-state | m1-output) ;;
   *) exit 2 ;;
 esac
 host=$(/usr/sbin/sysctl -n hw.model)
@@ -74,7 +74,7 @@ replay() {
     "$@" "$driver" "$model" "$input"
 }
 case "$experiment" in
-m1-silu | m1-beta-k | m1-state)
+m1-silu | m1-beta-k | m1-state | m1-output)
   calibration="$(CDPATH='' cd -- "${3:?missing M1 calibration directory}" && pwd)"
   (cd "$calibration" && /usr/bin/shasum -a 256 -c checksums.txt)
   cp "$calibration/source-platform.txt" "$out/source-platform.txt"

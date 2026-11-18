@@ -9,7 +9,7 @@ def read_hashes(file):
     return {int(pos): digest for pos, digest in map(str.split, file.read_text().splitlines())}
 
 
-def compare(output, expected_v, expected_logits, name, vectors, expected_k, expected_state):
+def compare(output, expected_v, expected_logits, name, vectors, expected_k, raw_reference):
     hashes = {}
     for line in (output / f"{name}.txt").read_text().splitlines():
         cols = line.split()
@@ -34,20 +34,21 @@ def compare(output, expected_v, expected_logits, name, vectors, expected_k, expe
             k_match = hashlib.sha256(data[2048 * 4:4096 * 4]).hexdigest() == expected_k[pos]
             k_matches += k_match
             print(f"{name} K at token {pos}: {'exact' if k_match else 'different'}")
-    state_matches = 0
-    for pos, digest in expected_state.items():
-        data = (output / vectors / f"{pos}-dn_state.f32").read_bytes()
-        if len(data) != 16 * 128 * 128 * 4:
-            raise ValueError(f"invalid {name} DeltaNet state trace")
-        match = hashlib.sha256(data).hexdigest() == digest
-        state_matches += match
-        print(f"{name} state at token {pos}: {'exact' if match else 'different'}")
+    raw_matches = True
+    for stage, label, count, expected in raw_reference:
+        for pos, digest in expected.items():
+            data = (output / vectors / f"{pos}-dn_{stage}.f32").read_bytes()
+            if len(data) != count * 4:
+                raise ValueError(f"invalid {name} DeltaNet {label} trace")
+            match = hashlib.sha256(data).hexdigest() == digest
+            raw_matches &= match
+            print(f"{name} {label} at token {pos}: {'exact' if match else 'different'}")
     return (matches == len(expected_logits) and v_matches == len(expected_v) and
-            k_matches == len(expected_k) and state_matches == len(expected_state))
+            k_matches == len(expected_k) and raw_matches)
 
 
 def main(diag, output, experiment="m1-silu"):
-    beta_k = experiment in ("m1-beta-k", "m1-state")
+    beta_k = experiment in ("m1-beta-k", "m1-state", "m1-output")
     expected_v = read_hashes(diag / "qwen47-m1-v.txt")
     expected_logits = read_hashes(diag / "qwen47-m1-logits.txt")
     if set(expected_v) != {0, 90} or set(expected_logits) != set(range(91)):
@@ -55,11 +56,19 @@ def main(diag, output, experiment="m1-silu"):
     expected_k = read_hashes(diag / "qwen47-m1-k.txt") if beta_k else {}
     if beta_k and set(expected_k) != {0, 90}:
         raise ValueError("incomplete M1 K reference hashes")
-    expected_state = read_hashes(diag / "qwen47-m1-state.txt") if experiment == "m1-state" else {}
-    if experiment == "m1-state" and set(expected_state) != {0}:
-        raise ValueError("incomplete M1 state reference hash")
-    compare(output, expected_v, expected_logits, "default", "default-vectors", expected_k, expected_state)
-    if compare(output, expected_v, expected_logits, "calibrated", "calibrated-vectors", expected_k, expected_state):
+    raw_reference = []
+    if experiment in ("m1-state", "m1-output"):
+        state = read_hashes(diag / "qwen47-m1-state.txt")
+        if set(state) != {0}:
+            raise ValueError("incomplete M1 state reference hash")
+        raw_reference.append(("state", "state", 16 * 128 * 128, state))
+    if experiment == "m1-output":
+        mix = read_hashes(diag / "qwen47-m1-output.txt")
+        if set(mix) != {0}:
+            raise ValueError("incomplete M1 output reference hash")
+        raw_reference.append(("mix", "output", 2048, mix))
+    compare(output, expected_v, expected_logits, "default", "default-vectors", expected_k, raw_reference)
+    if compare(output, expected_v, expected_logits, "calibrated", "calibrated-vectors", expected_k, raw_reference):
         print("Case 47 prompt parity passed")
         return 0
     print("Case 47 prompt parity failed")
