@@ -97,7 +97,7 @@ Greedy trajectories are prefix-identical, so a smaller cap is a truncation of th
 | 4096 (`geistr decide --max-tokens` default) | 79.63 % | 84.11 % | [+2.89, +6.07] | 0.32× |
 | 8192 (declared) | 82.80 % | 84.57 % | [+0.27, +3.27] | 0.24× |
 
-τ 0.9 is followed up by its own pre-registered validation in #467.
+τ 0.9 is followed up by its own pre-registered validation in #467. Its result: `DECISION_EARLY_EXIT_TAU09_2026-11-18.md`.
 
 ## Decision (owner, 2026-11-05)
 
