@@ -8,24 +8,27 @@ int main(int argc, char **argv) {
     if (argc != 3)
         return 2;
 
-    geist_token_t ids[91];
-    int32_t       selected;
-    FILE         *input = fopen(argv[2], "rb");
+    constexpr size_t context = 34816;
+    geist_token_t    ids[context];
+    FILE            *input = fopen(argv[2], "rb");
     if (!input)
         return 2;
-    const bool valid = fread(ids, sizeof(ids[0]), 91, input) == 91 &&
-                       fread(&selected, sizeof(selected), 1, input) == 1 && fgetc(input) == EOF &&
-                       selected >= 0;
-    fclose(input);
-    if (!valid)
+    const size_t input_bytes = fread(ids, 1, sizeof ids, input);
+    const size_t n           = input_bytes / sizeof(ids[0]);
+    const bool   valid =
+            input_bytes % sizeof(ids[0]) == 0 && n >= 2 && fgetc(input) == EOF && !ferror(input);
+    const bool closed = fclose(input) == 0;
+    if (!valid || !closed || ids[n - 1] < 0)
         return 2;
+    const size_t  count    = n - 1;
+    const int32_t selected = ids[count];
 
     struct geist_backend     *backend      = nullptr;
     struct geist_model       *model        = nullptr;
     struct geist_session     *session      = nullptr;
     struct geist_backend_opts backend_opts = {.max_threads = 8};
     struct geist_session_opts session_opts = {
-            .max_seq_len = 34816,
+            .max_seq_len = context,
             .temperature = 0,
             .kv_mode     = GEIST_KV_FP32,
             .m_max       = 1,
@@ -35,7 +38,7 @@ int main(int argc, char **argv) {
         geist_model_load_with_opts(argv[1], backend, &session_opts, &model) != GEIST_OK ||
         geist_session_create(model, backend, &session_opts, &session) != GEIST_OK)
         goto done;
-    for (size_t pos = 0; pos < 91; pos++) {
+    for (size_t pos = 0; pos < count; pos++) {
         if (geist_session_prefill_tokens(session, 1, &ids[pos]) != GEIST_OK) {
             fprintf(stderr, "Prefill at %zu: %s\n", pos, geist_session_errmsg(session));
             goto done;

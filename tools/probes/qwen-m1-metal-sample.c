@@ -40,17 +40,36 @@ static const char *shader =
         "kernel void rcp_bits(constant uint &first [[buffer(0)]],device uint *out "
         "[[buffer(1)]],uint i [[thread_position_in_grid]]){"
         "float x=as_type<float>(i+first);out[i]=as_type<uint>(1.0f/x);}\n"
-        "\n" Q1_RSQRT_SHADER
-        "kernel void beta_neg_bits(constant uint &first [[buffer(0)]],device uint *out "
+        "\n" Q1_RSQRT_SHADER "kernel void beta_neg_bits(constant uint &first "
+        "[[buffer(0)]],device uint *out "
         "[[buffer(1)]],uint i [[thread_position_in_grid]]){"
-        "float x=as_type<float>(i+first);out[i]=as_type<uint>(1.0f/(1.0f+exp(x)));}\n"
-        "kernel void rsqrt_bits(constant uint &first [[buffer(0)]],device uint *out "
+        "float "
+        "x=as_type<float>(i+first);out[i]=as_type<uint>(1.0f/(1.0f+exp(x)));}\n"
+        "kernel void rsqrt_bits(constant uint &first [[buffer(0)]],device uint "
+        "*out "
         "[[buffer(1)]],uint i [[thread_position_in_grid]]){"
         "out[i]=as_type<uint>(rsqrt(as_type<float>(i+first)));}\n"
-        "kernel void rsqrt_scale(constant uint &first [[buffer(0)]],device uint *out "
+        "kernel void rsqrt_scale(constant uint &first [[buffer(0)]],device uint "
+        "*out "
         "[[buffer(1)]],uint i [[thread_position_in_grid]]){uint x=i+first;"
         "uint y=as_type<uint>(rsqrt(as_type<float>(q1_rsqrt_key(x))));"
-        "out[i]=as_type<uint>(rsqrt(as_type<float>(x)))^q1_rsqrt_scale(x,y);}\n";
+        "out[i]=as_type<uint>(rsqrt(as_type<float>(x)))^q1_rsqrt_scale(x,y);}\n"
+        "kernel void softplus_pos(constant uint &first[[buffer(0)]],device "
+        "uint*out[[buffer(1)]],"
+        "uint i[[thread_position_in_grid]]){float "
+        "x=as_type<float>(i+first);out[i]=as_type<uint>(log(1.0f+exp(x)));}\n"
+        "kernel void softplus_neg(constant uint &first[[buffer(0)]],device "
+        "uint*out[[buffer(1)]],"
+        "uint i[[thread_position_in_grid]]){float "
+        "x=as_type<float>(i+first);out[i]=as_type<uint>(log(1.0f+exp(-x)));}\n"
+        "kernel void rcp_scale(constant uint &first[[buffer(0)]],device "
+        "uint*out[[buffer(1)]],"
+        "uint i[[thread_position_in_grid]]){uint bits=i+first;uint "
+        "exponent=bits>>23;"
+        "uint key=(bits&0x7fffffu)|0x3f800000u;uint "
+        "r=as_type<uint>(1.0f/as_type<float>(key));"
+        "out[i]=as_type<uint>(1.0f/"
+        "as_type<float>(bits))^(r+((127u-exponent)<<23));}\n";
 
 static bool arg_bits(const char *s, uint32_t *value) {
     char               *end;
@@ -65,11 +84,15 @@ int main(int argc, char **argv) {
     uint32_t first, last;
     if (argc != 5 || !arg_bits(argv[2], &first) || !arg_bits(argv[3], &last) || last < first)
         return 2;
-    const bool check_exp      = !strcmp(argv[1], "check-exp");
-    const bool check_beta     = !strcmp(argv[1], "check-beta-neg");
-    const bool check_rsqrt    = !strcmp(argv[1], "check-rsqrt-scale");
-    const bool check_constant = check_exp || check_beta || check_rsqrt;
-    uint32_t   expected       = 0;
+    const bool check_exp    = !strcmp(argv[1], "check-exp");
+    const bool check_beta   = !strcmp(argv[1], "check-beta-neg");
+    const bool check_rsqrt  = !strcmp(argv[1], "check-rsqrt-scale");
+    const bool check_rcp    = !strcmp(argv[1], "check-rcp-scale");
+    const bool check_sp_pos = !strcmp(argv[1], "check-softplus-pos");
+    const bool check_sp_neg = !strcmp(argv[1], "check-softplus-neg");
+    const bool check_constant =
+            check_exp || check_beta || check_rsqrt || check_rcp || check_sp_pos || check_sp_neg;
+    uint32_t expected = 0;
     if (check_constant && !arg_bits(argv[4], &expected))
         return 2;
     const char *kernel;
@@ -83,6 +106,12 @@ int main(int argc, char **argv) {
         kernel = "rsqrt_bits";
     else if (check_rsqrt)
         kernel = "rsqrt_scale";
+    else if (check_rcp)
+        kernel = "rcp_scale";
+    else if (check_sp_pos || !strcmp(argv[1], "softplus-pos"))
+        kernel = "softplus_pos";
+    else if (check_sp_neg || !strcmp(argv[1], "softplus-neg"))
+        kernel = "softplus_neg";
     else
         return 2;
     FILE *target = (check_constant || !strcmp(argv[4], "-")) ? stdout : fopen(argv[4], "wb");
