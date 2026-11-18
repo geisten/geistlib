@@ -343,7 +343,13 @@ endif
 DECKNET_SOURCES := \
     src/engine/decknet.c \
     src/archs/decknet/load.c \
-    src/archs/decknet/run.c
+    src/archs/decknet/run.c \
+    src/archs/decknet/stream.c
+# The integer part of a stream's pass on Apple's GPU (#533), where that
+# backend is built.
+ifneq ($(filter metal,$(BACKENDS)),)
+DECKNET_SOURCES += src/backends/metal/decknet.c
+endif
 ifeq ($(DECKNET),1)
 LIB_SOURCES += $(DECKNET_SOURCES)
 endif
@@ -436,13 +442,17 @@ endif
 ifneq ($(DECKNET),1)
     TEST_SOURCES := $(filter-out $(wildcard tests/test_decknet_*.c),$(TEST_SOURCES))
 endif
+# So does the stream bench (#533): it exists only in a DECKNET=1 build.
+ifeq ($(DECKNET),1)
+    DEMO_SOURCES += tools/bench_stream.c
+endif
 
 # Fuzz harnesses. Deliberately not tests/test_*.c: mk/run-tests.sh globs that
 # prefix, and a fuzzer is not a pass/fail test. They still build like any other
 # binary so `make bin` keeps them compiling.
 FUZZ_SOURCES := $(wildcard tests/fuzz_*.c)
 ifneq ($(DECKNET),1)
-    FUZZ_SOURCES := $(filter-out tests/fuzz_decknet.c,$(FUZZ_SOURCES))
+    FUZZ_SOURCES := $(filter-out tests/fuzz_decknet.c tests/fuzz_decknet_stream.c,$(FUZZ_SOURCES))
 endif
 
 BIN_SOURCES  := $(TEST_SOURCES) $(DEMO_SOURCES) $(FUZZ_SOURCES)

@@ -46,8 +46,18 @@ for key, traces in (
 ):
     changes = "".join(f'    qwen47_trace(ctx, "dn_{name}", {count}, {buffer});\n'
                       for name, count, buffer in traces)
+    if key == "QKV":
+        changes = "    qwen47_patch_qkv(ctx, convd, sess->dn_scratch_qkv);\n" + changes
     source = insert(source, f"    dn_profile_mark(DN_PROFILE_{key}, &t0);", changes)
 source = insert(source, "    dn_profile_mark(DN_PROFILE_MIX, &t0);",
+                '    if (ctx->layer_idx == 0)\n'
+                '        qwen47_trace(ctx, "dn_qkv_after", convd, sess->dn_scratch_qkv);\n'
+                '    if (ctx->layer_idx == 0 && ctx->q_position == 0 && getenv("QWEN47_TRACE")) {\n'
+                '        size_t n_state;\n'
+                '        if (ckd_mul(&n_state, n_vh, d_k) || ckd_mul(&n_state, n_state, d_v))\n'
+                '            abort();\n'
+                '        qwen47_trace(ctx, "dn_state", n_state, sess->dn_S[ctx->layer_idx]);\n'
+                '    }\n'
                 '    qwen47_trace(ctx, "dn_mix", vald, sess->dn_scratch_z);\n')
 source = insert(source, "    dn_profile_mark(DN_PROFILE_OUT, &t0);",
                 '    qwen47_trace(ctx, "dn_out_projection", st->d_model, sess->scratch_o);\n')

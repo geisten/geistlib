@@ -4,6 +4,11 @@ set -eu
 diag=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repo=$(git rev-parse --show-toplevel)
 out="$1"
+experiment=${2:-simd}
+case "$experiment" in
+  simd | causal | activation | m1-silu | m1-beta-k) ;;
+  *) exit 2 ;;
+esac
 host=$(/usr/sbin/sysctl -n hw.model)
 if [ "$host" != "Mac18,5" ]; then
   printf '%s\n' "This probe requires the Mac mini M6." >&2
@@ -29,6 +34,11 @@ build() {
   xcrun clang -std=c23 -O2 -Wall -Wextra -Werror -I"$engine/include" "$diag/qwen47-prefix.c" \
     "$engine/lib/mac-omp/release/libgeist.a" -framework Accelerate -L"$omp/lib" -lomp -lm \
     -o "$driver"
+}
+rebuild_shaders() {
+  # Avoid reusing the shader object when variant edits share a timestamp.
+  rm -f "$engine/build/mac-omp/release/src/backends/metal/pipelines.o"
+  build
 }
 build
 /usr/bin/python3 - "$reference" "$engine" <<'PY'
@@ -63,6 +73,37 @@ replay() {
   "$HOME/bin/with-macmini-lock" /usr/bin/env DYLD_LIBRARY_PATH="$omp/lib" \
     "$@" "$driver" "$model" "$input"
 }
+if [ "$experiment" = m1-silu ] || [ "$experiment" = m1-beta-k ]; then
+  calibration="$(CDPATH='' cd -- "${3:?missing M1 calibration directory}" && pwd)"
+  (cd "$calibration" && /usr/bin/shasum -a 256 -c checksums.txt)
+  cp "$calibration/source-platform.txt" "$out/source-platform.txt"
+  mkdir -p "$out/default-vectors" "$out/calibrated-vectors"
+  replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/default-vectors" > "$out/default.txt"
+  set --
+  if [ "$experiment" = m1-beta-k ]; then
+    (cd "$calibration" && /usr/bin/shasum -a 256 -c beta-k-checksums.txt)
+    set -- m1-beta-k
+  fi
+  /usr/bin/python3 "$diag/qwen47-m1-rounding-patch.py" "$engine" "$@"
+  # Rebuild the three translation units even when timestamps have the same granularity.
+  for unit in lifecycle ops pipelines; do
+    rm -f "$engine/build/mac-omp/release/src/backends/metal/$unit.o"
+  done
+  build
+  set --
+  if [ "$experiment" = m1-beta-k ]; then
+    set -- QWEN47_M1_BETA_NEG="$calibration/beta-neg.qm1" QWEN47_M1_RSQRT="$calibration/rsqrt.qm1"
+  fi
+  replay "$@" QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/calibrated-vectors" \
+    QWEN47_M1_EXP="$calibration/exp.qm1" QWEN47_M1_RCP="$calibration/rcp.qm1" \
+    > "$out/calibrated.txt"
+  if ! /usr/bin/python3 "$diag/qwen47-m1-compare.py" "$diag" "$out" "$experiment" > "$out/comparison.txt"; then
+    cat "$out/comparison.txt"
+    exit 1
+  fi
+  cat "$out/comparison.txt"
+  exit 0
+fi
 replay > "$out/default.txt"
 replay GEIST_METAL_TENSOR=0 > "$out/tensor-off.txt"
 mkdir -p "$out/default-vectors"
@@ -73,12 +114,41 @@ for file in default tensor-off trace; do
 done
 awk '$1 == "logits"' "$out/trace.txt" > "$out/trace-logits.txt"
 diff -u "$out/default.txt" "$out/trace-logits.txt"
+if [ "$experiment" != simd ]; then
+  mkdir -p "$out/patched-vectors"
+  replay QWEN47_TRACE=1 QWEN47_PATCH_QKV=1 QWEN47_RAW_DIR="$out/patched-vectors" > "$out/patched.txt"
+  case "$experiment" in
+    causal) set -- precise-rsqrt precise-exp-log ;;
+    activation) set -- convolution exp reciprocal divide exp-divide ;;
+  esac
+  awk '$1 == "logits"' "$out/patched.txt" > "$out/patched-logits.txt"
+  shader="$engine/src/backends/metal/metal_shaders.h"
+  cp "$shader" "$engine/metal_shaders.template"
+  for variant in "$@"; do
+    cp "$engine/metal_shaders.template" "$shader"
+    /usr/bin/python3 "$diag/qwen47-deltanet-variant.py" "$engine" "$variant"
+    rebuild_shaders
+    mkdir -p "$out/$variant-vectors"
+    replay QWEN47_TRACE=1 QWEN47_PATCH_QKV=1 QWEN47_RAW_DIR="$out/$variant-vectors" > "$out/$variant.txt"
+    case "$variant" in
+      convolution | exp | reciprocal)
+        awk '$1 == "logits"' "$out/$variant.txt" > "$out/$variant-logits.txt"
+        diff -u "$out/patched-logits.txt" "$out/$variant-logits.txt"
+        cmp "$out/patched-vectors/0-dn_mix.f32" "$out/$variant-vectors/0-dn_mix.f32"
+        ;;
+    esac
+  done
+  for file in default patched "$@"; do
+    awk '$1 == "logits" && $2 == 0 {print FILENAME, $0}' "$out/$file.txt"
+  done
+  exit 0
+fi
 shader="$engine/src/backends/metal/metal_shaders.h"
 cp "$shader" "$engine/metal_shaders.template"
 for order in descending ascending; do
   cp "$engine/metal_shaders.template" "$shader"
   /usr/bin/python3 "$diag/qwen47-matvec-reduction.py" "$engine" "$order"
-  build
+  rebuild_shaders
   mkdir -p "$out/$order-vectors"
   replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/$order-vectors" > "$out/$order.txt"
   printf '%s ' "$order"

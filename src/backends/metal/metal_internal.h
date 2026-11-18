@@ -1224,6 +1224,16 @@ struct geist_buffer *metal_buf_reg_find(struct metal_state *st, const void *p, s
 
 void metal_buffer_destroy_internal(struct geist_backend *be, struct geist_buffer *buf);
 
+/* pipelines.c: the function `name` of a compiled library and a compute
+ * pipeline for it; ns_string is the NSString class. Sets the backend error
+ * on failure. Both are the caller's to release. */
+[[nodiscard]] enum geist_status metal_create_named_pipeline(struct geist_backend     *be,
+                                                            struct metal_library_h   *library,
+                                                            void                     *ns_string,
+                                                            const char               *name,
+                                                            struct metal_function_h **out_function,
+                                                            struct metal_pipeline_h **out_pipeline);
+
 void metal_residency_create(struct metal_state *st, uint64_t keep_alive_s);
 
 void metal_residency_destroy(struct metal_state *st);
