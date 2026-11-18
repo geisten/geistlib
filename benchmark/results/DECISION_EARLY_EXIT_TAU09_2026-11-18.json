@@ -1,0 +1,108 @@
+{
+ "tracking_issue": "geistlib#467",
+ "date": "2026-11-18",
+ "plan": "early_exit_tau09_467 (declared 3c81cf93, PR #480)",
+ "checks": {
+  "question_ids_sha256": "b40cb1ab04303efb39f982ea30e6f0eae732d099739bae31f4eca6b7c63d5354",
+  "question_ids_sha256_as_declared": true,
+  "cases_sha256": "b8cfe3f37824241f0514e7b01b2010f81e4540a9aa552f990fdcfe7ee127413e",
+  "cases_sha256_as_declared": true,
+  "model_sha256": "3907dc1658db1f78a9826bf8d5bcb8dc65db0d466388937af57f2294fae62ec1",
+  "model_sha256_as_declared": true,
+  "source_revision": "e5e4aaf8a5d91120fda389b65966030ad4045051",
+  "source_revision_as_declared": true,
+  "binary_sha256": "5100e991bada9a7b242300805772bfcdc20f1de01b5bbc49ca1338d26e5593cd",
+  "manifest_file_equals_report_manifest": true,
+  "settings": {
+   "profile": "chat_reasoning",
+   "split": "test",
+   "backend": "metal",
+   "threads": 6,
+   "align": 320,
+   "cap": 8192,
+   "batch": 8,
+   "pad": false,
+   "probe": [
+    198,
+    248069,
+    271
+   ],
+   "probe_interval": 128,
+   "exit_tau": 0.0,
+   "question_ids": null,
+   "environment": {
+    "OMP_NUM_THREADS": "6",
+    "OMP_WAIT_POLICY": "passive"
+   }
+  },
+  "settings_as_declared": true,
+  "questions": 3000,
+  "unique_questions": 3000,
+  "questions_with_one_recorded_generation": 3000,
+  "recorded_order_is_the_prepared_order": true,
+  "stop_reasons": {
+   "eos": 2741,
+   "limit": 259
+  },
+  "recorded_correct_equals_valid_answer_on_target": 3000,
+  "probes_at_every_128_tokens_before_the_end": 3000,
+  "excluded_question_ids": 4000,
+  "excluded_unique": 4000,
+  "excluded_tail_is_the_286_sample": true,
+  "overlap_with_excluded": 0
+ },
+ "settings": {
+  "cap": 8192,
+  "batch": 8,
+  "pad": false,
+  "probe_interval": 128,
+  "tau": 0.9,
+  "margin_pp": 2
+ },
+ "primary": {
+  "n": 3000,
+  "gains": 123,
+  "losses": 47,
+  "direct_accuracy": 0.8423333333333334,
+  "baseline_accuracy": 0.817,
+  "difference_pp": 2.533333333333333,
+  "interval_pp": [
+   1.1738101767616596,
+   3.8845990502279153
+  ],
+  "noninferior": true,
+  "verdict": "PASS"
+ },
+ "secondary": {
+  "full_reasoning": {
+   "accuracy": 0.817,
+   "correct": 2451,
+   "generated_tokens": 4035367,
+   "capped": 259
+  },
+  "early_exit": {
+   "accuracy": 0.8423333333333334,
+   "correct": 2527,
+   "gains": 123,
+   "losses": 47,
+   "early_exits": 1801,
+   "still_capped": 36,
+   "generated_tokens": 1415264,
+   "token_ratio": 0.3507150650733874
+  }
+ },
+ "descriptive_tau_0.8": {
+  "note": "declared as a description of this sample, not a test: no interval, no verdict",
+  "tau": 0.8,
+  "early_exit": {
+   "accuracy": 0.8306666666666667,
+   "correct": 2492,
+   "gains": 139,
+   "losses": 98,
+   "early_exits": 1902,
+   "still_capped": 9,
+   "generated_tokens": 963676,
+   "token_ratio": 0.23880752357840068
+  }
+ }
+}

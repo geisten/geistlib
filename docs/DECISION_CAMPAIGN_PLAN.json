@@ -1050,6 +1050,19 @@
     "latency_check": "none: #286 measured live early exit against the offline policy (300/300 identical); the token ratio from the recorded run is the cost measure here",
     "schedule": "night-only, 21:00-07:00 Berlin, as #286: chunks under 28-min wall-clock deadlines, LOCK_PRIO=batch, LOCK_MAX=30, caffeinate, resumable; power state sampled every 30 s (accuracy does not depend on it)",
     "estimate": "about 20 s of lease per question as #286 measured: about 17 h of lease, 2.5-3 nights",
-    "if_noninferior": "a geist-runtime PR that changes the Bonsai 2 27B early-exit default from tau 0.8 to 0.9, left for the user's merge decision; if not non-inferior, tau 0.8 stays"
+    "if_noninferior": "a geist-runtime PR that changes the Bonsai 2 27B early-exit default from tau 0.8 to 0.9, left for the user's merge decision; if not non-inferior, tau 0.8 stays",
+    "result": {
+      "writeup": "benchmark/results/DECISION_EARLY_EXIT_TAU09_2026-11-18.md",
+      "json": "benchmark/results/DECISION_EARLY_EXIT_TAU09_2026-11-18.json",
+      "raw_bundle": "benchmark/results/raw/decision-early-exit-tau09-2026-11-18",
+      "measured_source_revision": "e5e4aaf8a5d91120fda389b65966030ad4045051",
+      "primary": "PASS: early exit tau 0.9 84.23 % vs full reasoning at cap 8192 81.70 %; gains 123, losses 47; +2.53 pp, conservative 95 % interval [+1.17, +3.88]; non-inferior at 2 pp",
+      "tokens": "1,415,264 vs 4,035,367 (0.351x); 1,801 exits; capped 259 -> 36",
+      "descriptive_tau_0.8": "not a test: 83.07 %, gains 139, losses 98; 963,676 tokens (0.239x); 1,902 exits; capped 259 -> 9",
+      "checks": "declared cases, question-id, exclusion-file and model hashes and source revision reproduced; 3,000 unique questions complete, one finished generation each; 0 overlap with the 4,000 excluded; manifest settings as declared",
+      "deviations": "47.8 h of lease on nine nights (2026-11-08 to 11-18) against the estimated 17 h and 2.5-3 nights; two chunks failed at the evaluator's power gate on battery (2026-11-12, 2026-11-15) without starting the driver, scheduler restarted by hand; no inference on battery; none affects the outcome",
+      "not_covered": "no latency run, no per-subject or finished-question breakdown, no test between tau 0.9 and 0.8",
+      "decision": "open: per if_noninferior, a geist-runtime PR for the owner's merge decision"
+    }
   }
 }
