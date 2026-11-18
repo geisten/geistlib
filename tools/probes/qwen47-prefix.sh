@@ -6,7 +6,7 @@ repo=$(git rev-parse --show-toplevel)
 out="$1"
 experiment=${2:-simd}
 case "$experiment" in
-  simd | causal | activation | m1-silu | m1-beta-k) ;;
+  simd | causal | activation | m1-silu | m1-beta-k | m1-state) ;;
   *) exit 2 ;;
 esac
 host=$(/usr/sbin/sysctl -n hw.model)
@@ -73,16 +73,17 @@ replay() {
   "$HOME/bin/with-macmini-lock" /usr/bin/env DYLD_LIBRARY_PATH="$omp/lib" \
     "$@" "$driver" "$model" "$input"
 }
-if [ "$experiment" = m1-silu ] || [ "$experiment" = m1-beta-k ]; then
+case "$experiment" in
+m1-silu | m1-beta-k | m1-state)
   calibration="$(CDPATH='' cd -- "${3:?missing M1 calibration directory}" && pwd)"
   (cd "$calibration" && /usr/bin/shasum -a 256 -c checksums.txt)
   cp "$calibration/source-platform.txt" "$out/source-platform.txt"
   mkdir -p "$out/default-vectors" "$out/calibrated-vectors"
   replay QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/default-vectors" > "$out/default.txt"
   set --
-  if [ "$experiment" = m1-beta-k ]; then
+  if [ "$experiment" != m1-silu ]; then
     (cd "$calibration" && /usr/bin/shasum -a 256 -c beta-k-checksums.txt)
-    set -- m1-beta-k
+    set -- "$experiment"
   fi
   /usr/bin/python3 "$diag/qwen47-m1-rounding-patch.py" "$engine" "$@"
   # Rebuild the three translation units even when timestamps have the same granularity.
@@ -91,7 +92,7 @@ if [ "$experiment" = m1-silu ] || [ "$experiment" = m1-beta-k ]; then
   done
   build
   set --
-  if [ "$experiment" = m1-beta-k ]; then
+  if [ "$experiment" != m1-silu ]; then
     set -- QWEN47_M1_BETA_NEG="$calibration/beta-neg.qm1" QWEN47_M1_RSQRT="$calibration/rsqrt.qm1"
   fi
   replay "$@" QWEN47_TRACE=1 QWEN47_RAW_DIR="$out/calibrated-vectors" \
@@ -103,7 +104,8 @@ if [ "$experiment" = m1-silu ] || [ "$experiment" = m1-beta-k ]; then
   fi
   cat "$out/comparison.txt"
   exit 0
-fi
+  ;;
+esac
 replay > "$out/default.txt"
 replay GEIST_METAL_TENSOR=0 > "$out/tensor-off.txt"
 mkdir -p "$out/default-vectors"

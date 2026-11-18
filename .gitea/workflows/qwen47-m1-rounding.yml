@@ -1,4 +1,4 @@
-name: Verify M1 DeltaNet rounding in the M6 case 47 replay
+name: Verify M1 DeltaNet state rounding in the M6 case 47 replay
 
 on:
   workflow_dispatch:
@@ -61,10 +61,10 @@ jobs:
         with:
           name: qwen47-beta-k-calibration
           path: ${{ runner.temp }}/qwen47-calibration/
-      - name: Replay the frozen baseline prompt with calibrated SiLU, beta, and K
+      - name: Replay the frozen baseline prompt with the ordered DeltaNet state update
         run: >-
           /bin/sh tools/probes/qwen47-prefix.sh
-          "$RUNNER_TEMP/qwen47-rounding" m1-beta-k "$RUNNER_TEMP/qwen47-calibration"
+          "$RUNNER_TEMP/qwen47-rounding" m1-state "$RUNNER_TEMP/qwen47-calibration"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
