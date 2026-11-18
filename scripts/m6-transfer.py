@@ -176,7 +176,7 @@ def receive(incoming, expected):
     print(f"Mac mini M6 received and verified assets and {manifest['snapshot']}")
 
 
-def receive_cutover(incoming, expected):
+def receive_cutover(incoming, expected, artifact=None):
     host = subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.model"], text=True).strip()
     check(host == "Mac18,5", "This transfer job is restricted to the Mac mini M6")
     name = "snapshot-00000111-cutover"
@@ -187,6 +187,8 @@ def receive_cutover(incoming, expected):
     receipt = incoming / name / ".transfer-verified"
     if receipt.exists():
         check(receipt.read_text().strip() == expected, "Cutover snapshot hash differs")
+    elif artifact is not None:
+        extract(artifact, name, archive, incoming, expected)
     else:
         with tempfile.TemporaryDirectory(prefix=".m6-cutover-", dir=incoming) as folder:
             root = Path(folder)
@@ -201,14 +203,17 @@ def main():
     p.add_argument("operation", choices=("upload", "receive", "receive-cutover"))
     p.add_argument("path", type=Path)
     p.add_argument("manifest_sha256")
+    p.add_argument("--from-artifact", type=Path)
     args = p.parse_args()
+    if args.from_artifact is not None and args.operation != "receive-cutover":
+        p.error("--from-artifact requires receive-cutover")
     try:
         if args.operation == "upload":
             upload(args.path.resolve(), args.manifest_sha256)
         elif args.operation == "receive":
             receive(args.path.resolve(), args.manifest_sha256)
         else:
-            receive_cutover(args.path.resolve(), args.manifest_sha256)
+            receive_cutover(args.path.resolve(), args.manifest_sha256, args.from_artifact)
     except HTTPError as e:
         p.exit(1, f"Package request denied or failed with HTTP {e.code}.\n")
     except (OSError, ValueError, KeyError, tarfile.TarError) as e:

@@ -5,11 +5,18 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "prepare-pilot, pilot, diagnose-pilot-47, prepare-run, or run"
+        description: "prepare-pilot, pilot, diagnose-pilot-47, prepare-run, run, or run-compatible"
         required: true
       snapshot:
         description: "Staged snapshot name for prepare actions"
         required: false
+      compatibility_run:
+        description: "Successful compatibility workflow run ID"
+        required: false
+      max_cases:
+        description: "Number of responses in a compatible batch (1–32)"
+        required: false
+        default: "1"
 
 permissions:
   contents: read
@@ -49,6 +56,8 @@ jobs:
         env:
           HANDOFF_ACTION: ${{ inputs.action }}
           HANDOFF_SNAPSHOT: ${{ inputs.snapshot }}
+          COMPATIBILITY_RUN: ${{ inputs.compatibility_run }}
+          MAX_CASES: ${{ inputs.max_cases }}
         run: |
           set -eu
           base="$HOME/geist-lab-qwen32k"
@@ -59,13 +68,25 @@ jobs:
             pilot) "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step "$base/state" pilot ;;
             prepare-run) "$py" scripts/benchmark-macmini.py prepare "$base/incoming" snapshot-00000111-cutover "$base/state" run ;;
             run) "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step "$base/state" run ;;
+            run-compatible)
+              case "$COMPATIBILITY_RUN" in ''|*[!0-9]*) exit 2 ;; esac
+              "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step \
+                "$base/state/compatible/$COMPATIBILITY_RUN" run --max-cases "$MAX_CASES"
+              ;;
             *) exit 2 ;;
           esac
       - name: Copy reports for download
         if: always()
+        env:
+          HANDOFF_ACTION: ${{ inputs.action }}
+          COMPATIBILITY_RUN: ${{ inputs.compatibility_run }}
         run: |
           set -eu
           state="$HOME/geist-lab-qwen32k/state"
+          if [ "$HANDOFF_ACTION" = run-compatible ]; then
+            case "$COMPATIBILITY_RUN" in ''|*[!0-9]*) exit 2 ;; esac
+            state="$state/compatible/$COMPATIBILITY_RUN"
+          fi
           out="$RUNNER_TEMP/qwen32k-status"
           mkdir -p "$out"
           if [ -f "$state/pilot-pass.json" ]; then cp "$state/pilot-pass.json" "$out"; fi

@@ -1,4 +1,4 @@
-name: Verify M1 DeltaNet output rounding in the M6 case 47 replay
+name: Verify and resume the Qwen benchmark with M1-compatible Metal math
 
 on:
   workflow_dispatch:
@@ -14,61 +14,152 @@ jobs:
   calibrate:
     if: github.ref == 'refs/heads/main'
     runs-on: apple-m1max
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - name: Calibrate M1 SiLU, beta sigmoid, and reciprocal square root
-        run: /bin/sh tools/probes/qwen47-m1-calibrate.sh "$RUNNER_TEMP/qwen47-calibration"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: qwen47-calibration
-          path: |
-            ${{ runner.temp }}/qwen47-calibration/exp.qm1
-            ${{ runner.temp }}/qwen47-calibration/rcp.qm1
-            ${{ runner.temp }}/qwen47-calibration/source-platform.txt
-            ${{ runner.temp }}/qwen47-calibration/checksums.txt
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: qwen47-beta-k-calibration
-          path: |
-            ${{ runner.temp }}/qwen47-calibration/beta-neg.qm1
-            ${{ runner.temp }}/qwen47-calibration/rsqrt.qm1
-            ${{ runner.temp }}/qwen47-calibration/beta-k-checksums.txt
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 1
-  replay:
-    needs: calibrate
-    runs-on: macmini-m6
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: qwen47-calibration
-          path: ${{ runner.temp }}/qwen47-calibration/
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: qwen47-beta-k-calibration
-          path: ${{ runner.temp }}/qwen47-calibration/
-      - name: Replay the frozen baseline prompt with the calibrated DeltaNet output
+      - name: Calibrate the M1 Metal arithmetic
+        run: /bin/sh tools/probes/qwen47-m1-calibrate.sh "$RUNNER_TEMP/qwen47-calibration" compatibility
+      - name: Record both frozen M1 reference replays
+        run: /bin/sh tools/probes/qwen47-compat.sh reference "$RUNNER_TEMP/qwen47-reference"
+      - name: Build the compatible benchmark runner
         run: >-
-          /bin/sh tools/probes/qwen47-prefix.sh
-          "$RUNNER_TEMP/qwen47-rounding" m1-output "$RUNNER_TEMP/qwen47-calibration"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          /bin/sh tools/probes/qwen47-build-compatible.sh
+          "$RUNNER_TEMP/qwen47-calibration" "$RUNNER_TEMP/qwen47-candidate"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qwen47-reference
+          path: |
+            ${{ runner.temp }}/qwen47-reference/case-47.txt
+            ${{ runner.temp }}/qwen47-reference/case-48.txt
+            ${{ runner.temp }}/qwen47-reference/platform.txt
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qwen47-candidate
+          path: ${{ runner.temp }}/qwen47-candidate/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 1
+
+  replay_and_pilot:
+    needs: calibrate
+    runs-on: macmini-m6
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: qwen47-reference
+          path: ${{ runner.temp }}/qwen47-reference/
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: qwen47-candidate
+          path: ${{ runner.temp }}/qwen47-candidate/
+      - name: Reproduce both saved prompts on M6 and compare full logit vectors
+        run: |
+          set -eu
+          out="$RUNNER_TEMP/qwen47-replay"
+          /bin/sh tools/probes/qwen47-compat.sh candidate "$out" "$RUNNER_TEMP/qwen47-candidate"
+          if ! /usr/bin/python3 tools/probes/qwen47-compare-compat.py compare \
+              "$RUNNER_TEMP/qwen47-reference" "$out" > "$out/comparison.txt"; then
+            cat "$out/comparison.txt"
+            exit 1
+          fi
+          cat "$out/comparison.txt"
+      - name: Replay the four free-generation pilot cases on M6
+        run: |
+          set -eu
+          base="$HOME/geist-lab-qwen32k"
+          state="$base/state/compatible/$GITHUB_RUN_ID"
+          py=/usr/bin/python3
+          "$py" scripts/benchmark-macmini.py install-compatibility "$RUNNER_TEMP/qwen47-candidate" "$state"
+          if [ ! -f "$state/pilot/handoff.json" ]; then
+            "$py" scripts/benchmark-macmini.py prepare "$base/incoming" snapshot-00000083 "$state" pilot --compatible
+          fi
+          for slot in 1 2 3 4; do
+            printf 'Pilot case %s/4\n' "$slot"
+            "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step "$state" pilot
+          done
+          cp "$state/pilot-pass.json" "$RUNNER_TEMP/qwen47-replay/pilot-pass.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: qwen47-rounding-${{ github.run_id }}
-          path: ${{ runner.temp }}/qwen47-rounding/
-          retention-days: 14
+          name: qwen47-replay-${{ github.run_id }}
+          path: ${{ runner.temp }}/qwen47-replay/
           if-no-files-found: ignore
+          retention-days: 14
+
+  publish_cutover:
+    needs: replay_and_pilot
+    runs-on: apple-m1max
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify the stopped 111-response snapshot
+        run: |
+          set -eu
+          asset="$HOME/workspace/geist-lab/runs/macmini-handoff-2026-11-10/transfer/snapshot-00000111-cutover.tar.gz"
+          printf '%s  %s\n' dd272ea4aeb554592c5cf55df5b30178fda8d9c42ff4f584f96ffc7d19c25462 "$asset" |
+            /usr/bin/shasum -a 256 -c
+          cp "$asset" "$RUNNER_TEMP/snapshot-00000111-cutover.tar.gz"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qwen-cutover
+          path: ${{ runner.temp }}/snapshot-00000111-cutover.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  resume:
+    needs: publish_cutover
+    runs-on: macmini-m6
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: qwen-cutover
+          path: ${{ runner.temp }}/qwen-cutover/
+      - name: Receive the verified 111-response snapshot
+        run: |
+          set -eu
+          "$HOME/bin/with-macmini-lock" /usr/bin/python3 scripts/m6-transfer.py receive-cutover \
+            "$HOME/geist-lab-qwen32k/incoming" dd272ea4aeb554592c5cf55df5b30178fda8d9c42ff4f584f96ffc7d19c25462 \
+            --from-artifact "$RUNNER_TEMP/qwen-cutover"
+      - name: Restore the frozen settings and resume in the existing journal
+        run: |
+          set -eu
+          base="$HOME/geist-lab-qwen32k"
+          state="$base/state/compatible/$GITHUB_RUN_ID"
+          py=/usr/bin/python3
+          if [ ! -f "$state/run/handoff.json" ]; then
+            "$py" scripts/benchmark-macmini.py prepare "$base/incoming" snapshot-00000111-cutover "$state" run --compatible
+          fi
+          "$HOME/bin/with-macmini-lock" "$py" scripts/benchmark-macmini.py step "$state" run --max-cases 8
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: qwen32k-compatible-status-${{ github.run_id }}
+          path: |
+            ~/geist-lab-qwen32k/state/compatible/${{ github.run_id }}/pilot-pass.json
+            ~/geist-lab-qwen32k/state/compatible/${{ github.run_id }}/run/results.json
+            ~/geist-lab-qwen32k/state/compatible/${{ github.run_id }}/run/scores.csv
+            ~/geist-lab-qwen32k/state/compatible/${{ github.run_id }}/run/report.html
+            ~/geist-lab-qwen32k/state/compatible/${{ github.run_id }}/run/handoff.json
+          if-no-files-found: ignore
+          retention-days: 14

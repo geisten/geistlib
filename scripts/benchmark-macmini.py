@@ -27,6 +27,14 @@ PACKAGES = {
 PARITY_FIELDS = ("index", "seed", "tokens", "prompt_tokens", "found", "parsed",
                  "correct", "cutoff", "prediction", "generation_sha256", "logits_sha256")
 RELOCATED = {"baseline_model", "edited_model", "baseline_stamp", "edited_stamp", "python"}
+COMPATIBILITY_ENV = {
+    "QWEN47_M1_EXP": "exp.qm1",
+    "QWEN47_M1_RCP": "rcp.qm1",
+    "QWEN47_M1_BETA_NEG": "beta-neg.qm1",
+    "QWEN47_M1_RSQRT": "rsqrt.qm1",
+    "QWEN47_M1_SOFTPLUS_POS": "softplus-pos.qm1",
+    "QWEN47_M1_SOFTPLUS_NEG": "softplus-neg.qm1",
+}
 
 
 def require(ok, message):
@@ -303,7 +311,42 @@ def environment(assets, state, expected):
     return py, runtime_env
 
 
-def prepare(bundle, snapshot, state, mode):
+def compatibility_identity(root):
+    files = read_json(root / "checksums.json")
+    require(set(files) == {"runner", *COMPATIBILITY_ENV.values()},
+            "Unexpected compatibility assets")
+    for name, digest in files.items():
+        require(re.fullmatch("[a-f0-9]{64}", digest) and sha(root / name) == digest,
+                f"Damaged compatibility asset: {name}")
+    return files["runner"], sha(root / "checksums.json")
+
+
+def install_compatibility(source, state):
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = state / "compatibility"
+    identity = compatibility_identity(source)
+    if target.exists():
+        require(compatibility_identity(target) == identity, "Compatibility build is already staged with other bytes")
+        return
+    with tempfile.TemporaryDirectory(prefix=".compatibility-", dir=state) as folder:
+        temp = Path(folder) / "bundle"
+        temp.mkdir()
+        for name in ("runner", "checksums.json", *COMPATIBILITY_ENV.values()):
+            checked_copy(source / name, temp / name)
+        (temp / "runner").chmod(0o700)
+        compatibility_identity(temp)
+        temp.rename(target)
+
+
+def require_pilot(state, settings, calibration=None):
+    receipt = read_json(state / "pilot-pass.json")
+    require(receipt["settings_sha256"] == settings and receipt["host"] == host()
+            and receipt.get("compatibility_sha256") == calibration
+            and (calibration is None or receipt["verified_cases"] == [46, 47, 48, 49]),
+            "Pilot must pass on this Mac with the same frozen plan and compatibility build")
+
+
+def prepare(bundle, snapshot, state, mode, compatible=False):
     require(re.fullmatch(r"snapshot-\d{8}(-cutover)?", snapshot), "Invalid snapshot name")
     src = bundle / snapshot
     assets = bundle / "assets"
@@ -311,11 +354,15 @@ def prepare(bundle, snapshot, state, mode):
     meta = read_json(src / "snapshot.json")
     require(old_sha == meta["source_plan_sha256"], "Snapshot plan identity differs")
     settings = manifest_sha(plan)
+    candidate = state / "compatibility"
+    runner_sha, calibration = compatibility_identity(candidate) if compatible else (None, None)
     if mode == "run":
         require(meta["cutover"] is True, "Continuation requires a stopped source snapshot")
-        receipt = read_json(state / "pilot-pass.json")
-        require(receipt["settings_sha256"] == settings and receipt["host"] == host(),
-                "Pilot must pass on this Mac with the same frozen plan")
+        if compatible:
+            require(meta["committed"] == 111, "Expected the pinned 111-response cutover")
+        require_pilot(state, settings, calibration)
+    if compatible and mode == "pilot":
+        require(meta["pilot_cases"] == [46, 47, 48, 49], "Unexpected compatibility pilot cases")
     target = state / mode
     require(not target.exists(), f"Prepared run already exists: {target}")
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -332,11 +379,15 @@ def prepare(bundle, snapshot, state, mode):
         plan[f"{key}_model"], plan[f"{key}_stamp"] = str(path), before
     plan["python"] = str(py)
     require(manifest_sha(plan) == settings, "Scientific plan changed on relocation")
+    runner = assets / "runner"
+    if compatible:
+        runner = candidate / "runner"
+        plan["binary_sha256"] = runner_sha
     with tempfile.TemporaryDirectory(prefix=f".{mode}-", dir=state) as folder:
         temp = Path(folder) / mode
         (temp / "cases").mkdir(parents=True)
         (temp / "artifacts").mkdir()
-        checked_copy(assets / "runner", temp / "runner", plan["binary_sha256"])
+        checked_copy(runner, temp / "runner", plan["binary_sha256"])
         checked_copy(assets / "checker-runtime.txt", temp / "checker-runtime.txt", plan["checker_sha256"])
         write_json(temp / "plan.json", plan)
         new_sha = sha(temp / "plan.json")
@@ -359,7 +410,7 @@ def prepare(bundle, snapshot, state, mode):
             "dylib_sha256": expected["dylib_sha256"],
             "snapshot": str(src), "settings_sha256": settings, "source_plan_sha256": old_sha,
             "target_plan_sha256": new_sha, "imported": meta["committed"] - len(chosen),
-            "pilot_cases": chosen,
+            "pilot_cases": chosen, "compatibility_sha256": calibration,
         })
         subprocess.run([temp / "runner", "--benchmark-report", temp], check=True, env=runtime_env)
         require(case_status(temp, runtime_env)["committed_generations"] == meta["committed"] - len(chosen),
@@ -394,13 +445,22 @@ def compare_pilot(root, info):
                 sha(root / after["artifacts"] / "output.bin"), f"Pilot raw bytes differ for case {i+1}")
 
 
-def step(state, mode):
+def step(state, mode, maximum=1):
     require_ci_lease()
     root = state / mode
     info = read_json(root / "handoff.json")
     _, runtime_env = pinned_runtime(Path(info["snapshot"]).parent / "assets", state, info)
     if (root / "STOP").exists():
         return
+    calibration = info.get("compatibility_sha256")
+    if calibration is not None:
+        candidate = state / "compatibility"
+        runner_sha, manifest = compatibility_identity(candidate)
+        plan, plan_sha = read_plan(root)
+        require(manifest == calibration and sha(root / "runner") == runner_sha
+                and plan_sha == info["target_plan_sha256"] and plan["binary_sha256"] == runner_sha,
+                "Staged compatibility build or plan changed")
+        runtime_env.update({key: str(candidate / name) for key, name in COMPATIBILITY_ENV.items()})
     if mode == "pilot":
         pending = [i for i in info["pilot_cases"] if not (root / "cases" / f"{i:08d}.json").exists()]
         if pending:
@@ -413,14 +473,13 @@ def step(state, mode):
             write_json(state / "pilot-pass.json", {
                 "host": host(), "settings_sha256": info["settings_sha256"],
                 "verified_cases": info["pilot_cases"],
+                "compatibility_sha256": calibration,
             })
             print("Pilot matched token trace, logits, output bytes and math-verify scores.")
     elif not case_status(root, runtime_env)["complete"]:
-        receipt = read_json(state / "pilot-pass.json")
-        require(receipt["settings_sha256"] == info["settings_sha256"] and receipt["host"] == host(),
-                "Missing matching M6 pilot")
-        subprocess.run([root / "runner", "--benchmark-run", root, "--max-cases", "1"],
-                           check=True, env=runtime_env)
+        require_pilot(state, info["settings_sha256"], calibration)
+        subprocess.run([root / "runner", "--benchmark-run", root, "--max-cases", str(maximum)],
+                       check=True, env=runtime_env)
 
 
 def main():
@@ -435,17 +494,26 @@ def main():
     imp.add_argument("snapshot")
     imp.add_argument("state", type=Path)
     imp.add_argument("mode", choices=("pilot", "run"))
+    imp.add_argument("--compatible", action="store_true")
+    install = cmd.add_parser("install-compatibility")
+    install.add_argument("bundle", type=Path)
+    install.add_argument("state", type=Path)
     run = cmd.add_parser("step")
     run.add_argument("state", type=Path)
     run.add_argument("mode", choices=("pilot", "run"))
+    run.add_argument("--max-cases", type=int, choices=range(1, 33), default=1)
     args = parser.parse_args()
     try:
         if args.command == "export":
             export(args.source.resolve(), args.bundle.resolve(), args.cutover)
         elif args.command == "prepare":
-            prepare(args.bundle.resolve(), args.snapshot, args.state.resolve(), args.mode)
+            prepare(args.bundle.resolve(), args.snapshot, args.state.resolve(), args.mode,
+                    args.compatible)
+        elif args.command == "install-compatibility":
+            require_ci_lease()
+            install_compatibility(args.bundle.resolve(), args.state.resolve())
         else:
-            step(args.state.resolve(), args.mode)
+            step(args.state.resolve(), args.mode, args.max_cases)
     except (OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"handoff: {error}\n")
 
