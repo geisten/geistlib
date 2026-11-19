@@ -65,15 +65,16 @@
  *                   no result before a frame; each allocation of a create
  *                   failing once;
  *   a GPU           geist_decknet_stream_set_backend: what it refuses, and
- *                   where the "metal" backend is built in and has a device
- *                   every test above that pushes a frame once more with the
- *                   stream on it (the kernels at a crop's corners, a pixel
- *                   sum that passes 32 bits, NV12 and YUYV of arbitrary
- *                   bytes, padded rows, new homographies, a frame that is
- *                   not checkable, gating, the queue, no allocation), and a
- *                   stream that changes between the CPU and the GPU from
- *                   frame to frame: the same bits throughout. Elsewhere
- *                   that part is skipped, and says so.
+ *                   where the "metal" or the "vulkan" backend is built in
+ *                   and has a device every test above that pushes a frame
+ *                   once more with the stream on it (the kernels at a
+ *                   crop's corners, a pixel sum that passes 32 bits, NV12
+ *                   and YUYV of arbitrary bytes, padded rows, new
+ *                   homographies, a frame that is not checkable, gating,
+ *                   the queue, no allocation), and a stream that changes
+ *                   between the CPU and the GPU from frame to frame: the
+ *                   same bits throughout. Elsewhere that part is skipped,
+ *                   and says so.
  */
 #include "decknet_tiny.h"
 #include "heap.h"
@@ -2075,8 +2076,9 @@ static void test_state(void) {
 
 /* ---- a GPU ------------------------------------------------------------ */
 
-/* geist_decknet_stream_set_backend: what it refuses, and with `metal` a
- * stream that goes to the GPU and back between frames. */
+/* geist_decknet_stream_set_backend: what it refuses, and with `metal` (a
+ * backend that has a decknet path, Vulkan's as well) a stream that goes to
+ * the GPU and back between frames. */
 static void test_backend(struct geist_backend *metal) {
     struct geist_decknet     *still = load_synth();
     struct geist_decknet     *d     = load_synth();
@@ -2238,18 +2240,23 @@ int main(void) {
     test_sample();
     frames_suite();
     test_backend(nullptr);
-    /* The same on Apple's GPU, where there is one: Linux builds have no
-     * Metal backend, and a Mac without a device refuses the create. */
-    struct geist_backend *metal = nullptr;
-    if (geist_backend_create("metal", nullptr, nullptr, &metal) == GEIST_OK) {
-        printf("---- every stream on the metal backend ----\n");
-        g_be = metal;
-        frames_suite();
-        g_be = nullptr;
-        test_backend(metal);
-        geist_backend_destroy(metal);
-    } else {
-        printf("SKIP the streams on a GPU: the metal backend is not built in or has no device\n");
+    /* The same on a GPU, where there is one: a build has the Metal backend
+     * or the Vulkan one or neither, and a host without a device they take
+     * refuses the create. */
+    static const char *const gpus[] = {"metal", "vulkan"};
+    for (size_t i = 0; i < sizeof gpus / sizeof gpus[0]; i++) {
+        struct geist_backend *gpu = nullptr;
+        if (geist_backend_create(gpus[i], nullptr, nullptr, &gpu) == GEIST_OK) {
+            printf("---- every stream on the %s backend ----\n", gpus[i]);
+            g_be = gpu;
+            frames_suite();
+            g_be = nullptr;
+            test_backend(gpu);
+            geist_backend_destroy(gpu);
+        } else {
+            printf("SKIP the streams on a GPU: the %s backend is not built in or has no device\n",
+                   gpus[i]);
+        }
     }
     if (g_fail) {
         return GEIST_TEST_FAIL;

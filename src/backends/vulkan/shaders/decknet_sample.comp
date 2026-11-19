@@ -1,0 +1,73 @@
+#version 450
+
+/* decknet (#533): one invocation per sample of a camera frame. The 2 x 2
+ * camera pixels (of an NV12 or YUYV frame converted here, per pixel, by the
+ * integer formula of docs/DECKNET.md), blended with the table's weights in
+ * unsigned 32-bit arithmetic that wraps, into the pixel memory
+ * (<geist_decknet_gpu.h>). The frame's bytes are read out of 32-bit words:
+ * a std430 block has no bytes without an extension, and the Raspberry Pi
+ * 5's V3D has none of the 8- and 16-bit types. */
+layout(local_size_x = 64) in;
+
+struct Sample {
+    uint w0, w1, w2, xy;
+};
+layout(std430, binding = 0) readonly buffer Frame {
+    uint frame[];
+};
+layout(std430, binding = 1) readonly buffer Tab {
+    Sample tab[];
+};
+layout(std430, binding = 2) readonly buffer Dst {
+    uint dst[];
+};
+layout(std430, binding = 3) writeonly buffer Pixels {
+    uvec4 pixels[];
+};
+layout(push_constant) uniform Push {
+    uint stride, format, height, first, n;
+} p;
+
+int byte(uint o) {
+    return int((frame[o >> 2u] >> ((o & 3u) << 3u)) & 0xFFu);
+}
+
+/* BT.601 limited range. */
+uvec3 yuv(int y, int u, int v) {
+    int   c   = 298 * (y - 16) + 128;
+    ivec3 rgb = ivec3(c + 409 * (v - 128), c - 100 * (u - 128) - 208 * (v - 128),
+                      c + 516 * (u - 128)) >> 8;
+    return uvec3(clamp(rgb, 0, 255));
+}
+
+/* Formats: 0 RGB8, 1 NV12, 2 YUYV (enum geist_decknet_format). */
+uvec3 pixel(uint x, uint y) {
+    if (p.format == 0u) {
+        uint o = y * p.stride + x * 3u;
+        return uvec3(byte(o), byte(o + 1u), byte(o + 2u));
+    }
+    if (p.format == 1u) {
+        uint o = (p.height + y / 2u) * p.stride + (x & ~1u);
+        return yuv(byte(y * p.stride + x), byte(o), byte(o + 1u));
+    }
+    uint o = y * p.stride + (x & ~1u) * 2u;
+    return yuv(byte(y * p.stride + x * 2u), byte(o + 1u), byte(o + 3u));
+}
+
+void main() {
+    /* The dispatch is rows of gl_NumWorkGroups.x groups (decknet.c). */
+    uint gid = gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x +
+               gl_GlobalInvocationID.x;
+    if (gid >= p.n) {
+        return;
+    }
+    uint   i = p.first + gid;
+    Sample t = tab[i];
+    uint   x = t.xy & 0xFFFFu, y = t.xy >> 16u;
+    uvec3  b00 = pixel(x, y);
+    uvec3  sum = (b00 << 24u) + 128u;
+    sum += (pixel(x + 1u, y) - b00) * t.w0;
+    sum += (pixel(x, y + 1u) - b00) * t.w1;
+    sum += (pixel(x + 1u, y + 1u) - b00) * t.w2;
+    pixels[dst[i]] = uvec4(sum >> 8u, 0u);
+}

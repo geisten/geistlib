@@ -204,6 +204,10 @@ enum geist_status geist_decknet_stream_set_threads(struct geist_decknet_stream *
 extern const struct geist_backend_descriptor geist_backend_metal;
 extern const struct geist_decknet_gpu_ops    geist_decknet_gpu_metal;
 #endif
+#if defined(GEIST_BACKEND_VULKAN) && GEIST_BACKEND_VULKAN
+extern const struct geist_backend_descriptor geist_backend_vulkan;
+extern const struct geist_decknet_gpu_ops    geist_decknet_gpu_vulkan;
+#endif
 
 enum geist_status geist_decknet_stream_set_backend(struct geist_decknet_stream *s,
                                                    struct geist_backend        *be) {
@@ -216,6 +220,11 @@ enum geist_status geist_decknet_stream_set_backend(struct geist_decknet_stream *
 #if defined(GEIST_BACKEND_METAL) && GEIST_BACKEND_METAL
     if (be->desc == &geist_backend_metal) {
         return decknet_stream_set_gpu(s, &geist_decknet_gpu_metal, be);
+    }
+#endif
+#if defined(GEIST_BACKEND_VULKAN) && GEIST_BACKEND_VULKAN
+    if (be->desc == &geist_backend_vulkan) {
+        return decknet_stream_set_gpu(s, &geist_decknet_gpu_vulkan, be);
     }
 #endif
     return GEIST_E_UNSUPPORTED;

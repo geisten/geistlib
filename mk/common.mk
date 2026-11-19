@@ -345,10 +345,13 @@ DECKNET_SOURCES := \
     src/archs/decknet/load.c \
     src/archs/decknet/run.c \
     src/archs/decknet/stream.c
-# The integer part of a stream's pass on Apple's GPU (#533), where that
-# backend is built.
+# The integer part of a stream's pass on a GPU (#533), where a backend that
+# has one is built.
 ifneq ($(filter metal,$(BACKENDS)),)
 DECKNET_SOURCES += src/backends/metal/decknet.c
+endif
+ifneq ($(filter vulkan,$(BACKENDS)),)
+DECKNET_SOURCES += src/backends/vulkan/decknet.c
 endif
 ifeq ($(DECKNET),1)
 LIB_SOURCES += $(DECKNET_SOURCES)

@@ -30,9 +30,11 @@
  * One thread, or with --threads 2 the two streams on two. Every output of
  * every frame is hashed, and the three ways
  * must give the same hash: the bench fails if a stream is not bit-identical
- * to the still path. With --backend metal the streams are given that backend
- * (geist_decknet_stream_set_backend), which takes the integer part of a
- * frame that is not gated; the hashes are compared all the same.
+ * to the still path. With --backend metal or vulkan the streams are given
+ * that backend (geist_decknet_stream_set_backend), which takes the integer
+ * part of a frame that is not gated; the hashes are compared all the same.
+ * Which device a Vulkan backend is on is the backend's to say
+ * (GEIST_VK_DEVICE, GEIST_VK_VERBOSE=1; docs/BACKENDS.md).
  *
  * Each row also says how much processor time the process used for its
  * timed frames, all threads together (getrusage): what a frame costs in
@@ -61,7 +63,7 @@
  *   make DECKNET=1 bin/<target>/release/tools/bench_stream
  *   bench_stream [--frames N] [--threads 1|2] [--scene block|all|half|burst]
  *                [--only still|stream|gated] [--size 720|1080] [--camera FPS]
- *                [--trace] [--backend cpu|metal]
+ *                [--trace] [--backend cpu|metal|vulkan]
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1 /* macOS hides the counters of struct rusage under strict POSIX */
@@ -1101,7 +1103,7 @@ int main(int argc, char **argv) {
                     "usage: bench_stream [--frames N] [--threads 1|2] [--scene "
                     "block|all|half|burst] "
                     "[--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace] "
-                    "[--backend cpu|metal]\n");
+                    "[--backend cpu|metal|vulkan]\n");
             return 2;
         }
     }

@@ -1,0 +1,49 @@
+#version 450
+
+/* decknet (#533): one invocation per pixel a kernel is evaluated at. Per
+ * part of the kernel the sum of the crop pixels of its taps, each clamped
+ * to the crop, in unsigned 32-bit arithmetic that wraps
+ * (<geist_decknet_gpu.h>, "taps" and "sums"). */
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer Pixels {
+    uvec4 pixels[];
+};
+layout(std430, binding = 1) readonly buffer Px {
+    uint px[];
+};
+layout(std430, binding = 2) readonly buffer Crop {
+    uint crop[];
+};
+layout(std430, binding = 3) readonly buffer Taps {
+    int taps[];
+};
+layout(std430, binding = 4) writeonly buffer Sums {
+    uvec4 sums[];
+};
+layout(push_constant) uniform Push {
+    uint n_px, n_crops, crop_w, crop_h, n_parts, out_base;
+} k;
+
+void main() {
+    /* The dispatch is rows of gl_NumWorkGroups.x groups (decknet.c). */
+    uint gid = gl_GlobalInvocationID.y * gl_NumWorkGroups.x * gl_WorkGroupSize.x +
+               gl_GlobalInvocationID.x;
+    if (gid >= k.n_px * k.n_crops) {
+        return;
+    }
+    uint at   = px[gid % k.n_px];
+    uint base = crop[gid / k.n_px] * k.crop_w * k.crop_h;
+    int  x = int(at % k.crop_w), y = int(at / k.crop_w);
+    uint t = k.n_parts;
+    for (uint part = 0u; part < k.n_parts; part++) {
+        uvec4 acc = uvec4(0u);
+        uint  n   = uint(taps[part]);
+        for (uint j = 0u; j < n; j++, t += 2u) {
+            uint yy = uint(clamp(y + taps[t], 0, int(k.crop_h) - 1));
+            uint xx = uint(clamp(x + taps[t + 1u], 0, int(k.crop_w) - 1));
+            acc += pixels[base + yy * k.crop_w + xx];
+        }
+        sums[k.out_base + gid * k.n_parts + part] = acc;
+    }
+}
