@@ -872,8 +872,12 @@ margin anyway: gated, a frame is 5 ms.
 #533 kept a GPU for last: "only if the CPU path misses the target; the
 frame upload usually costs more than these small nets". The sixth step
 measured it where a GPU was in reach, on an Apple M1 Max through Metal, and
-landed what the numbers there carried. **Nothing here is a number of the
-Raspberry Pi 5's GPU**, which was not reachable; see "Not covered".
+landed what the numbers there carried. The seventh ported it to Vulkan and
+measured it on the board #533 is about: **the Raspberry Pi 5's GPU takes
+67 ms for the part of a frame it is given, where two of the board's cores
+take 11 to 12 ms for all of it**, so on the board a stream stays on the CPU;
+see "Vulkan, and the Raspberry Pi 5". The numbers up to there are the M1
+Max's.
 
 ```c
 struct geist_backend *metal = nullptr;
@@ -1088,35 +1092,137 @@ What that says about the board #533 is about is below.
 
 #### Vulkan, and the Raspberry Pi 5
 
-Not written, because it could not be run: the Pi 5 was not reachable, and
-Vulkan on this Mac goes through MoltenVK, where the backend does not run.
-What a port has to do is small, and what it has to show is not:
+```c
+struct geist_backend *vk = nullptr;
+if (geist_backend_create("vulkan", nullptr, nullptr, &vk) == GEIST_OK &&
+    geist_decknet_stream_set_backend(s, vk) == GEIST_OK) {
+    /* as with Metal */
+}
+```
 
-- **What carries over.** The two kernels are integer arithmetic on buffers
-  of 32-bit words, with one thread per sample and one per kernel position;
-  GLSL has the same unsigned arithmetic, so the shader logic and the tables
-  (`include/geist_decknet_gpu.h`) stay as they are, and so do the stream's
-  side and the tests, which would run against a second
-  `geist_decknet_gpu_ops`. A frame's bytes would be read as words (a std430
-  block has no bytes without an extension); the frame memory is whole words
-  for that.
-- **What does not.** Shared memory. A discrete GPU needs the frame's rows
-  uploaded and the results read back: about 7 MB for the bench's network
-  (the floor planes' pixels, the pixels of the white unit, the sums), not
-  the 24 MB of crop memory. The interface has the two stages and the
-  `samples_written` call for that, but no list of the pixels the CPU reads;
-  a port for a discrete GPU adds it.
-- **What must be measured on the Pi 5** (V3D 7.1, memory shared with the
-  CPU): whether the round trip of a command buffer, which is
-  half a millisecond here on a GPU that does this work in 1.3 ms, leaves
-  anything of the 11 to 12 ms two Cortex-A76 cores take; how long V3D takes
-  for 0.88 M samples and 8.0 M taps; whether the CPU's part (2 ms here on a
-  core that is three to four times a Pi's) fits beside it; and what the
-  board draws, which is the half of the target the Mac says nothing about.
-  The 1x1 units and the pooling are a quarter of a CPU frame there (see
-  "Where the frame went") and would stay on the CPU.
-- **And on a desktop GPU**: the same, with the upload and the read-back in
-  the time.
+`src/backends/vulkan/decknet.c` is the Metal file again: the two kernels as
+compute shaders (`shaders/decknet_sample.comp`, `decknet_sums.comp`), the
+same tables, the same two stages. What is different:
+
+- **The frame's bytes are read out of 32-bit words.** A std430 block has no
+  bytes without an extension, and the V3D has neither 8- nor 16-bit types
+  in a shader (`shaderInt16` is false): a byte is a shift and a mask of the
+  word it is in. The frame memory is whole words for that, and the host is
+  little-endian (asserted).
+- **A stage is a submission with a fence**: two command buffers, submitted
+  one behind the other before anything is waited for, and `wait(stage)` is
+  `vkWaitForFences` on that stage's fence. A barrier stands in the second
+  one between the samples and the sums that read them.
+- **Every buffer is host-visible and stays mapped**, so, as with Metal,
+  nothing is uploaded but the frame's rows and nothing is read back. On a
+  GPU that shares the host's memory that is the memory the shaders work
+  on. A discrete GPU reads and writes it over the bus: correct, and not
+  what one would build for it (see "Not covered").
+- **A dispatch is rows of groups** of 64 invocations, at most 32768 groups
+  in a row: a device need not take more than 65535 groups in one
+  dimension, and the bench's network has 13741 groups of samples already.
+- **The pipelines, the descriptor sets, the command buffers and the fences
+  are the stream's own**, made by `set_backend`; a frame records two
+  command buffers and allocates nothing.
+
+**The backend refuses the Pi 5's GPU, and `GEIST_VK_DECKNET_ONLY=1` is the
+way around it.** The model shaders need arithmetic subgroup operations,
+which Mesa's V3DV does not have, and its compiler aborted the process on
+them (#92), so `geist_backend_create("vulkan", ...)` fails on the board.
+With `GEIST_VK_DECKNET_ONLY=1` in the environment the backend does not
+check for them and builds none of the model pipelines: it comes up on the
+V3D, a decknet stream runs on it, and every weight is refused
+(`GEIST_E_UNSUPPORTED`), so no model loads on such a backend. Without the
+variable nothing changed. Which device a backend is on is `GEIST_VK_DEVICE`
+(an index into the loader's list; the board lists the V3D first and Mesa's
+software device second), and `GEIST_VK_VERBOSE=1` prints its name.
+
+**The bits are the CPU's on both devices of the board.**
+`test_decknet_stream_unit` ran every one of its stream tests once more on
+the V3D (V3D 7.1.10.2, Mesa 25.0.7, with `GEIST_VK_DECKNET_ONLY=1`) and on
+Mesa's llvmpipe (`GEIST_VK_DEVICE=1`): all formats, padded rows, gating in
+between, one thread and two, a stream that goes between the CPU and the GPU
+from frame to frame. `bench_stream --backend vulkan` hashed every output of
+every frame of the bench's network at 1920 x 1080 against the still path on
+the V3D: the same hash in RGB8, NV12 and YUYV. CI runs the test on
+lavapipe (the `vulkan-lavapipe` leg, with and without the variable); no CI
+leg has a V3D.
+
+**Measured on the board.** Raspberry Pi 5 (four Cortex-A76, 4 GB, Linux
+6.18, V3D 7.1.10.2, Mesa 25.0.7, Vulkan 1.3.305, gcc 14.2, `TARGET=pi5`),
+`tools/bench_stream` with the bench's network at 1920 x 1080 behind a
+camera at 60 frames per second (`--camera 60 --frames 600 --size 1080
+--only stream`), under the board's lock, started at a load average below
+0.5; the board was at 46 to 57 °C during the runs. Three arms in turn, ten
+rounds, every process bound to two cores (`taskset -c 2,3`,
+`OMP_PROC_BIND=true OMP_PLACES=cores`): the stream on the CPU on two
+threads (`OMP_NUM_THREADS=2`), and on the V3D with one thread and with two
+for the CPU's part. RGB8 / NV12 / YUYV: the median of p50 from the offer
+of a frame to its result in ms, the median of p99 over the ten runs and its
+range, how many of the ten runs had p99 below a frame period, how many of
+the 600 frames were computed (the queue of one drops the others), the
+processor time of the process in seconds, and that time per computed frame
+in ms:
+
+| | p50 | p99, median (range) | runs with p99 < 16.67 ms | computed of 600 | processor time, s | per computed frame, ms |
+| :-- | --: | --: | --: | --: | --: | --: |
+| CPU, two threads | 11.2 / 11.6 / 11.9 | 13.9 (12.2 to 15.7) / 12.4 (12.1 to 13.9) / 12.9 (12.3 to 15.1) | 10 / 10 / 10 | 599 / 599 / 599 | 13.3 / 14.0 / 14.4 | 22.2 / 23.4 / 24.0 |
+| V3D, one thread | 81.5 / 88.5 / 90.6 | 91.7 (90.5 to 96.7) / 98.3 (97.4 to 99.0) / 99.7 (98.3 to 100.3) | 0 / 0 / 0 | 140 / 127 / 125 | 5.6 / 5.0 / 4.9 | 40.0 / 39.4 / 39.6 |
+| V3D, two threads | 77.7 / 85.0 / 86.4 | 88.7 (87.9 to 94.3) / 96.4 (92.7 to 97.6) / 98.3 (96.5 to 99.0) | 0 / 0 / 0 | 147 / 133 / 131 | 6.9 / 6.1 / 6.1 | 47.1 / 46.0 / 46.2 |
+
+- **The V3D is seven times slower than two cores, and misses the target by
+  a factor of five to six.** A frame takes 78 to 90 ms from its offer where the CPU
+  takes 11 to 12; one frame in four or five is computed and the rest are
+  dropped. No run of the V3D had a p99 below 16.67 ms; each of the 30
+  runs of the CPU had.
+- **It does not save processor time either**: 40 ms of it per computed
+  frame with one thread and 46 ms with two, where the CPU path uses 22 to
+  24 ms on its two. The processor
+  time does not see what the GPU draws on top; no power was measured.
+- **NV12 and YUYV cost 7 to 8 ms more than RGB8 on the V3D**, which is the
+  conversion in the shader, four pixels per sample.
+
+Where a frame on the V3D goes: timers around the six parts of `push_gpu`
+(not in the tree), frames back to back (`--frames 100 --only stream`), the
+mean over the 360 frames of the three formats in ms; and the same on Mesa's
+llvmpipe, a Vulkan device whose buffers are ordinary host memory, for the
+CPU's part alone (its "GPU" is the same two cores):
+
+| | V3D, one thread | V3D, two threads | llvmpipe, one thread |
+| :-- | --: | --: | --: |
+| the frame's rows copied | 0.7 | 0.7 | 0.7 |
+| both command buffers recorded and submitted | 0.1 | 0.1 | 0.0 |
+| waiting for the first stage | 7.9 | 8.0 | 11.2 |
+| gains and floor planes, on the CPU | 29.7 | 17.3 | 5.7 |
+| waiting for the second stage | 29.1 | 41.9 | 66.8 |
+| the other planes: kernel sums from their parts, pooling, units | 9.3 | 5.0 | 2.0 |
+
+- **The GPU's own time is 67 ms a frame**, four frame periods. The first
+  stage, 229376 samples, is done 7.9 ms after the submission (35 ns a
+  sample). The second, 650016 samples and the 8.0 M taps of the kernels, is
+  done 59 ms after the first, whatever the CPU does meanwhile (29.7 + 29.1
+  with one thread, 17.3 + 41.9 with two). At the first stage's rate its
+  samples are 22 ms of that, which leaves about 36 ms for the sums; the two
+  were not timed apart. The M1 Max's GPU does all of it in 1.3 ms.
+- **The CPU's part is 39 ms on one thread where it is 8 ms on ordinary
+  memory.** It reads the pixels and the sums where the GPU wrote them, and
+  a mapped V3D buffer is slow to read: copying 4 MiB out of the pixel
+  memory takes 2.6 ms where the same copy between two heap blocks takes
+  0.8 ms (and 0.7 ms out of llvmpipe's buffer). That is what memory mapped
+  without caching looks like; how the kernel's driver maps a buffer object
+  was not looked up. The floor planes read each pixel several times, which
+  is why they lose more than a copy does. Copying what the CPU reads (7 MB)
+  to ordinary memory first would cost about 4 ms and take most of the
+  39 ms away; it was not built, because the 67 ms above stay.
+- **The round trip is not the problem here.** Recording and submitting
+  takes 0.1 ms, and the upload 0.7 ms.
+
+**So on the Pi 5 a stream stays on the CPU**, which is where #533's target
+is met on this bench (p99 below a frame period on two threads); a gated
+frame of the bench's moving block takes 5 to 6 ms on one. The Vulkan path is in
+the tree because it is the same bits on the two devices it ran on, and it
+is the path a Vulkan GPU with more than a V3D's throughput would take; the
+V3D's numbers are the reason not to use it on the board.
 
 ### Not covered
 
@@ -1129,16 +1235,21 @@ What a port has to do is small, and what it has to show is not:
   camera"). The board is shared, so its settings stayed as they are: no run
   with `vm.compaction_proactiveness=0`, with locked memory, with isolated
   cores or without the other services.
-- **The Raspberry Pi 5's GPU, and Vulkan.** The GPU path was measured on
-  an Apple M1 Max, the one GPU in reach; the board was not reachable, and
-  no Vulkan code was written because none could be run. Whether a GPU
-  brings the board closer to the target of #533 or further from it is open;
-  "Vulkan, and the Raspberry Pi 5" has what a port needs and what only the
-  board can say.
+- **A discrete GPU through Vulkan.** The Vulkan path was run on the
+  Raspberry Pi 5's V3D and on Mesa's software device, and measured on the
+  V3D. On a desktop GPU it is correct by construction and not what one
+  would build for it: every buffer is host memory, which such a GPU reads
+  and writes over the bus. Nothing was run or measured there.
+- **Making the V3D faster.** The shaders are the Metal kernels in GLSL, one
+  invocation per sample and per kernel position, and nothing was tuned
+  after the first measurement: the GPU's own time is four frame periods,
+  and no arrangement of the same work was in sight that takes three of
+  them off. What the driver's compiler made of the shaders was not looked
+  at.
 - **Energy in watts.** The processor time of the process is what a program
   sees without privileges, and it does not include what the GPU draws for
   its part of a frame. No power was measured (`powermetrics` needs
-  privileges), on the Mac or anywhere.
+  privileges), on the Mac, on the board or anywhere.
 - **A camera's own buffers.** On Apple a camera hands out pixel buffers
   that lie on IOSurfaces. A stream takes a pointer to bytes, so a caller
   locks such a buffer and the stream copies its rows; binding the surface
@@ -1366,10 +1477,12 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
   parity check there.
 - `include/geist_decknet_gpu.h`: what a backend implements to take the
   integer part of a stream's frame (five functions and the layout of the
-  tables, see "On a GPU"), and `src/backends/metal/decknet.c`, which
-  implements it for Metal: two compute kernels in integer arithmetic. Built
-  with `DECKNET=1` where the Metal backend is built; the arch knows the
-  interface and no backend, the backend the interface and no arch.
+  tables, see "On a GPU"), and `src/backends/metal/decknet.c` and
+  `src/backends/vulkan/decknet.c`, which implement it for Metal and for
+  Vulkan: two compute kernels in integer arithmetic (the Vulkan ones are
+  `shaders/decknet_sample.comp` and `decknet_sums.comp`). Built with
+  `DECKNET=1` where the backend is built; the arch knows the interface and
+  no backend, the backend the interface and no arch.
 - `src/engine/decknet.c`: the public entry points, and the composition point
   for the arch and for the backends that have a decknet path
   (`tools/layers.json`).
@@ -1387,7 +1500,7 @@ did. On the invented network the largest `|C - numpy|` went from 2.8e-7 to
 | `tests/test_decknet_unit.c` | every output of every slot against the numpy reference, within 1e-4, on an invented network everywhere and on the device's network where its fixture exists; replaced homographies; a pair that is not checkable; no allocation per call, the first included; `geist_model_load` refuses the file |
 | `tests/test_decknet_malformed_unit.c` | 54 broken files, each refused with the expected status and message; every truncation; every allocation of a load failing once; units computed by hand (kernel orientation, pooling); argument checks |
 | `tests/fuzz_decknet.c` | the loader, and the forward pass on whatever the loader accepts, under libFuzzer and a deterministic driver |
-| `tests/test_decknet_stream_unit.c` | a stream against the still path, every output bit for bit: RGB8, NV12 and YUYV, padded rows, replaced homographies, across a frame that is not checkable, on one thread and on two; NV12 and YUYV frames of arbitrary bytes (the conversion over its whole range); a gated stream against the still path on the image of its kept tiles, which the test builds with its own tiles and its own sum of absolute differences, at threshold 0 and above it; gating at its edges (a kernel window across a cell of the crop, a tile exactly at the threshold and one above it, each tile changed on its own, one sample at a time across a seam of the sample tables, a frame that is not checkable between two that are); kernels with spans, which a stream sums from prefix sums and the still path tap by tap, at the corners and edges of a crop, one pixel inside them and in the middle, on one thread and two, and in a gated stream that goes both ways; the fixed-point sample itself (weights that never exceed the whole, a flat image sampled to itself, any four bytes to within 2/65536 of the exact value) and a kernel whose pixel sum passes 32 bits; no allocation after the create and the first `set_gate`, the first frame included, the queue's calls among them; 227 frame descriptions refused, exact-fit frames accepted; samples at the last pixels of a frame with 0 to 20 bytes behind it; the queue of one, step by step on one thread, with a consumer that takes one pass per three offers of a second thread, and with that thread offering without waiting (every frame comes back once, dropped or computed, the computed ones in order and with the bits of `push_frame`); state and argument checks; every allocation of a create and of a `set_gate` failing once. The gating tests assert which frames were computed from what was kept (they sample less than a whole frame). **And on a GPU**, where the `metal` backend is built in and has a device (the macOS legs; elsewhere this part is skipped and says so): every test above that pushes a frame once more with its streams on the backend, a stream that goes between the CPU and the GPU from frame to frame, in every format, gated in between, on one thread and two; what `set_backend` refuses (a CPU backend, a null stream); each of its allocations failing once; and that the GPU's memory holds the samples the result was computed from |
+| `tests/test_decknet_stream_unit.c` | a stream against the still path, every output bit for bit: RGB8, NV12 and YUYV, padded rows, replaced homographies, across a frame that is not checkable, on one thread and on two; NV12 and YUYV frames of arbitrary bytes (the conversion over its whole range); a gated stream against the still path on the image of its kept tiles, which the test builds with its own tiles and its own sum of absolute differences, at threshold 0 and above it; gating at its edges (a kernel window across a cell of the crop, a tile exactly at the threshold and one above it, each tile changed on its own, one sample at a time across a seam of the sample tables, a frame that is not checkable between two that are); kernels with spans, which a stream sums from prefix sums and the still path tap by tap, at the corners and edges of a crop, one pixel inside them and in the middle, on one thread and two, and in a gated stream that goes both ways; the fixed-point sample itself (weights that never exceed the whole, a flat image sampled to itself, any four bytes to within 2/65536 of the exact value) and a kernel whose pixel sum passes 32 bits; no allocation after the create and the first `set_gate`, the first frame included, the queue's calls among them; 227 frame descriptions refused, exact-fit frames accepted; samples at the last pixels of a frame with 0 to 20 bytes behind it; the queue of one, step by step on one thread, with a consumer that takes one pass per three offers of a second thread, and with that thread offering without waiting (every frame comes back once, dropped or computed, the computed ones in order and with the bits of `push_frame`); state and argument checks; every allocation of a create and of a `set_gate` failing once. The gating tests assert which frames were computed from what was kept (they sample less than a whole frame). **And on a GPU**, where the `metal` or the `vulkan` backend is built in and has a device (the macOS legs, and the `vulkan-lavapipe` leg, which builds the test with `DECKNET=1` for it; elsewhere this part is skipped and says so): every test above that pushes a frame once more with its streams on the backend, a stream that goes between the CPU and the GPU from frame to frame, in every format, gated in between, on one thread and two; what `set_backend` refuses (a CPU backend, a null stream); each of its allocations failing once; and that the GPU's memory holds the samples the result was computed from |
 | `tests/fuzz_decknet_stream.c` | frame geometry (format, size, stride, extent) and homographies from the input, on exact-size buffers; the harness decides for itself whether a frame fits and fails on a wrong verdict, not only on a crash. And gating: four frames (one, the same again, two with bytes changed) through a gated stream and one without, which have to agree in every bit at threshold 0, and the same frame twice has to give one result at any threshold. And the queue of one: every description goes through an offer as well, which has to give the verdict of a push, queue nothing it refuses and hand back the frame it replaces |
 
 `test_decknet_unit` compares against the numpy reference on two fixtures of
