@@ -171,13 +171,13 @@ static uint32_t vk_spirv_local_size_x(size_t n_words, const uint32_t code[static
     return 0;
 }
 
-[[nodiscard]] static enum geist_status vk_make_pipeline(struct geist_backend *be,
-                                                        struct vk_state      *st,
-                                                        const uint32_t       *code,
-                                                        size_t                code_bytes,
-                                                        VkPipelineLayout      layout,
-                                                        bool                  pin_sg32,
-                                                        VkPipeline           *out) {
+[[nodiscard]] enum geist_status vk_make_pipeline(struct geist_backend *be,
+                                                 struct vk_state      *st,
+                                                 const uint32_t       *code,
+                                                 size_t                code_bytes,
+                                                 VkPipelineLayout      layout,
+                                                 bool                  pin_sg32,
+                                                 VkPipeline           *out) {
     VkShaderModuleCreateInfo minfo = {.sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                       .codeSize = code_bytes,
                                       .pCode    = code};
@@ -384,6 +384,9 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
 #include "vk_pipes.def"
 #undef X
     };
+    if (st->bare) {
+        return GEIST_OK; /* GEIST_VK_DECKNET_ONLY: the layouts and no model pipeline */
+    }
     char         pcache_path[1100];
     const bool   use_pcache = vk_pcache_path(st, sizeof pcache_path, pcache_path);
     const size_t loaded     = vk_pcache_load(be, st, use_pcache ? pcache_path : nullptr);

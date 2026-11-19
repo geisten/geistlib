@@ -358,6 +358,12 @@ struct vk_state {
      * mapped pool. See vk_buffer_create_api. */
     bool scratch_device;
 
+    /* GEIST_VK_DECKNET_ONLY=1: a backend for decknet streams alone (#533), on
+     * a device the model pipelines do not compile on (Mesa V3DV, #92). The
+     * subgroup requirement is not checked, no pipeline of vk_pipes.def is
+     * built, and resolve_weight refuses every weight, so no model loads. */
+    bool bare;
+
     /* Set when a sequence flush failed (submit / wait / end); the next host
      * readback (argmax, download, host view) reports it as GEIST_E_BACKEND and
      * clears it — see vk_seq_take_failure. */
@@ -651,6 +657,16 @@ bool vk_t_geom(const struct geist_tensor *t, size_t *rows, size_t *cols, size_t 
                                   uint32_t                  *out_elem_off);
 
 [[nodiscard]] enum geist_status vk_create_pipelines(struct geist_backend *be, struct vk_state *st);
+
+/* One compute pipeline of `code` (SPIR-V, code_bytes of it) on `layout`;
+ * pin_sg32 pins it to full 32-lane subgroups. */
+[[nodiscard]] enum geist_status vk_make_pipeline(struct geist_backend *be,
+                                                 struct vk_state      *st,
+                                                 const uint32_t       *code,
+                                                 size_t                code_bytes,
+                                                 VkPipelineLayout      layout,
+                                                 bool                  pin_sg32,
+                                                 VkPipeline           *out);
 
 void vk_seq_flush(struct vk_state *st);
 /* End the open submission here without waiting (a roll, or a flush when the

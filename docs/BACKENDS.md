@@ -273,6 +273,7 @@ limit fails the load.
 | `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |
 | `GEIST_VK_STRICT=1` | turn each of those host fallbacks into an error naming the site; a host-path weight is refused at load |
+| `GEIST_VK_DECKNET_ONLY=1` | a Vulkan backend for decknet streams alone (#533, `DECKNET=1`, [decknet](DECKNET.md#vulkan-and-the-raspberry-pi-5)): the subgroup requirement is not checked and no model pipeline is built, so it comes up on a device the model shaders do not compile on (Mesa V3DV on the Raspberry Pi 5, #92); every weight is refused, so no model loads on it |
 | `GEIST_KV_INT8=0 GEIST_KV_F16=0` | FP32 KV cache, for comparing against `cpu_scalar` (CPU defaults to INT8, Vulkan to F16) |
 
 ## Resident memory per backend

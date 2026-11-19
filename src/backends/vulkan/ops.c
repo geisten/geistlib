@@ -569,6 +569,13 @@ vk_repack_weight(const struct geist_weight *w, size_t bytes, bool *failed) {
     if (w == nullptr || w->raw == nullptr || w->n_in <= 0 || w->n_out <= 0 || w->raw_nbytes == 0u) {
         return GEIST_E_INVALID_ARG;
     }
+    if (st->bare) {
+        geist_backend_set_error(be,
+                                GEIST_E_UNSUPPORTED,
+                                "vulkan: GEIST_VK_DECKNET_ONLY=1, this backend has no model "
+                                "pipelines");
+        return GEIST_E_UNSUPPORTED;
+    }
     /* vk_weight_bytes(w) below derives the upload size from the shape and
      * reads that many bytes out of `raw`, so a short source is read past
      * its end before it ever reaches the device. */

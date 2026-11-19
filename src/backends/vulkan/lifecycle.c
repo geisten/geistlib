@@ -302,8 +302,8 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
      * refuse it here and let "auto" fall back to a CPU backend. */
     const VkSubgroupFeatureFlags sg_need =
             VK_SUBGROUP_FEATURE_BASIC_BIT | VK_SUBGROUP_FEATURE_ARITHMETIC_BIT;
-    if ((sgp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) == 0u ||
-        (sgp.supportedOperations & sg_need) != sg_need) {
+    if (!st->bare && ((sgp.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) == 0u ||
+                      (sgp.supportedOperations & sg_need) != sg_need)) {
         geist_backend_set_error(be,
                                 GEIST_E_UNSUPPORTED,
                                 "vulkan: %s has no arithmetic subgroup operations in compute "
@@ -607,6 +607,7 @@ static size_t vk_parse_bytes(const char *v) {
     st->profile_enabled = geist_env_flag("GEIST_VK_PROFILE", false);
     st->pq2_f32_acc     = geist_env_flag("GEIST_VK_PQ2_F32_ACC", false);
     st->strict          = geist_env_flag("GEIST_VK_STRICT", false);
+    st->bare            = geist_env_flag("GEIST_VK_DECKNET_ONLY", false);
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
     const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
     st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
