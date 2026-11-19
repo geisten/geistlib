@@ -1160,6 +1160,20 @@ jobs:
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
           done
+      # decknet's stream test (#533) with its streams on the Vulkan backend:
+      # every output against the CPU path, bit for bit. The test leaves that
+      # part out where the backend has no device, so the line that says it
+      # ran is asked for. Once more on a backend without the model pipelines
+      # (GEIST_VK_DECKNET_ONLY=1, what a Raspberry Pi 5 runs it on). Last,
+      # because it leaves a DECKNET=1 library behind.
+      - name: decknet stream on lavapipe (DECKNET=1)
+        run: |
+          set -eo pipefail
+          make TARGET=linux CC="ccache gcc-14" BACKENDS="vulkan cpu_x86 cpu_scalar" GEMM_PROVIDER=native DECKNET=1 bin/linux/release/tests/test_decknet_stream_unit
+          for only in 0 1; do
+            GEIST_VK_DECKNET_ONLY=$only bin/linux/release/tests/test_decknet_stream_unit 2>&1 | tee ci-diagnostics/decknet-stream-vulkan-$only.txt
+            grep -q -- '---- every stream on the vulkan backend ----' ci-diagnostics/decknet-stream-vulkan-$only.txt
+          done
       - name: Upload Vulkan diagnostics
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
