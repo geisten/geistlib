@@ -91,7 +91,7 @@ shrinks.
 
 Composition point `src/engine/arch_registry.c` may also use transformer, audio_conformer, vision_siglip.
 
-Composition point `src/engine/decknet.c` may also use decknet, metal.
+Composition point `src/engine/decknet.c` may also use decknet, metal, vulkan.
 
 Composition point `src/engine/backend_registry.c` may also use cpu_neon, cpu_scalar, cpu_x86, metal, vulkan.
 <!-- layers:end -->

@@ -207,6 +207,11 @@ runs on a hosted runner. The tests are invoked directly: exit 77 (missing
 loader/device) fails the job. `vulkaninfo --summary` is logged per run.
 Tolerances live in the parity test: 1e-3 relative (f32 paths), 2e-2 for the
 f16 coopmat path where exposed. Minimum Vulkan: 1.2.
+The job then builds `test_decknet_stream_unit` with `DECKNET=1` and runs it
+twice on lavapipe, on a backend as it is and on one made with
+`GEIST_VK_DECKNET_ONLY=1` (#533): a decknet stream's frames on the Vulkan
+backend against the CPU path, bit for bit. The test skips that part where
+the backend has no device, so the job asks for the line that says it ran.
 
 Physical-GPU validation is the `vulkan-gpu` workflow in the private
 `.gitea/workflows/vulkan-gpu.yml` on git.geisten.net, nightly on `main` and on demand for
