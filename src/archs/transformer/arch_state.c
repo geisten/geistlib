@@ -58,6 +58,7 @@ static struct transformer_runtime_flags transformer_runtime_flags_from_env(void)
             .batch_per_session     = geist_env_flag("GEIST_DECODE_BATCH_PER_SESSION", false),
             .batch_attn_copy       = geist_env_flag("GEIST_DECODE_BATCH_ATTN_COPY", false),
             .batch_moe_host        = geist_env_flag("GEIST_DECODE_BATCH_MOE_HOST", false),
+            .kv_shared_full        = geist_env_flag("GEIST_KV_SHARED_FULL", false),
     };
 }
 

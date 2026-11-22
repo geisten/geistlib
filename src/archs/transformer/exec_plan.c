@@ -368,6 +368,23 @@ enum geist_status transformer_exec_plan_build(struct transformer_arch_state *st)
             return GEIST_E_UNSUPPORTED;
         }
     }
+    /* The layers at the end that keep nothing per position (#591): KV-shared
+     * attention layers whose cache is a layer's before them. */
+    st->n_cache_layers = st->n_layers;
+    while (st->n_cache_layers > 0) {
+        const size_t li = st->n_cache_layers - 1;
+        if (!st->layers[li].is_kv_shared || st->layers[li].mixer == GEIST_MIXER_DELTANET) {
+            break;
+        }
+        st->n_cache_layers = li;
+    }
+    for (size_t li = st->n_cache_layers; li < st->n_layers; li++) {
+        const int src = st->layer_plans[li].kv_src;
+        if (src < 0 || (size_t) src >= st->n_cache_layers) {
+            st->n_cache_layers = st->n_layers; /* a cache that is not before them: run all */
+            break;
+        }
+    }
     const struct geist_backend *be = st->backend;
     return check_deltanet_mixer(
             st,

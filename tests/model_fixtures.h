@@ -7,7 +7,9 @@
  *                   tokenizer_fixtures.h;
  *   mf_qwen35_gguf  a Qwen3.5-style hybrid: gated-DeltaNet blocks with a
  *                   softmax attention block every `interval` blocks;
- *   mf_qwen3moe_gguf a Qwen3-MoE: Qwen3 attention, a mixture-of-experts FFN.
+ *   mf_qwen3moe_gguf a Qwen3-MoE: Qwen3 attention, a mixture-of-experts FFN;
+ *   mf_gemma4_gguf  a Gemma 4: sliding-window and full layers, the last ones
+ *                   KV-shared, per-layer embeddings.
  *
  * Load the buffer with geist_model_load_from_memory, or write it out for
  * geist_model_load. Header-only; each includer uses what it needs.
@@ -351,6 +353,95 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
         if (c->tok_bos) {
             tf_tokenizer_bos_kv(&o, c->tok);
         }
+    }
+    mf_write_tensors(&o, &ts, c->seed);
+    return o;
+}
+
+/* ---- gemma4 --------------------------------------------------------------- */
+
+/* Gemma 4 geometry (gemma4.* keys): layer i is a full-attention layer when
+ * (i + 1) % period == 0 (head dim hd_full, RoPE on a quarter of it), else a
+ * sliding-window layer (hd_swa, the last `window` positions); the last
+ * `shared` layers are KV-shared and read the cache of the last layer of
+ * their kind before them, so layers - shared >= period. One KV head,
+ * GEGLU, sandwich norms, per-layer embeddings of hpl dims and a per-layer
+ * output scale of -0.75 (mf_ramp(0)). The vocabulary is the family's
+ * 262144, which no key overrides: token_embd and per_layer_token_embd take
+ * (d_model + layers * hpl) * 262144 floats, so keep both small. Weights as
+ * mf_llama; no tokenizer. */
+struct mf_gemma4 {
+    uint32_t layers, shared, period, d_model, heads, hd_full, hd_swa, ffn, hpl, window, context;
+    uint64_t seed;
+};
+
+static inline struct tf_buf mf_gemma4_gguf(const struct mf_gemma4 *c) {
+    constexpr uint32_t VOCAB = 262144;
+    const uint32_t     ple   = c->layers * c->hpl;
+    struct mf_tensors  ts    = {0};
+    mf_add(&ts, c->d_model, VOCAB, MF_RAND, "token_embd.weight");
+    mf_add(&ts, ple, VOCAB, MF_RAND, "per_layer_token_embd.weight");
+    mf_add(&ts, c->d_model, ple, MF_RAND, "per_layer_model_proj.weight");
+    mf_add(&ts, c->hpl, 0, MF_ONE, "per_layer_proj_norm.weight");
+    mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
+    for (uint32_t l = 0; l < c->layers; l++) {
+        const uint32_t hd = (l + 1) % c->period == 0 ? c->hd_full : c->hd_swa;
+        mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
+        mf_add(&ts, c->d_model, c->heads * hd, MF_RAND, "blk.%u.attn_q.weight", l);
+        mf_add(&ts, c->d_model, hd, MF_RAND, "blk.%u.attn_k.weight", l);
+        mf_add(&ts, c->d_model, hd, MF_RAND, "blk.%u.attn_v.weight", l);
+        mf_add(&ts, hd, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
+        mf_add(&ts, hd, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
+        mf_add(&ts, c->heads * hd, c->d_model, MF_RAND, "blk.%u.attn_output.weight", l);
+        mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.post_attention_norm.weight", l);
+        mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
+        mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate.weight", l);
+        mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up.weight", l);
+        mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down.weight", l);
+        mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.post_ffw_norm.weight", l);
+        mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.post_norm.weight", l);
+        mf_add(&ts, c->d_model, c->hpl, MF_RAND, "blk.%u.inp_gate.weight", l);
+        mf_add(&ts, c->hpl, c->d_model, MF_RAND, "blk.%u.proj.weight", l);
+        mf_add(&ts, 1, 0, MF_RAMP, "blk.%u.layer_output_scale.weight", l);
+    }
+    const struct {
+        const char *key;
+        uint32_t    v;
+    } u32[] = {
+            {"gemma4.block_count", c->layers},
+            {"gemma4.context_length", c->context},
+            {"gemma4.embedding_length", c->d_model},
+            {"gemma4.feed_forward_length", c->ffn},
+            {"gemma4.attention.head_count", c->heads},
+            {"gemma4.attention.head_count_kv", 1},
+            {"gemma4.attention.key_length", c->hd_full},
+            {"gemma4.attention.key_length_swa", c->hd_swa},
+            {"gemma4.attention.sliding_window", c->window},
+            {"gemma4.attention.shared_kv_layers", c->shared},
+            {"gemma4.embedding_length_per_layer_input", c->hpl},
+    };
+    const size_t n_u32 = sizeof u32 / sizeof u32[0];
+
+    struct tf_buf o = {0};
+    tf_put(&o, "GGUF", 4);
+    tf_u32(&o, 3);
+    tf_u64(&o, ts.n);
+    tf_u64(&o, 1 + n_u32 + 2);
+    mf_key(&o, "general.architecture", TF_GGUF_STRING);
+    tf_gstr(&o, "gemma4", 6);
+    for (size_t i = 0; i < n_u32; i++) {
+        mf_key(&o, u32[i].key, TF_GGUF_UINT32);
+        tf_u32(&o, u32[i].v);
+    }
+    mf_key(&o, "gemma4.attention.layer_norm_rms_epsilon", TF_GGUF_FLOAT32);
+    tf_f32(&o, 1e-6f);
+    /* true = sliding-window layer, one GGUF bool (type 7) per layer */
+    mf_key(&o, "gemma4.attention.sliding_window_pattern", TF_GGUF_ARRAY);
+    tf_u32(&o, 7);
+    tf_u64(&o, c->layers);
+    for (uint32_t l = 0; l < c->layers; l++) {
+        const uint8_t sliding = (l + 1) % c->period != 0;
+        tf_put(&o, &sliding, 1);
     }
     mf_write_tensors(&o, &ts, c->seed);
     return o;

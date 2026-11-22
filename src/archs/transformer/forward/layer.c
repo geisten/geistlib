@@ -178,8 +178,14 @@ enum geist_status transformer_forward_one_layer(struct transformer_arch_session 
 
     frame_arena_reset(&sess->scratch_arena);
 
-    ctx.x_prenormed = sess->prenorm_layer == (size_t) layer_idx && sess->prenorm_h == h_in_buf &&
-                      sess->prenorm_pos == q_position && sess->prenorm_seq == seq;
+    /* Not layer 0: prenorm_layer 0 means none, and an earlier pass of the
+     * same rows at the same position may have left the other three as this
+     * call's (a prefill of one chunk, a reset and the next prompt; a step
+     * taken again after a truncate). Layer 0 then took that pass's last
+     * normalised rows for its own input. */
+    ctx.x_prenormed     = layer_idx > 0 && sess->prenorm_layer == (size_t) layer_idx &&
+                          sess->prenorm_h == h_in_buf && sess->prenorm_pos == q_position &&
+                          sess->prenorm_seq == seq;
     sess->prenorm_layer = 0;
 
     ctx.profile = transformer_profile_enabled(&g_layer_profile);
