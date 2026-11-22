@@ -454,6 +454,14 @@ struct transformer_arch_session {
      * decode's decode_rows, #245), not as a prefill chunk's per-expert GEMMs.
      * Set by verify_forward around its layer loop only. */
     bool verify_rows;
+    /* Prefill rows whose hidden state nobody reads (#591): the layer loop
+     * runs layers [0, n_cache_layers) for them, which writes every cache a
+     * later row reads, and leaves its output buffer alone. Set by the
+     * prefill loops around their layer loop only (arch_ops.c).
+     * n_cache_rows counts them over the session's life: what the tests read
+     * to know the rows were left out, not merely that nothing changed. */
+    bool   cache_rows;
+    size_t n_cache_rows;
     /* geist_session_checkpoint (#192): up to TRANSFORMER_CKPT_SLOTS lengths
      * to which truncate can return, DeltaNet state included (ckpt_conv_buf /
      * ckpt_S_buf: slots x n_dn x conv_n / s_n floats, allocated on the first
@@ -653,6 +661,9 @@ struct transformer_runtime_flags {
     bool dn_seq_prefill;    /* force the sequential DeltaNet prefill path
                              * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
                              * oracle for the chunked formulation */
+    bool kv_shared_full;    /* prefill runs the KV-shared layers for every row
+                             * (GEIST_KV_SHARED_FULL=1), the oracle and A/B of
+                             * the rows it otherwise leaves out (#591) */
 };
 
 /* ---- Top-level state --------------------------------------------------- */
@@ -797,6 +808,13 @@ struct transformer_arch_state {
     bool   m_max_from_env;   /* GEIST_M_MAX set — family caps must not override */
     size_t m_max;            /* prefill chunk size — scratch sized for this many
                               * tokens; longer prompts are chunked. Default 64. */
+    /* Layers [0, n_cache_layers) are the ones a later position depends on:
+     * from there on every layer is KV-shared, reading an earlier layer's
+     * cache and keeping nothing per position (Gemma 4 E2B: 15 of 35, E4B: 24
+     * of 42). n_layers for a model without such layers at its end. A prefill
+     * row whose output nobody reads stops there (#591, cache_rows). Set by
+     * transformer_exec_plan_build. */
+    size_t n_cache_layers;
 
     /* ---- Weight arena (β mode). ----------------------------------------- *
      * Mapped backend buffers (chunks), allocated through the backend so the
@@ -973,8 +991,9 @@ static inline bool transformer_layer_owned(const struct transformer_arch_state *
  * the shortcut must match a real zero-filled input exactly, and a
  * non-zero input must change the result.
  *
- * Side effects: appends one (K, V) pair into the layer's KV cache (or the
- * source layer's cache if kv_shared); advances sess->kv_len IFF
+ * Side effects: appends one (K, V) pair into the layer's KV cache (a
+ * KV-shared layer appends nothing: it reads its source layer's cache and
+ * projects only q); advances sess->kv_len IFF
  * advance_kv == true (caller controls this so per-layer cross-refs can run
  * without polluting state).
  */
@@ -1003,6 +1022,26 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
  * kernels, so the last chunk gets 8, 4 or 2 rows. */
 [[nodiscard]] size_t
 transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_position, size_t n);
+
+/* Cache rows (#591, arch_ops.c): the rows of a prefill's next pass, out of
+ * the `chunk` its plan gives it, and in *cache_rows whether they stop after
+ * layer n_cache_layers - 1. A chunk before the last is one pass of cache
+ * rows. The last chunk is two passes where it can be split without moving
+ * a bit: its first rows as cache rows, then its tail through every layer;
+ * else one pass through every layer. The tail on a CPU backend is
+ * TRANSFORMER_PREFILL_TAIL_ROWS rows of a chunk of at least two more; on
+ * any other backend it starts at a multiple of TRANSFORMER_PREFILL_TAIL_ALIGN
+ * rows and has at least TRANSFORMER_PREFILL_TAIL_MIN (prefill_tail_rows
+ * says why). Always `chunk` and false for a model or session without cache
+ * rows. */
+constexpr size_t TRANSFORMER_PREFILL_TAIL_ROWS  = 8;
+constexpr size_t TRANSFORMER_PREFILL_TAIL_ALIGN = 128;
+constexpr size_t TRANSFORMER_PREFILL_TAIL_MIN   = 64;
+
+[[nodiscard]] size_t transformer_prefill_pass_rows(const struct transformer_arch_session *sess,
+                                                   size_t                                 chunk,
+                                                   bool                                   last,
+                                                   bool *cache_rows);
 
 /* Offload (#78): write seq rows of K and V ([seq, kv_out] floats each,
  * after RoPE, as the layer's attention produces them) for layer layer_idx

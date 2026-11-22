@@ -499,7 +499,10 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
     struct geist_buffer *h_in  = sess->scratch_h_a;
     struct geist_buffer *h_out = sess->scratch_h_b;
 
-    for (size_t li = st->layer_lo; li < st->n_layers; li++) {
+    /* Cache rows (#591) end with the last layer that writes a cache: the
+     * layers after it read those caches and keep nothing of their own. */
+    const size_t n_run = sess->cache_rows ? st->n_cache_layers : st->n_layers;
+    for (size_t li = st->layer_lo; li < n_run; li++) {
         /* Gather this layer's per_layer_input slices into
          * scratch_ple_lookup when the family has PLE. Non-PLE families
          * pass nullptr and forward_one_layer skips the PLE injection. */
@@ -565,6 +568,14 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
     if (mirror) {
         sess->twin_valid = q_position + seq;
         atomic_fetch_add_explicit(&st->offload->mirrored, 1, memory_order_relaxed);
+    }
+    if (sess->cache_rows) {
+        /* No output: the rows' state after layer n_run - 1 is no layer's
+         * output the caller could use, and its tail may have normalised it
+         * for a layer that does not run (#17). */
+        sess->prenorm_layer = 0;
+        sess->n_cache_rows += seq;
+        return GEIST_OK;
     }
     /* h_in is the last layer's output; copy seq rows to out_h_buf. */
     {

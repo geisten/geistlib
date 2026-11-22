@@ -443,6 +443,83 @@ static bool transformer_cancel_requested(struct transformer_arch_session *sess) 
     return true;
 }
 
+/* ---- Cache rows (#591) -------------------------------------------------
+ *
+ * A model whose last layers are KV-shared (Gemma 4: 20 of E2B's 35, 18 of
+ * E4B's 42) needs those layers only for the rows whose output is read. They
+ * read the cache of a layer before them and keep nothing per position, so
+ * what a prefill leaves behind (every layer's K/V rows, the token history)
+ * is written by layers [0, n_cache_layers) alone. A prefill reads one row's
+ * output, the last one's (logits, a decision readout, a last-token
+ * embedding); every other row is a cache row, and the layer loop stops
+ * after layer n_cache_layers - 1 for it (sess->cache_rows).
+ *
+ * Not when something reads every row's last hidden state: the MTP drafter's
+ * sync and mean pooling. Not with a layer split or offload, whose stages
+ * have their own layer ranges. Not with GEIST_DUMP_ACT_SPARSITY, which
+ * counts every layer's rows, and not with GEIST_KV_SHARED_FULL=1. */
+static bool prefill_cache_rows_ok(const struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st = sess->model;
+    return st->n_cache_layers < st->n_layers && st->layer_lo == 0 &&
+           !st->runtime_flags.kv_shared_full && !st->runtime_flags.dump_act_sparsity &&
+           !sess->mtp_enabled && st->config.pooling != GEIST_POOLING_MEAN &&
+           sess->split_sess == nullptr && sess->twin_sess == nullptr;
+}
+
+/* The rows at the end of a last chunk that run every layer; `chunk` when it
+ * is not to be split. The last row's bits must be those of the chunk in one
+ * pass, so the two passes have to compute every row as that one did.
+ *
+ * A CPU backend's M>1 kernels give a row the same bits for every row count
+ * and every place in the pass (#527, #554, test_moe_row_invariant_unit), a
+ * pass of one row being the exception (the decode kernels): any split that
+ * leaves two rows before it will do, and the tail is one token tile.
+ *
+ * A GPU backend's do not. Its kernels tile the rows of a pass, 8 to 128 to
+ * a tile, each tile computed by its own row count, and pick their path by
+ * the pass's row count, at thresholds up to 64 rows (Metal: 9 rows and
+ * fewer on the matvec kernels, ragged 32- and 64-row tiles on the bounded
+ * ones, 128 rows to a tensor-unit threadgroup). A split at a multiple of
+ * 128 rows that leaves 64 or more keeps every tile and every path of the
+ * one pass. A shorter tail is not safe there: on the M1 Max (Gemma 4 E2B)
+ * the last 16, 32 or 64 of 256 rows gave the one pass's logits, the last
+ * 24 did not, and no tail of 10 to 64 rows did for a chunk of 100, 127 or
+ * 129. */
+static size_t prefill_tail_rows(const struct transformer_arch_session *sess, size_t chunk) {
+    const struct geist_backend_descriptor *desc = sess->model->backend->desc;
+    if (desc != nullptr && strncmp(desc->name, "cpu_", 4) == 0) {
+        return chunk >= TRANSFORMER_PREFILL_TAIL_ROWS + 2 ? TRANSFORMER_PREFILL_TAIL_ROWS : chunk;
+    }
+    if (chunk < TRANSFORMER_PREFILL_TAIL_ALIGN + TRANSFORMER_PREFILL_TAIL_MIN) {
+        return chunk;
+    }
+    const size_t head = (chunk - TRANSFORMER_PREFILL_TAIL_MIN) / TRANSFORMER_PREFILL_TAIL_ALIGN *
+                        TRANSFORMER_PREFILL_TAIL_ALIGN;
+    return chunk - head;
+}
+
+size_t transformer_prefill_pass_rows(const struct transformer_arch_session *sess,
+                                     size_t                                 chunk,
+                                     bool                                   last,
+                                     bool                                  *cache_rows) {
+    *cache_rows = false;
+    if (!prefill_cache_rows_ok(sess)) {
+        return chunk;
+    }
+    if (!last) {
+        *cache_rows = true;
+        return chunk;
+    }
+    /* KIVI drains whole groups to 2 bits after a pass: between the two
+     * passes that would be rows the one pass attended at FP32. */
+    const size_t tail = sess->kv_kivi_enabled ? chunk : prefill_tail_rows(sess, chunk);
+    if (tail == chunk) {
+        return chunk;
+    }
+    *cache_rows = true;
+    return chunk - tail;
+}
+
 static enum geist_status prefill_text_batch_inner(struct transformer_arch_session     *sess,
                                                   size_t                               n,
                                                   const geist_token_t                 *ids,
@@ -466,7 +543,9 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
      * sized with sess->m_max (arch_state.c), which may be smaller. With
      * offload a chunk the load backend runs may be smaller still (#78). */
     for (size_t off = 0, chunk = 0; off < n; off += chunk) {
-        chunk = transformer_prefill_chunk(sess, sess->kv_len, n - off);
+        chunk           = transformer_prefill_chunk(sess, sess->kv_len, n - off);
+        bool cache_rows = false;
+        chunk           = transformer_prefill_pass_rows(sess, chunk, off + chunk == n, &cache_rows);
         if (transformer_cancel_requested(sess)) {
             return GEIST_E_CANCELLED; /* kv_len counts the finished sub-batches */
         }
@@ -491,11 +570,15 @@ static enum geist_status prefill_text_batch_inner(struct transformer_arch_sessio
         /* 3. Layer loop seq=chunk. */
         const size_t q_pos = sess->kv_len;
         transformer_hist_put(sess, q_pos, chunk, ids + off);
-        s = transformer_run_all_layers(
+        sess->cache_rows = cache_rows;
+        s                = transformer_run_all_layers(
                 sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
+        sess->cache_rows = false;
         if (s != GEIST_OK) {
             return s;
         }
+        /* Not reached with cache rows, which leave scratch_h_b alone: the
+         * drafter is off for them (prefill_cache_rows_ok). */
         s = transformer_mtp_sync_target(sess, chunk, ids + off, sess->scratch_h_b);
         if (s != GEIST_OK) {
             return s;
@@ -838,8 +921,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
 
     enum geist_status rc    = GEIST_OK;
     const size_t      m_max = sess->m_max;
-    for (size_t off = 0; off < n; off += m_max) {
-        const size_t chunk = (n - off > m_max) ? m_max : (n - off);
+    for (size_t off = 0, chunk = 0; off < n; off += chunk) {
+        chunk           = (n - off > m_max) ? m_max : (n - off);
+        bool cache_rows = false;
+        chunk           = transformer_prefill_pass_rows(sess, chunk, off + chunk == n, &cache_rows);
         if (transformer_cancel_requested(sess)) {
             rc = GEIST_E_CANCELLED; /* kv_len counts the finished sub-batches */
             break;
@@ -891,8 +976,10 @@ enum geist_status transformer_prefill_audio_batch(struct transformer_arch_sessio
         /* 3. Layer loop. */
         const size_t q_pos = sess->kv_len;
         transformer_hist_put(sess, q_pos, chunk, nullptr);
-        rc = transformer_run_all_layers(
+        sess->cache_rows = cache_rows;
+        rc               = transformer_run_all_layers(
                 sess, q_pos, chunk, sess->scratch_h_a, ple_buf, sess->scratch_h_b);
+        sess->cache_rows = false;
         if (rc != GEIST_OK) {
             return rc;
         }
