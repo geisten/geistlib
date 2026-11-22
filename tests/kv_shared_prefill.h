@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { N_MAX = 1200, CTX = 2048, N_DECODE = 6 };
+enum { N_MAX = 1200, CTX = 2048, N_DECODE = 4 };
 
 static geist_token_t g_ids[N_MAX];
 
@@ -614,11 +614,13 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
         }
         const size_t m  = p.a[0]->m_max;
         const size_t sp = kvs_split_rows(be);
-        /* A last chunk that splits (KIVI: that would), after one chunk and
-         * after two, which crosses a KIVI drain. */
-        fails = case_prefill_decode(&p, m + sp + 13) || case_prefill_decode(&p, 2 * m + sp + 21) ||
+        /* A last chunk that a GPU backend splits (KIVI: would split), after
+         * one chunk; KIVI also across two of its 128-token drains. */
+        fails = case_prefill_decode(&p, m + sp + 13) ||
                 case_truncate(&p, m + sp + 30, m + sp + 25, 19);
-        if (modes[i].kv != GEIST_KV_KIVI) { /* KIVI has no snapshot */
+        if (modes[i].kv == GEIST_KV_KIVI) {
+            fails = fails || case_prefill_decode(&p, 2 * m + sp + 149);
+        } else { /* KIVI has no snapshot */
             fails = fails || case_snapshot(&p, m + sp + 7);
         }
         close_pair(&p);

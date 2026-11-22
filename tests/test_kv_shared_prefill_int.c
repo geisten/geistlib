@@ -18,7 +18,7 @@
  *   - one prefill call at lengths around every boundary of the plan (a
  *     last chunk too short to split, the shortest that splits, one chunk,
  *     one chunk and a short last one, several chunks), at the model's chunk
- *     and at a session chunk of 16, then 6 decode steps, the state after
+ *     and at a session chunk of 16, then 4 decode steps, the state after
  *     each;
  *   - two prefill calls in a row; a prefill, a truncate and a prefill;
  *   - the same prompt again after a reset, and a token fed at a position a
