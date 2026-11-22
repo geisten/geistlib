@@ -13,10 +13,11 @@
  *          not compile, an #include without a row warns as unused.
  *   name   GEIST_VK_PROFILE label.
  *   nbind  storage-buffer bindings, 2..VK_MAX_BINDINGS (descriptor layout).
- *   kind   PLAIN, TILED (register-tiled GEMM, pinned to 32-lane subgroups)
- *          or COOPMAT (created only with VK_KHR_cooperative_matrix; without
+ *   kind   PLAIN, TILED (register-tiled GEMM, pinned to 32-lane subgroups),
+ *          COOPMAT (created only with VK_KHR_cooperative_matrix; without
  *          it the pipe stays VK_NULL_HANDLE and vk_linear_cm_route keeps the
- *          register-tiled GEMM).
+ *          register-tiled GEMM) or NOCM (created only without it: what a
+ *          GPU without tensor cores runs in a COOPMAT pipe's place).
  *
  * Adding a pipeline: one row here, one #include in pipelines.c.
  * Not run through clang-format (make format covers *.c / *.h only).
@@ -211,3 +212,12 @@ X(VK_PIPE_MOE_MM_Q6K,             moe_mm_q6k_spv,              "moe_mm_q6k",    
 X(VK_PIPE_MOE_MM_Q8_0,            moe_mm_q8_0_spv,             "moe_mm_q8_0",            4, PLAIN)
 X(VK_PIPE_MOE_MM_Q5_0,            moe_mm_q5_0_spv,             "moe_mm_q5_0",            4, PLAIN)
 X(VK_PIPE_MOE_MM_MXFP4,           moe_mm_mxfp4_spv,            "moe_mm_mxfp4",           4, PLAIN)
+/* #588: prefill attention without cooperative matrices, 16 query rows per
+ * workgroup */
+X(VK_PIPE_ATTENTION_F16_RT,       attention_f16_rt_spv,        "attention_f16_rt",       4, NOCM)
+/* #588: Q4_K / Q5_K / Q6_K / Q8_0 GEMMs without cooperative matrices, a
+ * 128 x 64 register tile with f32 operands (mm_rt.glsl) */
+X(VK_PIPE_MM_Q4K_RT,              matmul_q4k_rt_spv,           "mm_q4k_rt",              3, NOCM)
+X(VK_PIPE_MM_Q5K_RT,              matmul_q5k_rt_spv,           "mm_q5k_rt",              3, NOCM)
+X(VK_PIPE_MM_Q6K_RT,              matmul_q6k_rt_spv,           "mm_q6k_rt",              3, NOCM)
+X(VK_PIPE_MM_Q8_0_RT,             matmul_q8_0_rt_spv,          "mm_q8_0_rt",             3, NOCM)

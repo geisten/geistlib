@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q5_K GEMM without cooperative matrices (#588). Body and notes:
+ * mm_rt.glsl. */
+#define DT_Q5K 1
+#include "mm_rt.glsl"
