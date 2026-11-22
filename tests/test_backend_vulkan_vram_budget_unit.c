@@ -19,6 +19,13 @@
  *     not fit fails session creation with that error; with room the model
  *     loads without spilling and decodes.
  *
+ *   - #249: on RADV with an integrated GPU (the memory types of the Ryzen
+ *     9950X's, as the driver reports them) an allocation past the budget of
+ *     the VRAM carve-out is made from a type outside the device-local heap
+ *     with the host properties of the planned one; within the budget, and
+ *     on any other device, from the planned type itself. No device is
+ *     needed for this one.
+ *
  * SKIPs when the Vulkan backend is not built or has no device.
  */
 #include "test_helpers.h"
@@ -243,7 +250,57 @@ static int run_model(const struct tf_buf *g,
     return fails;
 }
 
+/* #249: the type an allocation is made from, on the memory types RADV
+ * reports for the Ryzen 9950X's integrated GPU (run 3998): heap 1 is the
+ * device-local one (21 GiB of system memory, placed in the 2 GiB carve-out
+ * first), heap 0 the host's. */
+static int check_carveout(void) {
+    constexpr VkMemoryPropertyFlags dl = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    constexpr VkMemoryPropertyFlags vis =
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    constexpr VkMemoryPropertyFlags cached = VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+    struct vk_state                 st     = {
+            .mem_props = {.memoryTypeCount = 7,
+                          .memoryTypes     = {{.propertyFlags = dl, .heapIndex = 1},
+                                              {.propertyFlags = dl, .heapIndex = 1},
+                                              {.propertyFlags = vis, .heapIndex = 0},
+                                              {.propertyFlags = dl | vis, .heapIndex = 1},
+                                              {.propertyFlags = dl | vis, .heapIndex = 1},
+                                              {.propertyFlags = vis | cached, .heapIndex = 0},
+                                              {.propertyFlags = dl | vis | cached, .heapIndex = 1}},
+                          .memoryHeapCount = 2}};
+    int fails = 0;
+    for (uint32_t t = 0; t < 7; t++) {
+        fails += geist_expect(vk_alloc_mem_type(&st, UINT32_MAX, t, MIB) == t,
+                              "any other device allocates from the planned type");
+    }
+    st.carveout_shy  = true;
+    st.carveout_left = 4 * MIB;
+    fails += geist_expect(vk_alloc_mem_type(&st, UINT32_MAX, 0, 4 * MIB) == 0 &&
+                                  vk_alloc_mem_type(&st, UINT32_MAX, 3, MIB) == 3,
+                          "what the carve-out's budget covers stays device-local");
+    fails += geist_expect(vk_alloc_mem_type(&st, UINT32_MAX, 0, 4 * MIB + 1) == 2,
+                          "a device-local buffer past it comes from the host heap");
+    st.carveout_left = 0;
+    fails += geist_expect(vk_alloc_mem_type(&st, UINT32_MAX, 3, 16) == 2,
+                          "a mappable one from the host heap, mappable");
+    fails += geist_expect(vk_alloc_mem_type(&st, UINT32_MAX, 6, 16) == 5,
+                          "a cached one keeps the cached mapping");
+    fails += geist_expect(vk_alloc_mem_type(&st, UINT32_MAX, 2, MIB) == 2 &&
+                                  vk_alloc_mem_type(&st, UINT32_MAX, 5, MIB) == 5,
+                          "a host type stays");
+    fails += geist_expect(vk_alloc_mem_type(&st, 1u << 5 | 1u << 0, 0, MIB) == 5,
+                          "only a type the buffer allows");
+    fails += geist_expect(vk_alloc_mem_type(&st, 1u << 0 | 1u << 3, 3, MIB) == 3,
+                          "no type outside the device-local heap: the planned one");
+    return fails;
+}
+
 int main(void) {
+    const int carve = check_carveout();
+    if (carve != 0) {
+        return GEIST_TEST_FAIL;
+    }
     unsetenv("GEIST_VK_VRAM_BUDGET");
     struct geist_backend *probe = nullptr;
     enum geist_status     s     = geist_backend_create("vulkan", nullptr, nullptr, &probe);
