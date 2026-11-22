@@ -28,6 +28,7 @@
 #include "shaders/attention_f16_hd576_cm_spv.h"
 #include "shaders/attention_f16_hd576_mw_cm_spv.h"
 #include "shaders/attention_f16_hd96_cm_spv.h"
+#include "shaders/attention_f16_rt_spv.h"
 #include "shaders/attention_f16_mw_cm_spv.h"
 #include "shaders/attention_f16_spv.h"
 #include "shaders/attention_f32_hd576_cm_spv.h"
@@ -63,14 +64,18 @@
 #include "shaders/matmul_q4_1_spv.h"
 #include "shaders/matmul_q4k_cm32_spv.h"
 #include "shaders/matmul_q4k_cm_spv.h"
+#include "shaders/matmul_q4k_rt_spv.h"
 #include "shaders/matmul_q6k_t128_cm_spv.h"
 #include "shaders/matmul_q5k_cm_spv.h"
+#include "shaders/matmul_q5k_rt_spv.h"
 #include "shaders/matmul_q4k_spv.h"
 #include "shaders/matmul_q4k_t128_cm_spv.h"
 #include "shaders/matmul_q5k_spv.h"
 #include "shaders/matmul_q6k_cm_spv.h"
+#include "shaders/matmul_q6k_rt_spv.h"
 #include "shaders/matmul_q6k_spv.h"
 #include "shaders/matmul_q8_0_cm_spv.h"
+#include "shaders/matmul_q8_0_rt_spv.h"
 #include "shaders/matmul_q4_0_cm_spv.h"
 #include "shaders/matmul_tq2_0_cm_spv.h"
 #include "shaders/matmul_tq2_0_t128_cm_spv.h"
@@ -393,6 +398,9 @@ vk_pcache_save(struct geist_backend *be, struct vk_state *st, const char *path, 
     for (uint32_t i = 0; i < VK_PIPE_COUNT; ++i) {
         if (vk_pipe_needs_coopmat(i) && !st->has_coopmat) {
             continue; /* stays VK_NULL_HANDLE; linear_t falls back */
+        }
+        if (vk_pipe_is_nocm(i) && st->has_coopmat) {
+            continue; /* stays VK_NULL_HANDLE; the tensor-core pipes run */
         }
         if ((i == VK_PIPE_DN_SCAN || i == VK_PIPE_DN_SCAN_B) && !st->dn_scan) {
             continue; /* stays VK_NULL_HANDLE; deltanet_mix runs deltanet_delta_f32 */

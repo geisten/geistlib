@@ -199,6 +199,46 @@ static const struct vk_dtype *vk_linear_dtype(enum geist_dtype dt) {
     return d != nullptr && d->has_linear ? d : nullptr;
 }
 
+/* Fewest batch rows the register tile below takes: one of its workgroups
+ * dequantizes 128 weight rows whether its 64 batch rows are filled or not.
+ * On the Ryzen 9950X's integrated Radeon a 2048 x 2048 Q4_K GEMM of 16 rows
+ * takes 0.89 ms in the tile and 1.02 ms in the register-tiled kernel, whose
+ * time falls with the rows (0.56 ms at 8; runs 4026, 4027, 4030). */
+constexpr uint32_t VK_MM_RT_MIN_ROWS = 16;
+
+/* The pipe that runs GEMM `pipe` on a GPU without cooperative matrices
+ * (#588), or VK_PIPE_COUNT to keep `pipe`: Q4_K, Q5_K, Q6_K and Q8_0 in a
+ * 128 x 64 register tile (mm_rt.glsl), which copies a tile's weights and
+ * batch rows into shared memory once per k-step. The register-tiled kernels
+ * read every batch row from the scratch buffer once per weight row: on the
+ * Ryzen 9950X's integrated Radeon OLMoE-1B-7B's 2048 x 2048 Q4_K GEMMs ran
+ * at 130 GFLOPS over 512 rows, and run at 340 in the tile (runs 4026, 4030).
+ * The tile uses no subgroup operations, so it also runs where the
+ * register-tiled kernels cannot (subgroups that are not 32 lanes and cannot
+ * be pinned). A Q8_0 GEMM of at most 2^15 outputs stays with
+ * vk_q8_0_narrow's matvec per batch row.
+ * x_offset and x_stride in floats, w_offset in bytes, as in struct vk_push. */
+static enum vk_pipe vk_linear_rt(const struct vk_state *st,
+                                 enum vk_pipe           pipe,
+                                 size_t                 rows,
+                                 size_t                 n_in,
+                                 size_t                 n_out,
+                                 size_t                 x_offset,
+                                 size_t                 x_stride,
+                                 size_t                 w_offset) {
+    const enum vk_pipe rt = pipe == VK_PIPE_MATMUL_Q4K    ? VK_PIPE_MM_Q4K_RT
+                            : pipe == VK_PIPE_MATMUL_Q5K  ? VK_PIPE_MM_Q5K_RT
+                            : pipe == VK_PIPE_MATMUL_Q6K  ? VK_PIPE_MM_Q6K_RT
+                            : pipe == VK_PIPE_MATMUL_Q8_0 ? VK_PIPE_MM_Q8_0_RT
+                                                          : VK_PIPE_COUNT;
+    if (rt == VK_PIPE_COUNT || st->pipes[rt] == VK_NULL_HANDLE || rows < VK_MM_RT_MIN_ROWS ||
+        n_in % 32u != 0 || x_offset % 4u != 0 || x_stride % 4u != 0 || w_offset % 16u != 0 ||
+        (rt == VK_PIPE_MM_Q8_0_RT && rows <= ((size_t) 1 << 15) / (n_out != 0 ? n_out : 1))) {
+        return VK_PIPE_COUNT;
+    }
+    return rt;
+}
+
 [[nodiscard]] static enum geist_status vk_dispatch_linear(struct geist_backend *be,
                                                           enum vk_pipe          pipe,
                                                           struct geist_buffer  *wbuf,
@@ -269,11 +309,13 @@ static void vk_linear_run(size_t                     m,
     const size_t         n_in = (size_t) w->n_in, n_out = (size_t) w->n_out;
     /* Only dtypes vk_resolve_weight installed these kernels for get here. */
     const struct vk_dtype *ld = vk_linear_dtype((enum geist_dtype) w->dtype);
-    if (ld != nullptr && m > 1 && !st->gemm_sg32) {
+    if (ld != nullptr && m > 1 && !st->gemm_sg32 &&
+        vk_linear_rt(st, ld->mm, m, n_in, n_out, 0, n_in, 0) == VK_PIPE_COUNT) {
         /* The register-tiled GEMM shaders hard-assume 32-lane subgroups;
          * on a device that can neither run nor pin them at 32 (lavapipe:
          * 8 lanes only) they compute garbage. The matvec kernels are
-         * subgroup-size-agnostic, so loop them: correct everywhere. */
+         * subgroup-size-agnostic, so loop them: correct everywhere. The
+         * register tile of vk_linear_rt is too, where it applies. */
         for (size_t r = 0; r < m; r++) {
             vk_linear_run(1, x + r * n_in, w, be, y + r * n_out);
         }
@@ -977,12 +1019,25 @@ static bool vk_q8_0_narrow(const struct vk_state *st, enum vk_pipe pipe, const s
                                                  const VkDescriptorBufferInfo *infos,
                                                  const struct vk_access       *acc,
                                                  const struct vk_push         *push) {
-    struct vk_state *st   = be->state;
-    const uint32_t   m    = push->rows;
-    const uint32_t   m_hi = m & ~15u;
-    enum vk_pipe     cm   = pipe;
-    uint32_t         gx   = vk_linear_gx(pipe, push->n_out);
-    uint32_t         gy   = vk_linear_gy(pipe, m);
+    struct vk_state   *st   = be->state;
+    const uint32_t     m    = push->rows;
+    const uint32_t     m_hi = m & ~15u;
+    enum vk_pipe       cm   = pipe;
+    uint32_t           gx   = vk_linear_gx(pipe, push->n_out);
+    uint32_t           gy   = vk_linear_gy(pipe, m);
+    const enum vk_pipe rt   = vk_linear_rt(
+            st, pipe, m, push->n_in, push->n_out, push->x_offset, push->x_stride, push->w_offset);
+    if (rt != VK_PIPE_COUNT) {
+        return vk_seq_dispatch_acc(be,
+                                   rt,
+                                   infos,
+                                   acc,
+                                   push,
+                                   sizeof(*push),
+                                   (m + VK_MOE_MM_BN - 1u) / VK_MOE_MM_BN,
+                                   (push->n_out + VK_MOE_MM_ROWS - 1u) / VK_MOE_MM_ROWS,
+                                   1);
+    }
     /* PQ2_0 at 2..15 tokens (speculative verify, #105): one weight decode
      * for all tokens on the tensor cores, every SM busy at 32 rows per
      * workgroup. */
@@ -1931,6 +1986,25 @@ attn_generic:;
                                            : hd == 576 ? 3u
                                                        : 1u);
             }
+            /* Without cooperative matrices (#588): one workgroup per 16
+             * rows, which reads a key and a value once per tile where the
+             * kernel below reads them once per row. On the Ryzen 9950X's
+             * integrated Radeon the per-row kernel took a third of
+             * OLMoE-1B-7B's pp512 (2.5 of 7.6 s, run 4026) and 43 % of
+             * Qwen3-30B-A3B's (11.5 of 26.8 s, run 4028); the tile takes
+             * 0.28 s and 1.6 s. */
+            if (kv16 && n_q > 1 && hd % 4u == 0 && hd <= VK_ATTN_RT_MAX_HEAD_DIM &&
+                stt->pipes[VK_PIPE_ATTENTION_F16_RT] != VK_NULL_HANDLE) {
+                return vk_seq_dispatch_acc(be,
+                                           VK_PIPE_ATTENTION_F16_RT,
+                                           bi,
+                                           acc,
+                                           push,
+                                           sizeof(push),
+                                           (n_q + VK_ATTN_RT_ROWS - 1u) / VK_ATTN_RT_ROWS,
+                                           qh,
+                                           1);
+            }
             return vk_seq_dispatch_acc(be,
                                        kv16 ? VK_PIPE_ATTENTION_F16 : VK_PIPE_ATTENTION,
                                        bi,
@@ -2528,7 +2602,8 @@ static void vk_stage_read(struct vk_state *st) {
                                  .y_offset       = yo,
                                  .x_stride       = x_stride,
                                  .y_stride       = y_stride};
-    if (m > 1 && !st->gemm_sg32) {
+    if (m > 1 && !st->gemm_sg32 &&
+        vk_linear_rt(st, mm, m, n_in, n_out, xo, x_stride, 0) == VK_PIPE_COUNT) {
         /* The register-tiled GEMMs assume 32-lane subgroups (see
          * vk_linear_run). Elsewhere run the size-agnostic matvec once per
          * batch row: correct on any device. The last row's offsets bound

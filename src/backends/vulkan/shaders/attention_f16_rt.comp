@@ -1,0 +1,190 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_control_flow_attributes : enable
+#include "vk_limits.h"
+
+/* Causal (+ sliding-window) MQA/GQA attention over a batch of query rows
+ * without cooperative matrices (#588): attention_f16.comp's bindings and
+ * push block, one workgroup per (BR query rows, q head) in place of one per
+ * (row, head), so a key and a value are read from the cache once per BR rows
+ * and every lane multiplies in both halves of a step.
+ *
+ * A step is BC = 64 key positions, one per lane:
+ *   scores   lane c reads key c once and dots it with the BR q rows staged
+ *            in shared memory (f32, as attention_f16.comp keeps them);
+ *   softmax  streaming, per row: the row's lane (lid < BR) folds the step's
+ *            maximum into the running one and publishes exp(m_old - m_new),
+ *            every lane turns its BR scores into weights, the row's lane
+ *            sums them;
+ *   values   lane (slice, group) owns a 4-wide slice of the head and the
+ *            rows group, group + G, .. (G = 64 * 4 / head_dim lanes share a
+ *            slice): it rescales its accumulators and adds the step's
+ *            weights times the values, each value vector read once.
+ * No subgroup operations: any subgroup size. head_dim % 4 == 0 and
+ * head_dim <= VK_ATTN_RT_MAX_HEAD_DIM; q/k/v offsets % 4 == 0 (the host
+ * guards both). Rows past n_q repeat the last row and are not written.
+ * Dispatch: gx = ceil(n_q / VK_ATTN_RT_ROWS), gy = n_q_heads. */
+
+layout(local_size_x = 64) in;
+
+layout(set = 0, binding = 0) readonly buffer Q { vec4 q4[]; };
+layout(set = 0, binding = 1) readonly buffer K { f16vec4 k4[]; };
+layout(set = 0, binding = 2) readonly buffer V { f16vec4 v4[]; };
+layout(set = 0, binding = 3) writeonly buffer Out { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q;
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint head_dim;
+    uint q_offset_abs;
+    uint sliding_window;
+    uint q_offset;
+    uint k_offset;
+    uint v_offset;
+    uint out_offset;
+} pc;
+
+const uint BR = VK_ATTN_RT_ROWS;
+const uint BC = 64u; /* = local_size_x: one lane per key */
+const uint HD4 = VK_ATTN_RT_MAX_HEAD_DIM / 4u;
+const float NEG_INF = -1.0 / 0.0;
+
+shared vec4 q_sh[BR * HD4];
+shared float s_sh[BR * BC]; /* a step's scores, then its weights */
+shared float m_sh[BR];      /* running maximum */
+shared float l_sh[BR];      /* running sum of weights */
+shared float r_sh[BR];      /* exp(m_old - m_new) of the step */
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint q_block = gl_WorkGroupID.x * BR;
+    uint q_head = gl_WorkGroupID.y;
+    uint hd4 = pc.head_dim >> 2u;
+    if (q_block >= pc.n_q || q_head >= pc.n_q_heads || pc.n_kv == 0u || hd4 == 0u || hd4 > HD4) {
+        return;
+    }
+    uint kv_head = q_head / (pc.n_q_heads / pc.n_kv_heads);
+    uint kv_row4 = pc.n_kv_heads * hd4;
+
+    for (uint idx = lid; idx < BR * hd4; idx += BC) {
+        uint r = idx / hd4;
+        uint j = idx - r * hd4;
+        uint qpos = min(q_block + r, pc.n_q - 1u);
+        q_sh[r * HD4 + j] = q4[(pc.q_offset >> 2u) + (qpos * pc.n_q_heads + q_head) * hd4 + j];
+    }
+    if (lid < BR) {
+        m_sh[lid] = NEG_INF;
+        l_sh[lid] = 0.0;
+    }
+
+    /* keys of the tile: from the first row's window to the last row's own
+     * position; each row masks what lies outside its own range */
+    uint qabs0 = pc.q_offset_abs + q_block;
+    uint rows = min(BR, pc.n_q - q_block);
+    uint s_end = min(qabs0 + rows, pc.n_kv); /* one past the last key */
+    uint s_begin = pc.sliding_window > 0u && qabs0 + 1u > pc.sliding_window
+                           ? qabs0 + 1u - pc.sliding_window
+                           : 0u;
+
+    /* values: lane (slice, grp) */
+    uint G = min(BR, BC / hd4);
+    uint slice = lid % hd4;
+    uint grp = lid / hd4;
+    bool owner = grp < G;
+    vec4 acc[BR];
+    [[unroll]] for (uint i = 0u; i < BR; i++) {
+        acc[i] = vec4(0.0);
+    }
+    barrier();
+
+    for (uint base = s_begin; base < s_end; base += BC) {
+        uint s = base + lid;
+        bool live = s < s_end;
+        float sc[BR];
+        [[unroll]] for (uint r = 0u; r < BR; r++) {
+            sc[r] = 0.0;
+        }
+        if (live) {
+            uint kb = (pc.k_offset >> 2u) + s * kv_row4 + kv_head * hd4;
+            for (uint i = 0u; i < hd4; i++) {
+                vec4 kv = vec4(k4[kb + i]);
+                [[unroll]] for (uint r = 0u; r < BR; r++) {
+                    sc[r] += dot(kv, q_sh[r * HD4 + i]);
+                }
+            }
+        }
+        uint ok = 0u; /* bit r: key s is in row r's range */
+        [[unroll]] for (uint r = 0u; r < BR; r++) {
+            uint qabs = qabs0 + r;
+            uint lo = pc.sliding_window > 0u && qabs + 1u > pc.sliding_window
+                              ? qabs + 1u - pc.sliding_window
+                              : 0u;
+            bool in_range = live && s >= lo && s <= qabs;
+            ok |= in_range ? (1u << r) : 0u;
+            s_sh[r * BC + lid] = in_range ? sc[r] : NEG_INF;
+        }
+        barrier();
+
+        if (lid < BR) {
+            float m_old = m_sh[lid];
+            float m = m_old;
+            for (uint c = 0u; c < BC; c++) {
+                m = max(m, s_sh[lid * BC + c]);
+            }
+            r_sh[lid] = m_old == NEG_INF ? 0.0 : exp(m_old - m);
+            m_sh[lid] = m;
+        }
+        barrier();
+
+        [[unroll]] for (uint r = 0u; r < BR; r++) {
+            s_sh[r * BC + lid] = (ok & (1u << r)) != 0u ? exp(sc[r] - m_sh[r]) : 0.0;
+        }
+        barrier();
+
+        if (lid < BR) {
+            float l = 0.0;
+            for (uint c = 0u; c < BC; c++) {
+                l += s_sh[lid * BC + c];
+            }
+            l_sh[lid] = l_sh[lid] * r_sh[lid] + l;
+        }
+        if (owner) {
+            [[unroll]] for (uint i = 0u; i < BR; i++) {
+                uint r = grp + i * G;
+                if (r < BR) {
+                    acc[i] *= r_sh[r];
+                }
+            }
+            uint n = min(BC, s_end - base);
+            uint vb = (pc.v_offset >> 2u) + base * kv_row4 + kv_head * hd4 + slice;
+            for (uint c = 0u; c < n; c++) {
+                vec4 vv = vec4(v4[vb + c * kv_row4]);
+                [[unroll]] for (uint i = 0u; i < BR; i++) {
+                    uint r = grp + i * G;
+                    if (r < BR) {
+                        acc[i] += s_sh[r * BC + c] * vv;
+                    }
+                }
+            }
+        }
+        barrier();
+    }
+
+    if (owner) {
+        [[unroll]] for (uint i = 0u; i < BR; i++) {
+            uint r = grp + i * G;
+            if (r < rows) {
+                float l = l_sh[r];
+                vec4 o = acc[i] * (l > 0.0 ? 1.0 / l : 0.0);
+                uint ob = pc.out_offset + ((q_block + r) * pc.n_q_heads + q_head) * pc.head_dim +
+                          4u * slice;
+                out_v[ob] = o.x;
+                out_v[ob + 1u] = o.y;
+                out_v[ob + 2u] = o.z;
+                out_v[ob + 3u] = o.w;
+            }
+        }
+    }
+}

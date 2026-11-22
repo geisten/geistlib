@@ -127,6 +127,7 @@ enum vk_pipe_kind : uint32_t {
     VK_PK_PLAIN,
     VK_PK_TILED,   /* register-tiled GEMM: one output row per 32-lane subgroup */
     VK_PK_COOPMAT, /* needs VK_KHR_cooperative_matrix */
+    VK_PK_NOCM,    /* created only without it */
 };
 static_assert(sizeof(enum vk_pipe_kind) == sizeof(uint32_t));
 
@@ -140,6 +141,12 @@ static const enum vk_pipe_kind vk_pipe_kinds[VK_PIPE_COUNT] = {
  * stay VK_NULL_HANDLE and vk_linear_cm_route keeps the register-tiled GEMM. */
 static inline bool vk_pipe_needs_coopmat(uint32_t pipe) {
     return pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_COOPMAT;
+}
+
+/* Pipelines for GPUs without cooperative matrices (#588): with them the
+ * COOPMAT pipes do the same work, and these stay VK_NULL_HANDLE. */
+static inline bool vk_pipe_is_nocm(uint32_t pipe) {
+    return pipe < VK_PIPE_COUNT && vk_pipe_kinds[pipe] == VK_PK_NOCM;
 }
 
 /* The register-tiled GEMMs: one output row per 32-lane subgroup
@@ -308,7 +315,13 @@ struct vk_state {
      * budget and usage, which see every allocation on the device (#665). */
     bool has_mem_budget;
     /* An integrated GPU: its device-local heap is system RAM. */
-    bool            unified_memory;
+    bool unified_memory;
+    /* RADV on an integrated GPU (#249, vk_alloc_mem_type): carveout_left
+     * bytes may still be allocated from the device-local types, which the
+     * driver places in the VRAM carve-out; the rest comes from the types
+     * outside them. GEIST_VK_CARVEOUT=<bytes> sets it. */
+    bool            carveout_shy;
+    size_t          carveout_left;
     VkCommandPool   cmd_pool;
     VkCommandBuffer xfer_cmd;
     VkFence         xfer_fence;
@@ -539,8 +552,9 @@ struct geist_buffer {
     bool                   view;        /* buffer_create_view slice of a parent */
     struct geist_buffer   *stream_next; /* async streaming: the weight streamed after this one */
     struct geist_buffer   *staged;      /* #239: the VRAM slot holding this host weight, or null */
-    size_t bar_bytes;  /* counted in vk_state.bar_used (host-visible + device-local) */
-    size_t vram_bytes; /* counted in vk_state.vram_used */
+    size_t bar_bytes;   /* counted in vk_state.bar_used (host-visible + device-local) */
+    size_t vram_bytes;  /* counted in vk_state.vram_used */
+    size_t carve_bytes; /* taken from vk_state.carveout_left (#249) */
 };
 
 /* ---- Cross-module prototypes ------------------------------------------ */
@@ -713,6 +727,10 @@ void vk_seq_hazard(struct vk_state              *st,
 
 /* A weight of n bytes still fits in VRAM with weight_reserve left over. */
 [[nodiscard]] bool vk_weight_fits_vram(const struct vk_state *st, size_t n);
+/* The memory type an allocation of `size` bytes planned for `type` is made
+ * from (#249). */
+[[nodiscard]] uint32_t
+vk_alloc_mem_type(const struct vk_state *st, uint32_t type_bits, uint32_t type, size_t size);
 
 [[nodiscard]] enum geist_status vk_seq_dispatch_acc(struct geist_backend         *be,
                                                     enum vk_pipe                  pipe,

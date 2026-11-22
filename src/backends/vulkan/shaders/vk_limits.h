@@ -64,6 +64,10 @@
 /* attention_f{16,32}: q staged in shared memory. 576: absorbed MLA's one
  * KV head of [k_pe | latent] (DeepSeek-V3, GigaChat3; #504). */
 #define VK_ATTN_MAX_HEAD_DIM 576u
+/* attention_f16_rt (#588): query rows per workgroup and the widest head its
+ * shared q tile holds. */
+#define VK_ATTN_RT_ROWS 16u
+#define VK_ATTN_RT_MAX_HEAD_DIM 256u
 /* attention_sinks_f{16,32}: the same, for GPT-OSS-type heads. */
 #define VK_ATTN_SINKS_MAX_HEAD_DIM 512u
 /* attn_part_f16{,_g2}: lanes per workgroup (>= VK_ATTN_PART_MAX_HEAD_DIM /

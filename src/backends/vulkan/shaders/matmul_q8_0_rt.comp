@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+
+/* Q8_0 GEMM without cooperative matrices (#588). Body and notes:
+ * mm_rt.glsl. */
+#define DT_Q8_0 1
+#include "mm_rt.glsl"

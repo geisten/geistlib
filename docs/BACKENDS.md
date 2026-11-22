@@ -205,6 +205,27 @@ tokens of context 1.6x); GigaChat3 prefills at 0.74x (512 tokens) and 1.88x
 (2048), DeepSeek-V2-Lite's split file at 0.29x / 0.44x, held back by its F32
 k_b / v_b (a matvec per token and head) and its host-resident experts.
 
+**Without cooperative matrices (#588).** A GPU without
+`VK_KHR_cooperative_matrix` (RDNA2, older cards) has no tensor-core pipelines.
+It runs a prefill chunk in register tiles: attention with 16 query rows per
+workgroup and 64 keys per step (`attention_f16_rt.comp`; F16 KV cache, heads
+up to 256), and Q4_K / Q5_K / Q6_K / Q8_0 GEMMs of 16 batch rows or more in a
+128 x 64 tile (`mm_rt.glsl`). A tile reads a key, a value and a batch row
+once, where the per-row kernels read them once per query row and once per
+weight row; its operands stay f32, so the results are the per-row kernels' up
+to the order of the sums, and it uses no subgroup operations. The other
+weight types, wider heads and an FP32 cache keep the per-row kernels, and a
+GPU with cooperative matrices does not create these pipelines. On the Ryzen
+9950X's integrated Radeon (RADV, RDNA2, shared memory) 512 tokens prefill at
+124.6 tok/s with OLMoE-1B-7B, 41.0 with Qwen3-30B-A3B and 45.8 with
+Qwen3.6-35B-A3B (67.3, 18.7 and 16.2 with the per-row kernels; llama.cpp
+Vulkan on the same GPU 123.1, 37.5 and 38.1), decode unchanged. The grouped
+expert GEMM is then 71 % and 62 % of the first two models' prefill; the third
+spends 40 % in its Q8_0 GEMMs and about half in the GEMMs of single experts
+(it does not fit the device-local heap whole, so the host routes its chunks).
+`GEIST_VK_NO_COOPMAT=1` takes the same paths on a card with tensor cores: an
+RTX 2080 Ti then prefills OLMoE-1B-7B at about 2480 instead of 1540 tok/s.
+
 **Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
 Weights go to VRAM until one would leave less than a reserve for the KV cache
 and scratch (1/16 of the device, `GEIST_VK_WEIGHT_RESERVE` in bytes with a K/M/G
@@ -223,6 +244,32 @@ instead of 551-553 tok/s, peak VRAM unchanged (#78). Decode still reads the
 spilled weights over the bus. The KV cache and
 the x ring do not spill: a session that does not fit fails with an
 out-of-memory error naming the allocation, the memory in use and the limit.
+
+**Integrated Radeon (RADV).** An integrated GPU has no memory of its own, but
+the firmware sets a part of system memory aside for it (the VRAM carve-out,
+2 GiB on the Ryzen 9950X), and RADV places its device-local memory types
+there first and in ordinary system memory after. The kernel driver keeps each
+process's GPU page tables in the carve-out as well, 4 KiB for every 2 MiB
+mapped, and does not move the process's own buffers out to make room for
+them. A model is thousands of buffers here (one per weight), so the carve-out
+filled up to its last holes, the page tables took those, and the next mapping
+failed: Qwen3.6-35B-A3B stopped loading after 6-8 GB with `radv/amdgpu: Not
+enough memory for command submission`, or hung in the kernel until a reboot
+(#249). On RADV with an integrated GPU the backend therefore reads the
+carve-out's size and use from the kernel driver (`mem_info_vram_total` and
+`mem_info_vram_used` of the device, found through
+`VK_EXT_physical_device_drm`) and fills it only up to a reserve of an eighth,
+at least 128 MiB, which the page tables always find room in (they need
+64 MiB for 32 GiB mapped). The first allocations go there (the x ring and
+the dense weights, which every token reads: decode is 3-4 % faster than
+with them outside); everything past the budget is allocated from a memory
+type outside the device-local heap, which is the same system memory but
+never in the carve-out. Where the counters cannot be read, nothing goes into
+the carve-out. The limit, the weight reserve and the scratch placement above
+still count against the device-local heap as RADV reports it (two thirds of
+what the GPU may use). `GEIST_VK_CARVEOUT=<bytes>` (K/M/G suffix) sets the
+budget: `0` keeps everything out, a value above the carve-out is the old
+placement. Other drivers and discrete Radeons are not affected.
 
 **Scratch placement.** A session's activation scratch is one host-visible
 pool. It goes into the BAR window (device-local and mappable) while that has
@@ -270,6 +317,7 @@ limit fails the load.
 | `GEIST_VK_STREAM_M_MIN` | rows from which `linear_t` copies a weight that lives in host memory into a VRAM slot before the GEMM (default 32; `0` reads it over the bus as before), see Memory |
 | `GEIST_VK_NO_COOPMAT=1` | run as a device without `VK_KHR_cooperative_matrix`: no tensor-core GEMM or attention pipelines, the paths RDNA2 and older GPUs take (#249; for measuring and testing them on a card that has them) |
 | `GEIST_VK_PQ2_F32_ACC=1` | f32 instead of f16 accumulation in the PQ2_0 tensor-core GEMM (default folds into f32 every 64 k) |
+| `GEIST_VK_CARVEOUT=<bytes>` | RADV on an integrated GPU: how much the backend allocates from the device-local memory types, which fill the VRAM carve-out (default: what is free there less a reserve for the kernel's page tables, #249; `0` nothing, K/M/G suffix), see Memory |
 | `GEIST_VK_SCRATCH_DEVICE=0` | keep the scratch pool host-visible (default: device-local where the arch allows it), see above |
 | `GEIST_VK_VERBOSE=1` | print scratch placement and, at destroy, counters for work that left the GPU (declined fused ops, host loops, host copies, host-path weights) |
 | `GEIST_VK_STRICT=1` | turn each of those host fallbacks into an error naming the site; a host-path weight is refused at load |
