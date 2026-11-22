@@ -19,6 +19,10 @@
  *     chunk and a short last one, several chunks), at the model's chunk and
  *     at a session chunk of 16, then 6 decode steps, the state after each;
  *   - two prefill calls in a row; a prefill, a truncate and a prefill;
+ *   - the same prompt again after a reset, and a token fed at a position a
+ *     decode step was truncated from: the logits of the first time (a
+ *     session's earlier pass must not show in a later one; the oracle is
+ *     only an oracle if it is the same whatever ran before);
  *   - a snapshot after the prefill, restored after decoding on;
  *   - a pinned prefix, a turn, a reset and the turn again;
  *   - a verify pass, which returns a token for every row: no cache rows
@@ -235,6 +239,64 @@ static int case_prefill_decode(struct pair *p, size_t n) {
     char where[64];
     snprintf(where, sizeof where, "prefill %zu + decode", n);
     return reset(p) || prefill(p, n, g_ids, where) || decode(p, N_DECODE, nullptr, where);
+}
+
+/* The same pass twice on a session: n tokens of one chunk, a reset, the
+ * same n tokens. The second pass has the first one's rows at the first
+ * one's position, and layer 0 once took that for its own input already
+ * normalised by a layer before it (the tail-norm fusion's prenorm_layer 0
+ * means none): the logits of the repeat were not the first pass's. */
+static int case_repeat(struct pair *p, size_t n) {
+    char where[64];
+    snprintf(where, sizeof where, "prefill %zu, reset, prefill %zu", n, n);
+    size_t nv = 0;
+    if (reset(p) || prefill(p, n, g_ids, where)) {
+        return 1;
+    }
+    const float *l     = geist_session_peek_logits(&nv, p->s[0]);
+    float       *first = l != nullptr ? malloc(nv * sizeof *first) : nullptr;
+    if (first == nullptr) {
+        return fail(p, where, "no logits");
+    }
+    memcpy(first, l, nv * sizeof *first);
+    int fails = reset(p) || prefill(p, n, g_ids, where);
+    l         = fails ? nullptr : geist_session_peek_logits(&nv, p->s[0]);
+    fails     = l == nullptr || memcmp(first, l, nv * sizeof *first) != 0;
+    free(first);
+    return fails ? fail(p, where, "the repeat has other logits") : 0;
+}
+
+/* A step taken again: decode a token at a position, truncate back to it,
+ * feed another token there. Against the same tokens on an emptied session. */
+static int case_step_again(struct pair *p, size_t n) {
+    const char   *where = "decode, truncate, another token at that position";
+    geist_token_t tok;
+    size_t        nv = 0;
+    if (reset(p) || prefill(p, n, g_ids, where)) {
+        return 1;
+    }
+    for (int i = 0; i < 2; i++) {
+        /* The second step runs the forward of the first one's token. */
+        if (geist_session_decode_step(p->s[i], &tok) != GEIST_OK ||
+            geist_session_decode_step(p->s[i], &tok) != GEIST_OK ||
+            geist_session_truncate(p->s[i], n) != GEIST_OK) {
+            return fail(p, where, "decode or truncate failed");
+        }
+    }
+    if (prefill(p, 1, g_ids + n + 3, where)) {
+        return 1;
+    }
+    const float *l     = geist_session_peek_logits(&nv, p->s[0]);
+    float       *again = l != nullptr ? malloc(nv * sizeof *again) : nullptr;
+    if (again == nullptr) {
+        return fail(p, where, "no logits");
+    }
+    memcpy(again, l, nv * sizeof *again);
+    int fails = reset(p) || prefill(p, n, g_ids, where) || prefill(p, 1, g_ids + n + 3, where);
+    l         = fails ? nullptr : geist_session_peek_logits(&nv, p->s[0]);
+    fails     = l == nullptr || memcmp(again, l, nv * sizeof *again) != 0;
+    free(again);
+    return fails ? fail(p, where, "the token fed after the truncate has other logits") : 0;
 }
 
 static int case_two_calls(struct pair *p, size_t n1, size_t n2) {
@@ -514,6 +576,8 @@ static int run_backend(const char *model_path, const char *backend) {
             fails += geist_expect(p.a[0]->n_cache_rows - before == m + sp - t,
                                   "a chunk and a last chunk that splits: all but its tail");
         }
+        fails = fails || case_repeat(&p, 1) || case_repeat(&p, 5) || case_repeat(&p, m);
+        fails = fails || case_repeat(&p, m + sp) || case_step_again(&p, 9);
         fails = fails || case_two_calls(&p, m + sp + 11, sp + 5);
         fails = fails || case_truncate(&p, m + sp + 20, m + sp + 1, sp + 3);
         fails = fails || case_snapshot(&p, m + sp + 13);
