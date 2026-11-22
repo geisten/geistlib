@@ -87,6 +87,7 @@ Sub-parity rows are kept on purpose — nothing cherry-picked.</sub>
 | …on **Apple M1 Max**? | [results/APPLE.md](results/APPLE.md) — AMX reference, the auto-recorded `make bench-*` table, decode-kernel investigation |
 | …on **AMD x86-64** (AVX-512)? | [results/X86.md](results/X86.md) — Gemma & Llama vs llama.cpp, BitNet vs bitnet.cpp |
 | …on the **Apple GPU** (Metal, experimental)? | [results/METAL.md](results/METAL.md) — M1 Max vs llama.cpp Metal, the two scalar-fallback fixes, and why the program closed |
+| How does geist compare with **MLX** (mlx-lm)? | [results/MLX_VS_GEIST_M6_2026-11-22.md](results/MLX_VS_GEIST_M6_2026-11-22.md) — six model pairs on the Mac mini M6: mlx-lm is 1.2–1.4× faster in prefill (2.9× on Gemma 4 E2B) and 1.1–1.3× in decode; geist starts 9–19× sooner |
 | …on an **NVIDIA GPU** (Vulkan, experimental)? | [results/VULKAN.md](results/VULKAN.md) — RTX 2080 Ti vs llama.cpp Vulkan, incl. the measured dead ends |
 | What did **offload and expert placement** change? | [results/OFFLOAD.md](results/OFFLOAD.md) — historical split, streaming, MoE and MTP experiments; current configuration is in [docs/OFFLOAD.md](../docs/OFFLOAD.md) |
 | What about **ternary BitNet**? | [results/TERNARY.md](results/TERNARY.md) — supported formats, conversion, the per-token byte budget, the ternary measurement protocol |

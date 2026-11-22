@@ -334,10 +334,18 @@ def geist_env(backend: str) -> dict:
                       "GEIST_TEXT_ONLY": "1", "GEIST_BENCH_BACKEND": backend})
 
 
-def geist_rows(run: dict, backend: str) -> list:
+def geist_backend_check(run: dict, backend: str) -> None:
     if f"[bench] backend: {backend}" not in run["stderr"]:
         raise RuntimeError(f"geist did not select the {backend} backend")
-    return [json.loads(line) for line in run["stdout"].splitlines() if line.startswith("{")]
+
+
+def geist_rows(run: dict, backend: str) -> list:
+    geist_backend_check(run, backend)
+    try:
+        return [json.loads(line) for line in run["stdout"].splitlines() if line.startswith("{")]
+    except ValueError as error:
+        raise RuntimeError(f"bench_perf_sweep row is not JSON ({error}): "
+                           f"{run['stdout'][:400]}") from error
 
 
 def cell_geist(ctx: dict, model: dict, backend: str, repeats: int) -> dict:
@@ -349,7 +357,12 @@ def cell_geist(ctx: dict, model: dict, backend: str, repeats: int) -> dict:
     for kind in ("cold", "warm"):
         cache = page_cache(Path(gguf), evict=kind == "cold")
         run = timed(ready, env)
-        geist_rows(run, backend)
+        # Only the wall time is used. The row is not parsed: the one decode
+        # step after a prefill only picks from logits the prefill left, so
+        # its time can read 0.000 ms, and bench_perf_sweep then prints
+        # "decode_tps":inf, which is not JSON (runs 4039 and 4041 lost a
+        # geist cell each to that).
+        geist_backend_check(run, backend)
         out["load"][kind] = {"page_cache": cache, **proc_stats(run)}
     bench = [str(binary), "--gguf", gguf, "--seq-lens", str(PROMPT_TOKENS), "--decode-n",
              str(DECODE_N), "--warmup", str(GEIST_WARMUP), "--repeats", str(repeats),
