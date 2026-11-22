@@ -867,6 +867,15 @@ int main(void) {
     test_attention_f16(37, 37, 0, 16, 16, 96, 0, 0.6f, "prefill 37 MHA x96");
     test_attention_f16(600, 700, 100, 16, 4, 96, 0, 0.6f, "600 q_off=100 GQA4 x96");
     test_attention_f16(300, 300, 0, 8, 2, 96, 40, 4.0f, "300 x96 win 40 large");
+    /* without cooperative matrices (#588) the batches above run 16 rows per
+     * workgroup up to head_dim 256 (attention_f16_rt.comp). Its other lane
+     * layouts: head_dim 64 and 32 (4 and 8 lanes share a value slice; 192
+     * with 48 of 64 lanes is below), a batch of 2 rows, and a window that
+     * ends inside a 64-key step */
+    test_attention_f16(70, 100, 30, 8, 4, 64, 0, 0.6f, "70 q_off=30 GQA2 x64");
+    test_attention_f16(130, 130, 0, 4, 4, 32, 50, 3.0f, "130 x32 win 50 large");
+    test_attention_f16(2, 150, 148, 8, 2, 128, 0, 0.6f, "2 after 148 (8/2x128)");
+    test_attention_f16(17, 200, 183, 8, 2, 256, 70, 0.6f, "17 after 183 window 70");
     /* decode (n_q == 1, kv > 192): the flash-decoding partial/combine path
      * (#475). One workgroup serves up to 4 q-heads of a GQA group (groups of
      * 1, 2, 3 and 4 in one batch; 8 and 16 in batches of 4); key spans start

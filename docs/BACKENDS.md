@@ -205,6 +205,27 @@ tokens of context 1.6x); GigaChat3 prefills at 0.74x (512 tokens) and 1.88x
 (2048), DeepSeek-V2-Lite's split file at 0.29x / 0.44x, held back by its F32
 k_b / v_b (a matvec per token and head) and its host-resident experts.
 
+**Without cooperative matrices (#588).** A GPU without
+`VK_KHR_cooperative_matrix` (RDNA2, older cards) has no tensor-core pipelines.
+It runs a prefill chunk in register tiles: attention with 16 query rows per
+workgroup and 64 keys per step (`attention_f16_rt.comp`; F16 KV cache, heads
+up to 256), and Q4_K / Q5_K / Q6_K / Q8_0 GEMMs of 16 batch rows or more in a
+128 x 64 tile (`mm_rt.glsl`). A tile reads a key, a value and a batch row
+once, where the per-row kernels read them once per query row and once per
+weight row; its operands stay f32, so the results are the per-row kernels' up
+to the order of the sums, and it uses no subgroup operations. The other
+weight types, wider heads and an FP32 cache keep the per-row kernels, and a
+GPU with cooperative matrices does not create these pipelines. On the Ryzen
+9950X's integrated Radeon (RADV, RDNA2, shared memory) 512 tokens prefill at
+124.6 tok/s with OLMoE-1B-7B, 41.0 with Qwen3-30B-A3B and 45.8 with
+Qwen3.6-35B-A3B (67.3, 18.7 and 16.2 with the per-row kernels; llama.cpp
+Vulkan on the same GPU 123.1, 37.5 and 38.1), decode unchanged. The grouped
+expert GEMM is then 71 % and 62 % of the first two models' prefill; the third
+spends 40 % in its Q8_0 GEMMs and about half in the GEMMs of single experts
+(it does not fit the device-local heap whole, so the host routes its chunks).
+`GEIST_VK_NO_COOPMAT=1` takes the same paths on a card with tensor cores: an
+RTX 2080 Ti then prefills OLMoE-1B-7B at about 2480 instead of 1540 tok/s.
+
 **Memory.** Weight matrices are read from the GGUF mapping and uploaded once.
 Weights go to VRAM until one would leave less than a reserve for the KV cache
 and scratch (1/16 of the device, `GEIST_VK_WEIGHT_RESERVE` in bytes with a K/M/G
