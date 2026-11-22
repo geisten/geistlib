@@ -459,7 +459,7 @@ static void close_pair(struct pair *p) {
 /* The shortest last chunk a GPU backend splits; on a CPU backend, which
  * splits none, a short last chunk's rows. */
 static size_t kvs_split_rows(const struct geist_backend *be) {
-    return strncmp(geist_backend_name(be), "cpu_", 4) == 0
+    return strcmp(geist_backend_name(be), "metal") != 0
                    ? 10
                    : TRANSFORMER_PREFILL_TAIL_ALIGN + TRANSFORMER_PREFILL_TAIL_MIN;
 }
@@ -528,7 +528,7 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
         /* The shortest last chunk a GPU backend splits, and the rows it
          * then runs through every layer; a CPU backend splits none
          * (prefill_tail_rows, arch_ops.c), and sp only sizes its prompts. */
-        const bool   cpu = strncmp(geist_backend_name(be), "cpu_", 4) == 0;
+        const bool   cpu = strcmp(geist_backend_name(be), "metal") != 0;
         const size_t m   = a->m_max;
         const size_t sp  = kvs_split_rows(be);
         const size_t t   = TRANSFORMER_PREFILL_TAIL_MIN;

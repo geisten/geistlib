@@ -491,7 +491,9 @@ static bool prefill_cache_rows_ok(const struct transformer_arch_session *sess) {
  * to 64 rows did for a chunk of 100, 127 or 129. */
 static size_t prefill_tail_rows(const struct transformer_arch_session *sess, size_t chunk) {
     const struct geist_backend_descriptor *desc = sess->model->backend->desc;
-    if (desc == nullptr || strncmp(desc->name, "cpu_", 4) == 0 ||
+    /* Metal only: the split is measured there. Vulkan's tiles are its own
+     * and unmeasured, so it does not split either. */
+    if (desc == nullptr || strcmp(desc->name, "metal") != 0 ||
         chunk < TRANSFORMER_PREFILL_TAIL_ALIGN + TRANSFORMER_PREFILL_TAIL_MIN) {
         return chunk;
     }

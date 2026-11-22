@@ -6,7 +6,7 @@
   row ran every layer: on the M1 Max a 512-token prefill of E2B spent 67 %
   (Metal) and 68 % (`cpu_neon`) of its layer time in those layers, E4B
   42 %. Now the rows of every prefill chunk before the last stop after the
-  last layer that writes a cache, and on a GPU backend the first rows of
+  last layer that writes a cache, and on Metal the first rows of
   the last chunk do too, where it can be split at a multiple of 128 rows
   with at least 64 left. Logits, decode and the session state are
   bit-identical to before on every backend: whole chunks run the calls
@@ -14,7 +14,7 @@
   had. A shorter tail would not (Metal: 16 of 256 rows kept the bits, 24
   did not; the CPU backends' dense F32 linears go through the BLAS, which
   promises no row-count invariance), so a CPU backend does not split the
-  last chunk. Not for the MTP drafter, mean pooling, a verify pass (they
+  last chunk, and Vulkan, where no split is measured, does not either. Not for the MTP drafter, mean pooling, a verify pass (they
   read every row), a layer split or offload; KIVI does not split its last
   chunk. `GEIST_KV_SHARED_FULL=1` runs every layer for every row as
   before. `tools/bench_revision_ab.py` against main, Gemma 4 E2B Q4_K_M,
