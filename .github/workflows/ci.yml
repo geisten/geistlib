@@ -1145,6 +1145,7 @@ jobs:
                    test_backend_vulkan_weight_index_unit \
                    test_backend_vulkan_linear_grouped_unit \
                    test_backend_vulkan_stage_unit \
+                   test_backend_vulkan_ops_unit \
                    test_qwen3moe_unit \
                    test_olmoe_unit \
                    test_mixtral_unit \
