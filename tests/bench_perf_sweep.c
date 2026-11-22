@@ -244,6 +244,12 @@ static size_t decode_run(struct geist_session *sess,
     return n;
 }
 
+/* A rate for the JSON line: 0 for a duration the clock read as 0, where
+ * the quotient would print as inf, which is not JSON (#592). */
+static double rate(double n, double ms) {
+    return ms > 0.0 ? n / ms : 0.0;
+}
+
 int main(int argc, char **argv) {
     int         seq_lens[16];
     size_t      n_seq_lens  = 0;
@@ -446,6 +452,7 @@ int main(int argc, char **argv) {
         char  *text = nullptr;
         long   len  = -1;
         size_t nt   = 0;
+        bool   bos  = false;
         if (f != nullptr && fseek(f, 0, SEEK_END) == 0 && (len = ftell(f)) > 0 &&
             fseek(f, 0, SEEK_SET) == 0 && (text = malloc((size_t) len + 1)) != nullptr &&
             fread(text, 1, (size_t) len, f) == (size_t) len) {
@@ -454,8 +461,13 @@ int main(int argc, char **argv) {
             if (tok != nullptr &&
                 geist_session_tokenize(sess, text, (size_t) len + 16, tok, &nt) == GEIST_OK &&
                 nt > 0) {
-                for (int i = 0; i < max_seq; i++)
-                    ids[i] = tok[(size_t) i % nt];
+                /* BOS first where the model asks for one and the text does
+                 * not start with it, as geist_session_set_prompt does (#592). */
+                bos = geist_model_add_bos(model) && tok[0] != geist_model_bos_token(model);
+                if (bos)
+                    ids[0] = geist_model_bos_token(model);
+                for (int i = bos; i < max_seq; i++)
+                    ids[i] = tok[(size_t) (i - bos) % nt];
             } else {
                 nt = 0;
             }
@@ -472,7 +484,11 @@ int main(int argc, char **argv) {
             geist_backend_destroy(be);
             return GEIST_TEST_ERROR;
         }
-        fprintf(stderr, "[bench] prompt: %zu tokens of %s\n", nt, prompt_file);
+        fprintf(stderr,
+                "[bench] prompt: %zu tokens of %s%s\n",
+                nt,
+                prompt_file,
+                bos ? ", after a BOS" : "");
     }
 
     /* WARMUP PHASE (discarded, not measured) — one prefill + a few decode
@@ -600,12 +616,13 @@ int main(int argc, char **argv) {
         const double t_decode  = mean_of(measured, decode_ms);
         const double t_ttft    = mean_of(measured, ttft_ms);
 
-        const double pre_tps = (double) n_p * 1000.0 / t_prefill;
+        const double pre_tps = rate((double) n_p * 1000.0, t_prefill);
         /* A speculative call can emit past decode_n: count what came out. */
         const double dec_tps =
-                decode_n > 0 ? (double) n_decoded / (double) measured * 1000.0 / t_decode : 0.0;
+                decode_n > 0 ? rate((double) n_decoded / (double) measured * 1000.0, t_decode)
+                             : 0.0;
         const double total_ms  = t_prefill + t_decode;
-        const double total_tps = (double) (n_p + decode_n) * 1000.0 / total_ms;
+        const double total_tps = rate((double) (n_p + decode_n) * 1000.0, total_ms);
         double       pre_best;
         double       pre_worst;
         double       dec_best;
@@ -615,8 +632,8 @@ int main(int argc, char **argv) {
         extrema_of(measured, prefill_ms, &pre_best, &pre_worst);
         extrema_of(measured, decode_ms, &dec_best, &dec_worst);
         extrema_of(measured, total_ms_repeats, &total_best, &total_worst);
-        const double total_tps_best  = (double) (n_p + decode_n) * 1000.0 / total_best;
-        const double total_tps_worst = (double) (n_p + decode_n) * 1000.0 / total_worst;
+        const double total_tps_best  = rate((double) (n_p + decode_n) * 1000.0, total_best);
+        const double total_tps_worst = rate((double) (n_p + decode_n) * 1000.0, total_worst);
 
         struct geist_backend_resources resources;
         const double allocated_mb = geist_backend_resources_snapshot(be, &resources) == GEIST_OK
