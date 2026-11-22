@@ -23,7 +23,9 @@
   M6 `cpu_neon` (run 4050) 128 tokens 365.2 -> 242.2, 512 tokens 1563.3 ->
   644.7, 2048 tokens 7360.9 -> 2561.7; M1 Max Metal 512 tokens 336.2 ->
   184.8, 2048 tokens 1381.3 -> 534.4; M1 Max `cpu_neon` (6 cycles) 512
-  tokens 1638.1 -> 688.7, 2048 tokens 7579.6 -> 2719.2. Prefills of 16
+  tokens 1638.1 -> 688.7, 2048 tokens 7579.6 -> 2719.2. Gemma 4 E4B
+  Q4_K_M on the M6, 512 tokens: Metal 382.5 -> 272.2 (run 4054),
+  `cpu_neon` 3120.9 -> 1986.5 (run 4056). Prefills of 16
   and 64 tokens and the decode after each length are within the control's
   noise in every run. `GEIST_NLL_PREFILL=1 bench_nll` over 1024
   tokens gives the same NLL before and after (Metal 7.445414, `cpu_neon`
