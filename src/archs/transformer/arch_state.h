@@ -1026,15 +1026,13 @@ transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_
 /* Cache rows (#591, arch_ops.c): the rows of a prefill's next pass, out of
  * the `chunk` its plan gives it, and in *cache_rows whether they stop after
  * layer n_cache_layers - 1. A chunk before the last is one pass of cache
- * rows. The last chunk is two passes where it can be split without moving
- * a bit: its first rows as cache rows, then its tail through every layer;
- * else one pass through every layer. The tail on a CPU backend is
- * TRANSFORMER_PREFILL_TAIL_ROWS rows of a chunk of at least two more; on
- * any other backend it starts at a multiple of TRANSFORMER_PREFILL_TAIL_ALIGN
- * rows and has at least TRANSFORMER_PREFILL_TAIL_MIN (prefill_tail_rows
- * says why). Always `chunk` and false for a model or session without cache
- * rows. */
-constexpr size_t TRANSFORMER_PREFILL_TAIL_ROWS  = 8;
+ * rows. The last chunk is one pass through every layer, except on a GPU
+ * backend where it can be split without moving a bit: then its first rows
+ * are a pass of cache rows and its tail, which starts at a multiple of
+ * TRANSFORMER_PREFILL_TAIL_ALIGN rows and has at least
+ * TRANSFORMER_PREFILL_TAIL_MIN, runs every layer (prefill_tail_rows says
+ * why there and why not on a CPU backend). Always `chunk` and false for a
+ * model or session without cache rows. */
 constexpr size_t TRANSFORMER_PREFILL_TAIL_ALIGN = 128;
 constexpr size_t TRANSFORMER_PREFILL_TAIL_MIN   = 64;
 

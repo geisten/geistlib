@@ -468,29 +468,31 @@ static bool prefill_cache_rows_ok(const struct transformer_arch_session *sess) {
 
 /* The rows at the end of a last chunk that run every layer; `chunk` when it
  * is not to be split. The last row's bits must be those of the chunk in one
- * pass, so the two passes have to compute every row as that one did.
+ * pass, so the two passes have to compute every row as that one did, and a
+ * row's bits depend on the pass it is in.
  *
- * A CPU backend's M>1 kernels give a row the same bits for every row count
- * and every place in the pass (#527, #554, test_moe_row_invariant_unit), a
- * pass of one row being the exception (the decode kernels): any split that
- * leaves two rows before it will do, and the tail is one token tile.
+ * On a CPU backend the chunk is not split. The quantized M>1 kernels give a
+ * row the same bits for every row count (#527, #554), but the dense F32,
+ * F16 and BF16 linears (Gemma 4: the per-layer embedding's projections) go
+ * through the BLAS, which promises no such thing: on the M1 Max
+ * (Accelerate) a 10-row pass and passes of 2 and 8 rows gave the same bits
+ * for Gemma 4 E2B's shapes and not for those of the 32-wide model of
+ * tests/test_kv_shared_prefill_unit.c, whose second layer's K/V rows
+ * already differed.
  *
- * A GPU backend's do not. Its kernels tile the rows of a pass, 8 to 128 to
- * a tile, each tile computed by its own row count, and pick their path by
- * the pass's row count, at thresholds up to 64 rows (Metal: 9 rows and
- * fewer on the matvec kernels, ragged 32- and 64-row tiles on the bounded
- * ones, 128 rows to a tensor-unit threadgroup). A split at a multiple of
- * 128 rows that leaves 64 or more keeps every tile and every path of the
- * one pass. A shorter tail is not safe there: on the M1 Max (Gemma 4 E2B)
- * the last 16, 32 or 64 of 256 rows gave the one pass's logits, the last
- * 24 did not, and no tail of 10 to 64 rows did for a chunk of 100, 127 or
- * 129. */
+ * A GPU backend's kernels tile the rows of a pass, 8 to 128 to a tile, each
+ * tile computed by its own row count, and pick their path by the pass's row
+ * count, at thresholds up to 64 rows (Metal: 9 rows and fewer on the matvec
+ * kernels, ragged 32- and 64-row tiles on the bounded ones, 128 rows to a
+ * tensor-unit threadgroup). A split at a multiple of 128 rows that leaves
+ * 64 or more keeps every tile and every path of the one pass. A shorter
+ * tail does not: on the M1 Max (Gemma 4 E2B) the last 16, 32 or 64 of 256
+ * rows gave the one pass's logits, the last 24 did not, and no tail of 10
+ * to 64 rows did for a chunk of 100, 127 or 129. */
 static size_t prefill_tail_rows(const struct transformer_arch_session *sess, size_t chunk) {
     const struct geist_backend_descriptor *desc = sess->model->backend->desc;
-    if (desc != nullptr && strncmp(desc->name, "cpu_", 4) == 0) {
-        return chunk >= TRANSFORMER_PREFILL_TAIL_ROWS + 2 ? TRANSFORMER_PREFILL_TAIL_ROWS : chunk;
-    }
-    if (chunk < TRANSFORMER_PREFILL_TAIL_ALIGN + TRANSFORMER_PREFILL_TAIL_MIN) {
+    if (desc == nullptr || strncmp(desc->name, "cpu_", 4) == 0 ||
+        chunk < TRANSFORMER_PREFILL_TAIL_ALIGN + TRANSFORMER_PREFILL_TAIL_MIN) {
         return chunk;
     }
     const size_t head = (chunk - TRANSFORMER_PREFILL_TAIL_MIN) / TRANSFORMER_PREFILL_TAIL_ALIGN *
