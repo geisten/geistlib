@@ -1,0 +1,81 @@
+{
+  "note": "Model pairs of tools/probes/mlx_vs_geist.sh: a GGUF for geist and llama.cpp, an MLX conversion of the same model for mlx-lm. gguf.protocol_key names a model of benchmark/cross_engine_gpu_protocol.json (sha256 there, URL in benchmark/model_sources.json); the others carry their own pinned URL and sha256. mlx.weights lists the sha256 of every safetensors file at the pinned revision; the probe refuses a snapshot that differs.",
+  "prompt_file": "benchmark/prompts/moe-long.txt",
+  "pins": {
+    "uv": {
+      "version": "0.13.9",
+      "url": "https://github.com/astral-sh/uv/releases/download/0.13.9/uv-aarch64-apple-darwin.tar.gz",
+      "sha256": "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca"
+    },
+    "python": "3.12",
+    "packages": ["mlx==0.32.4", "mlx-lm==0.32.2"]
+  },
+  "models": {
+    "qwen35-0.8b-8bit": {
+      "label": "Qwen3.5 0.8B, 8-bit",
+      "gguf": {"protocol_key": "qwen35-0.8b-q8", "quant": "Q8_0"},
+      "mlx": {
+        "repo": "mlx-community/Qwen3.5-0.8B-8bit",
+        "revision": "87e768fbfa03994095f3d14527c80c5ae70c5758",
+        "weights": {"model.safetensors": "9a887c5731520e33bbd324378ecb7b560c1f750af16a6dc28229d500304e656c"}
+      },
+      "cpu": true
+    },
+    "qwen35-0.8b-4bit": {
+      "label": "Qwen3.5 0.8B, 4-bit",
+      "gguf": {
+        "quant": "Q4_0",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q4_0.gguf",
+        "sha256": "444406ddd926550c724ec18d5120a9d40ded44908a063b0e66e9a7e5464c652c"
+      },
+      "mlx": {
+        "repo": "mlx-community/Qwen3.5-0.8B-4bit",
+        "revision": "da28692b5f139cb0ec58a356b437486b7dac7462",
+        "weights": {"model.safetensors": "f5a0d9dd3efa73510542a8023d610ff26be2b4b020d181cfc4bedaa1fcc5dd9e"}
+      }
+    },
+    "llama32-3b-4bit": {
+      "label": "Llama 3.2 3B Instruct, 4-bit",
+      "gguf": {"protocol_key": "llama32-3b-q4km", "quant": "Q4_K_M"},
+      "mlx": {
+        "repo": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        "revision": "7f0dc925e0d0afb0322d96f9255cfddf2ba5636e",
+        "weights": {"model.safetensors": "d75e1ee0ea653cc5b76191ec934c7c0d568e94d4e47846619f1f4bc715b7b265"}
+      }
+    },
+    "qwen35-4b-4bit": {
+      "label": "Qwen3.5 4B, 4-bit",
+      "gguf": {"protocol_key": "qwen35-4b-q4", "quant": "Q4_0"},
+      "mlx": {
+        "repo": "mlx-community/Qwen3.5-4B-4bit",
+        "revision": "0e7ffd5c629ef7719d4cbc04069232580bfa9d9c",
+        "weights": {"model.safetensors": "5fb9acd0246866381cf8c5c354c6db1019f6498eec4ccb4f5edcc71ffeacb2db"}
+      }
+    },
+    "gemma4-e2b-4bit": {
+      "label": "Gemma 4 E2B-it, 4-bit",
+      "gguf": {"protocol_key": "gemma4-e2b-q4km", "quant": "Q4_K_M"},
+      "mlx": {
+        "repo": "mlx-community/gemma-4-e2b-it-4bit",
+        "revision": "238767527555cb75a05732a84dff5d6ba0dd6809",
+        "weights": {"model.safetensors": "038e39a37a7667373d2c3991375446b10c96ae1d717a68674870343db376b76e"}
+      }
+    },
+    "qwen35-9b-4bit": {
+      "label": "Qwen3.5 9B, 4-bit",
+      "gguf": {
+        "quant": "Q4_0",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_0.gguf",
+        "sha256": "17670346b4260ddcb0173965145155885024f3c9a4a24389a3370751edbcde24"
+      },
+      "mlx": {
+        "repo": "mlx-community/Qwen3.5-9B-4bit",
+        "revision": "8b2b98c00a6b4d291155e4890773ca8f769aee53",
+        "weights": {
+          "model-00001-of-00002.safetensors": "a68b87558c6ef43f74c2bd63ce7e9092ceddc3101f3def0030774bae5f42aadd",
+          "model-00002-of-00002.safetensors": "b0a770bf8469c7f3f18756a0e0283f1c1174344a83e059a4e483f6af4907352d"
+        }
+      }
+    }
+  }
+}
