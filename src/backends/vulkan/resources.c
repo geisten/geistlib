@@ -36,6 +36,41 @@ static uint32_t vk_find_readback_type(const struct vk_state *st, uint32_t type_b
     return cached != UINT32_MAX ? cached : vk_find_mem_type(st, type_bits, vis);
 }
 
+/* The type an allocation of `size` bytes planned for `type` is made from.
+ * Elsewhere `type` itself. On RADV with an integrated GPU (st->carveout_shy,
+ * #249) the device-local types are placed in the firmware's VRAM carve-out
+ * first (2 GiB on the Ryzen 9950X) and in ordinary system memory after. Only
+ * in the carve-out can amdgpu put the process's page tables, 4 KiB per 2 MiB
+ * mapped, and it does not move the process's own buffers out for them. A
+ * model is thousands of buffers, one per weight: they filled the carve-out
+ * to its last holes, the page tables took those, and the next submit failed
+ * (or hung in the kernel). So only st->carveout_left bytes are allocated
+ * from those types (the first allocations: the x ring and the dense weights,
+ * which every token reads; decode is 3-4 % faster with them there). Past it
+ * a type outside the device-local heap is used, mappable where `type` is:
+ * the same system memory, never in the carve-out. The buffer stays device
+ * memory in this backend's books (placement, budget): `type` keeps naming it. */
+uint32_t
+vk_alloc_mem_type(const struct vk_state *st, uint32_t type_bits, uint32_t type, size_t size) {
+    const VkMemoryPropertyFlags have = st->mem_props.memoryTypes[type].propertyFlags;
+    if (!st->carveout_shy || (have & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0 ||
+        size <= st->carveout_left) {
+        return type;
+    }
+    const VkMemoryPropertyFlags host =
+            have & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+    for (uint32_t i = 0; i < st->mem_props.memoryTypeCount; ++i) {
+        const VkMemoryPropertyFlags f = st->mem_props.memoryTypes[i].propertyFlags;
+        if ((type_bits & (1u << i)) != 0 && (f & host) == host &&
+            (f & (VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT |
+                  VK_MEMORY_PROPERTY_PROTECTED_BIT)) == 0) {
+            return i;
+        }
+    }
+    return type;
+}
+
 /* The device-memory limit for a device-local allocation from `mem_type`:
  * its heap, lowered by GEIST_VK_VRAM_BUDGET. */
 static size_t vk_vram_limit(const struct vk_state *st, uint32_t mem_type) {
@@ -282,7 +317,8 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
     VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
                                   .pNext           = bda ? &bda_flags : nullptr,
                                   .allocationSize  = req.size,
-                                  .memoryTypeIndex = mem_type};
+                                  .memoryTypeIndex = vk_alloc_mem_type(
+                                          st, req.memoryTypeBits, mem_type, (size_t) req.size)};
     const bool           vram = device_local && (st->mem_props.memoryTypes[mem_type].propertyFlags &
                                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
     if (vram && !vk_vram_fits(st, mem_type, (size_t) req.size)) {
@@ -299,7 +335,7 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
                                              req.memoryTypeBits,
                                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (fb != UINT32_MAX && fb != mem_type) {
+        if (fb != UINT32_MAX && fb != minfo.memoryTypeIndex) {
             minfo.memoryTypeIndex = fb;
             mem_type              = fb;
             r                     = st->fn.AllocateMemory(st->device, &minfo, nullptr, &buf->mem);
@@ -333,6 +369,11 @@ enum geist_status vk_memory_info(const struct geist_backend *be, struct geist_ba
     if (vram) {
         buf->vram_bytes = (size_t) minfo.allocationSize;
         st->vram_used += buf->vram_bytes;
+    }
+    if (st->carveout_shy && (st->mem_props.memoryTypes[minfo.memoryTypeIndex].propertyFlags &
+                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0) {
+        buf->carve_bytes = (size_t) minfo.allocationSize; /* <= carveout_left */
+        st->carveout_left -= buf->carve_bytes;
     }
     buf->device_mem = (st->mem_props.memoryTypes[mem_type].propertyFlags &
                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
@@ -588,6 +629,7 @@ void vk_buffer_destroy(struct geist_backend *be, struct geist_buffer *buf) {
         st->fn.FreeMemory(st->device, buf->mem, nullptr);
         st->bar_used -= buf->bar_bytes;
         st->vram_used -= buf->vram_bytes;
+        st->carveout_left += buf->carve_bytes;
     }
     geist_backend_free(be, buf);
 }
@@ -682,9 +724,13 @@ size_t vk_fast_host_bytes(struct geist_backend *be) {
                                         req.memoryTypeBits,
                                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkMemoryAllocateInfo minfo = {.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-                                  .allocationSize  = req.size,
-                                  .memoryTypeIndex = mem_type};
+    VkMemoryAllocateInfo minfo = {
+            .sType          = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = req.size,
+            .memoryTypeIndex =
+                    mem_type != UINT32_MAX
+                            ? vk_alloc_mem_type(st, req.memoryTypeBits, mem_type, SIZE_MAX)
+                            : mem_type};
     if (mem_type == UINT32_MAX ||
         st->fn.AllocateMemory(st->device, &minfo, nullptr, out_mem) != VK_SUCCESS ||
         st->fn.BindBufferMemory(st->device, *out_buf, *out_mem, 0) != VK_SUCCESS ||

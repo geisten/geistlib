@@ -241,6 +241,37 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     geist_backend_free(be, st);
 }
 
+/* One number from amdgpu's sysfs attributes of the DRM device major:minor
+ * (false: not there, as on another driver or in a sandbox without /sys). */
+[[nodiscard]] static bool
+vk_drm_mem_info(long long major, long long minor, const char *name, unsigned long long *out) {
+    char path[96];
+    snprintf(path, sizeof path, "/sys/dev/char/%lld:%lld/device/%s", major, minor, name);
+    FILE *f = fopen(path, "r");
+    if (f == nullptr) {
+        return false;
+    }
+    const bool ok = fscanf(f, "%llu", out) == 1;
+    fclose(f);
+    return ok;
+}
+
+/* #249: the bytes of an integrated Radeon's VRAM carve-out this backend may
+ * fill (vk_alloc_mem_type): what is free now, less a reserve the kernel's
+ * page tables always find room in. They take 4 KiB per 2 MiB mapped, 64 MiB
+ * for 32 GiB; the reserve is an eighth of the carve-out and at least
+ * 128 MiB. 0 when amdgpu's counters cannot be read: then nothing goes there. */
+static size_t vk_carveout_room(long long major, long long minor) {
+    unsigned long long total = 0, used = 0;
+    if (!vk_drm_mem_info(major, minor, "mem_info_vram_total", &total) ||
+        !vk_drm_mem_info(major, minor, "mem_info_vram_used", &used)) {
+        return 0;
+    }
+    const unsigned long long least   = 128ull << 20;
+    const unsigned long long reserve = total / 8 > least ? total / 8 : least;
+    return used < total && total - used > reserve ? (size_t) (total - used - reserve) : 0;
+}
+
 [[nodiscard]] static enum geist_status vk_pick_device(struct geist_backend *be,
                                                       struct vk_state      *st) {
     uint32_t count = 0;
@@ -290,8 +321,13 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     st->fn.GetPhysicalDeviceMemoryProperties(st->phys, &st->mem_props);
     VkPhysicalDeviceVulkan13Properties p13 = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+    /* VK_EXT_physical_device_drm: left zeroed by a driver without it. */
+    VkPhysicalDeviceDrmPropertiesEXT drm = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT, .pNext = &p13};
+    VkPhysicalDeviceDriverProperties drv = {
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, .pNext = &drm};
     VkPhysicalDeviceSubgroupProperties sgp = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, .pNext = &p13};
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, .pNext = &drv};
     VkPhysicalDeviceProperties2 pprops = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
                                           .pNext = &sgp};
     st->fn.GetPhysicalDeviceProperties2(st->phys, &pprops);
@@ -324,7 +360,15 @@ static void vk_destroy_state(struct geist_backend *be, struct vk_state *st) {
     }
     st->unified_memory = pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
                          pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
-    st->subgroup_size  = sgp.subgroupSize;
+    /* #249: see vk_alloc_mem_type. GEIST_VK_CARVEOUT (parsed in vk_create)
+     * overrides what amdgpu reports. */
+    st->carveout_shy = drv.driverID == VK_DRIVER_ID_MESA_RADV &&
+                       pprops.properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+    if (st->carveout_shy && getenv("GEIST_VK_CARVEOUT") == nullptr) {
+        st->carveout_left =
+                drm.hasPrimary ? vk_carveout_room(drm.primaryMajor, drm.primaryMinor) : 0;
+    }
+    st->subgroup_size = sgp.subgroupSize;
     /* Range half of the 32-lane pin; vk_create_device adds the features. */
     st->sg32_pinnable = p13.minSubgroupSize <= 32u && p13.maxSubgroupSize >= 32u &&
                         (p13.requiredSubgroupSizeStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0u &&
@@ -609,6 +653,7 @@ static size_t vk_parse_bytes(const char *v) {
     st->strict          = geist_env_flag("GEIST_VK_STRICT", false);
     st->bare            = geist_env_flag("GEIST_VK_DECKNET_ONLY", false);
     st->vram_budget     = vk_parse_bytes(getenv("GEIST_VK_VRAM_BUDGET"));
+    st->carveout_left   = vk_parse_bytes(getenv("GEIST_VK_CARVEOUT"));
     const char *reserve = getenv("GEIST_VK_WEIGHT_RESERVE");
     st->weight_reserve  = reserve != nullptr ? vk_parse_bytes(reserve) : SIZE_MAX;
     /* 32 rows: streaming beats the shaders' bus reads from there on (#78,
@@ -664,6 +709,12 @@ static size_t vk_parse_bytes(const char *v) {
                 st->has_coopmat,
                 st->subgroup_size,
                 st->sg32_pinnable ? ", GEMMs pinned to 32" : "");
+        if (st->carveout_shy) {
+            fprintf(stderr,
+                    "geist vulkan: integrated Radeon: up to %zu MiB of device-local "
+                    "allocations in the VRAM carve-out, the rest outside it (#249)\n",
+                    st->carveout_left >> 20);
+        }
     }
     be->state = st;
     return GEIST_OK;
