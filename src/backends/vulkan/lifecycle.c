@@ -251,9 +251,16 @@ vk_drm_mem_info(long long major, long long minor, const char *name, unsigned lon
     if (f == nullptr) {
         return false;
     }
-    const bool ok = fscanf(f, "%llu", out) == 1;
+    char       line[32];
+    char      *end = nullptr;
+    const bool got = fgets(line, sizeof line, f) != nullptr;
     fclose(f);
-    return ok;
+    if (!got) {
+        return false;
+    }
+    errno = 0;
+    *out  = strtoull(line, &end, 10);
+    return end != line && errno == 0;
 }
 
 /* #249: the bytes of an integrated Radeon's VRAM carve-out this backend may
@@ -325,7 +332,9 @@ static size_t vk_carveout_room(long long major, long long minor) {
     VkPhysicalDeviceDrmPropertiesEXT drm = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT, .pNext = &p13};
     VkPhysicalDeviceDriverProperties drv = {
-            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES, .pNext = &drm};
+            .sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+            .pNext    = &drm,
+            .driverID = VK_DRIVER_ID_MAX_ENUM /* no driver has it: left so before Vulkan 1.2 */};
     VkPhysicalDeviceSubgroupProperties sgp = {
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES, .pNext = &drv};
     VkPhysicalDeviceProperties2 pprops = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
