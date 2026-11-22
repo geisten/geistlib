@@ -496,8 +496,8 @@ def report(records: list) -> str:
     names = {"geist": "geist Metal", "mlx": "mlx-lm", "llama": "llama.cpp Metal",
              "geist-cpu": "geist CPU"}
     lines = ["| model | engine | prefill tok/s @512 | decode tok/s (128) | TTFT ms @512 | "
-             "ready cold s | ready warm s | peak footprint GiB | peak RSS GiB | n |",
-             "| :-- | :-- | --: | --: | --: | --: | --: | --: | --: | --: |"]
+             "ready cold s | ready warm s | peak footprint GiB | peak RSS GiB | engine's own GiB | n |",
+             "| :-- | :-- | --: | --: | --: | --: | --: | --: | --: | --: | --: |"]
     for model in models:
         for engine in ("geist", "mlx", "llama", "geist-cpu"):
             mine = [c for c in cells if c["model"] == model["key"] and c["engine"] == engine]
@@ -508,13 +508,20 @@ def report(records: list) -> str:
                 procs = [p for c in mine for p in c["process"].values()]
             else:
                 procs = [c["process"] for c in mine]
+            # The engine's own counter: geist's backend allocation (Metal buffers,
+            # which RSS and footprint leave out), MLX's peak memory.
+            own = [c["native"].get("backend_allocated_mb", 0) * 2**20 for c in mine
+                   if engine.startswith("geist")]
+            own += [r["lib_peak_memory_gb"] * 1e9 for c in mine if engine == "mlx"
+                    for r in c["native"]["runs"]]
             load = lambda kind: [c["load"][kind]["real_s"] for c in mine if "load" in c]  # noqa: E731
             lines.append(
                 f"| {model['label']} | {names[engine]} | {med_range(flat('prefill_tps'))} | "
                 f"{med_range(flat('decode_tps'))} | {med_range(flat('ttft_ms'))} | "
                 f"{med_range(load('cold'), 2)} | {med_range(load('warm'), 2)} | "
                 f"{gib([p['peak_footprint_bytes'] for p in procs])} | "
-                f"{gib([p['max_rss_bytes'] for p in procs])} | {len(flat('prefill_tps'))} |")
+                f"{gib([p['max_rss_bytes'] for p in procs])} | {gib([v for v in own if v > 0])} | "
+                f"{len(flat('prefill_tps'))} |")
     for cell in failed:
         lines.append(f"\nFAILED {cell['model']} / {cell['engine']} cycle {cell['cycle']}: "
                      f"{cell['error'][:300]}")
