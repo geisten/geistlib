@@ -18,7 +18,7 @@ amount of weight data and generate the same tokens, and Llama 3.2 3B at
   same 0.26–0.29 ms per step on the 3B model, where it is 2 % of a step.
 - **The rest of the 4-bit decode gap is weight bytes.** Llama 3.2 3B
   Q4_K_M holds 12 % more bytes than the MLX 4-bit file and spends 13.6 %
-  more GPU time per step; 0.81 ms of the 1.76 ms is the output head, which
+  more GPU time per step; 0.82 ms of the 1.76 ms is the output head, which
   Q4_K_M keeps at 6.56 bits per weight.
 - **Prefill is GPU-bound in geist and the GPU work is 1.45–1.47× mlx-lm's.**
   The 512 tokens take geist 71.0 ms (Qwen) and 249.5 ms (Llama) of GPU time
@@ -116,8 +116,8 @@ stamps give.
   The GGUF is 2.02 GB at 5.03 bits per weight, the MLX file 1.81 GB at 4.50
   (ratio 1.12). In the one-op runs the output head alone takes 2239 µs in
   geist (`matvec_q6k_n4`: Q4_K_M stores `token_embd` as Q6_K, 6.56 bits per
-  weight) and 1427 µs in mlx-lm, a difference of 812 µs; the remaining
-  ~950 µs is 8 % on the body, whose bytes differ by about 7 %. On the 8-bit
+  weight) and 1416 µs in mlx-lm, a difference of 823 µs; the remaining
+  ~940 µs is 8 % on the body, whose bytes differ by about 7 %. On the 8-bit
   pair the heads cost the same, 1757 and 1718 µs.
 
 GPU time by kernel class, one op per command buffer (inferred shares, see
@@ -150,10 +150,10 @@ more than half active:
 | | mlx-lm | 1285 | 74 % | 5.6 | 1.4 | 75.5 |
 
 geist's GPU runs at a higher frequency and draws 1.6–1.9× the power of
-mlx-lm's for no more tokens: the governor clocks the GPU up for geist's
-kernels, and the step stays bound by memory. This was not followed further
-here; it says geist's decode kernels do more arithmetic per byte read than
-mlx-lm's, which costs energy, not time.
+mlx-lm's for no more tokens. This was not followed further. A reading that
+fits, untested: geist's decode kernels do more arithmetic per byte read, the
+governor clocks the GPU up for them, and the step stays bound by memory, so
+the difference shows as energy and not as time.
 
 ## Prefill
 
@@ -170,7 +170,9 @@ single-token step for the last prompt token and the sampling.
 | | mlx-lm | 194.0 | 190.4 | 3.5 | 19.6 | 50 | 1301 | 797 |
 
 mlx-lm's GPU time splits into the command buffers that carry a weight GEMM,
-i.e. the batched pass, and the rest:
+i.e. the batched pass, and the rest (the single-token step, the sampling and
+the beginning of the next step, which is queued before the first token is
+handed out):
 
 | model | batched pass, 511 tokens | single-token step and sampling | longest GPU gap |
 | :-- | --: | --: | --: |
@@ -185,11 +187,11 @@ i.e. the batched pass, and the rest:
   before its first commit, a gap of 7.9 ms between the pass and the
   single-token step on the Qwen pair (host work; 2.2 ms on Llama), the step
   itself, and 2–5 ms between the step's end and the token reaching the
-  caller. On
-  2026-11-22 its Qwen prefill took 60.3 ms where it took 70.4 ms today, with
-  the same script, file and package versions; the GPU work measured today
-  leaves room for that only in the host part. Its Llama prefill is the same
-  on both days (2634 tok/s).
+  caller. On 2026-11-22 its Qwen prefill took 60.3 ms where it took 70.4 ms
+  today, with the same calls, model file and package versions (the runner
+  script is a different one); the GPU work measured today leaves room for
+  that only in the host part. Its Llama prefill is the same on both days
+  (2634 tok/s).
 
 GPU time by kernel class, one op per command buffer (inferred shares):
 
@@ -211,7 +213,7 @@ add:
 - **The serial order of the dispatches costs at most 16 % (Qwen) and 5 %
   (Llama)**: with the same dispatches in a concurrent encoder without any
   barrier, which computes garbage, the prefill ran at 8376 and 2150 tok/s
-  (measured bound). #590 recovers 3 % of it on Qwen and nothing on Llama.
+  (measured bound). Of that, #590 gains 3 % on Qwen and nothing on Llama.
 - **The weight GEMMs are not slower on the 8-bit pair and are on the 4-bit
   pair.** In the one-op runs geist's `matmul_q80_mm_tc` dispatches take
   43.5 ms and mlx-lm's command buffers with a quantized GEMM 39.5 ms (those
@@ -224,7 +226,8 @@ add:
   (`preferred_m_max`), so 512 tokens are two passes and every weight GEMM is
   dispatched twice (372 on Qwen, 392 on Llama, against mlx-lm's 169 and 191
   in one pass). One pass of 512 rows (`GEIST_M_MAX=512`) is 2.6 % faster on
-  Qwen and no faster on Llama; 128 rows are 11 % slower on Qwen. The logits
+  Qwen and no faster on Llama (measured there while the host was disturbed,
+  see Levers); 128 rows are 11 % slower on Qwen. The logits
   are the same bit for bit at 128, 256 and 512 rows on both models.
 - What remains after the DeltaNet and the GEMMs, about 8 ms on Qwen and
   40 ms on Llama, is not attributed; the serial order explains at most 10
@@ -335,7 +338,7 @@ Decode, per step:
 | gap to mlx-lm before #590 | 344 µs (5.5 %) | 2024 µs (15.6 %) | |
 | GPU idle between steps (measured) | 260 µs | 261 µs | #590's early first buffer takes 86 µs of it on Qwen and 73 µs on Llama. The remaining 190 µs go only by queueing the next step before the current one has finished, as mlx-lm does: the argmax and the embedding lookup are already on the GPU, but the session would have to take back a step the caller does not continue with (KV position, DeltaNet state). A spinning wait adds nothing on top of #590's defaults (156.9 against 157.0 tok/s) and keeps a core busy |
 | serial order of the dispatches (measured) | 83 µs more GPU time than mlx-lm | none: one chain | concurrent encoders: −101 µs on Qwen (15.5 % of the barriers spared), geist's GPU time per step is now mlx-lm's. Barriers by handle instead of by `MTLBuffer` spare 22.2 % (+0.4 % decode in run 4092's probe); the binds would have to carry the handle's extent |
-| weight bytes (inferred) | none: 8.5 bits on both sides | 1763 µs: the output head at Q6_K about 810, the body about 950 | not an engine matter. A GGUF at 4.5 bits throughout would read like the MLX file |
+| weight bytes (inferred) | none: 8.5 bits on both sides | 1763 µs: the output head at Q6_K about 820, the body about 940 | not an engine matter. A GGUF at 4.5 bits throughout would read like the MLX file |
 
 Prefill, GPU time for 512 tokens:
 
