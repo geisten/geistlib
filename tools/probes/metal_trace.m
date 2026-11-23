@@ -579,7 +579,7 @@ static void dump_at_exit(void) {
     }
 }
 
-__attribute__((constructor)) static void metal_trace_init(void) {
+[[gnu::constructor]] static void metal_trace_init(void) {
     mach_timebase_info_data_t tb;
     mach_timebase_info(&tb);
     g_tick            = (double) tb.numer / (double) tb.denom * 1e-9;
