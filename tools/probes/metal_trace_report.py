@@ -34,7 +34,8 @@ from collections import defaultdict
 CLASSES = [
     ("lm head / sampling", r"argmax|logsumexp|vsn_Subtract"),
     ("embedding", r"embed|gather_front|affine_dequantize"),
-    ("quantized matmul", r"^(matvec_|matmul_|linear_|gate_up|mm_q|mm_tc|affine_qm|steel_gemm_splitk)"),
+    ("quantized matmul",
+     r"^(matvec_|matmul_|linear_|gate_up|mv\d_|mm_q|mm_tc|affine_qm|steel_gemm_splitk)"),
     ("attention", r"attention|sdpa|steel_gemm_fused|softmax|rope|kv_append|g\d_Select|GreaterEqual|arange"),
     ("norm", r"rms"),
     ("DeltaNet mixer", r"^(dn_|dnf_|deltanet)|gated_delta|depthwise_conv|LogAddExp"),
@@ -100,6 +101,12 @@ def summarize(kernels, records, phases):
                 for k, n in r["k"]:
                     per_kernel[kernels[k]][0] += n
                     per_kernel[kernels[k]][1] += (r["ge"] - r["gs"]) * n / r["n"]
+            # The widest quantized matmul of the phase: in decode the lm head
+            # (one per token), which no kernel name tells from the others.
+            wide = [r for r in work
+                    if any(classify(kernels[k]) == "quantized matmul" for k, _ in r["k"])]
+            top = max((r["tg"] for r in wide), default=0)
+            head = [r for r in wide if r["tg"] >= 0.9 * top]
             waits = [r for r in inside if r["w1"] > 0]
             rows.append({
                 "wall": t1 - t0,
@@ -110,6 +117,8 @@ def summarize(kernels, records, phases):
                 "gpu_sum": sum(r["ge"] - r["gs"] for r in inside),
                 "gpu_union": union([(r["gs"], min(r["ge"], t1)) for r in inside]),
                 "sched": statistics.median([r["gs"] - r["c"] for r in work]) if work else 0.0,
+                "head_n": len(head),
+                "head_s": sum(r["ge"] - r["gs"] for r in head),
                 "barriers": sum(r.get("mb", 0) for r in work),
                 "concurrent": sum(r.get("cc", 0) for r in work) / max(1, sum(r["e"] for r in work)),
                 "tokens": token_gaps(work),
@@ -192,7 +201,7 @@ def main():
             rows = phases.get(kind)
             if not rows:
                 continue
-            exact = all(row["dispatches"] < 1.5 * row["buffers"] for row in rows)
+            exact = all(row["dispatches"] < 2.5 * row["buffers"] for row in rows)
             total = mean(rows, "gpu_sum")
             per_kernel, per_class = defaultdict(lambda: [0.0, 0.0]), defaultdict(lambda: [0.0, 0.0])
             for row in rows:
@@ -200,13 +209,18 @@ def main():
                     for table, key in ((per_kernel, name), (per_class, classify(name))):
                         table[key][0] += n / len(rows)
                         table[key][1] += seconds / len(rows)
-            how = ("one op per buffer; a buffer of several kernels split by dispatch count"
+            how = ("one op per buffer; the time of a buffer with several kernels split by dispatch count"
                    if exact else "buffer time split by dispatch count: counts only")
             print(f"\n{label}, {kind}, per repeat ({how}):\n")
             print("| class | dispatches | GPU ms | share |")
             print("| :-- | --: | --: | --: |")
             for name, (n, seconds) in sorted(per_class.items(), key=lambda kv: -kv[1][1]):
                 print(f"| {name} | {n:.0f} | {seconds * 1e3:.2f} | {100 * seconds / total:.1f} % |")
+            if exact and kind == "decode":
+                print(f"\nOf the quantized matmul, the buffers within 10 % of the most threadgroups "
+                      f"(the lm head): {mean(rows, 'head_n'):.0f} per repeat, "
+                      f"{mean(rows, 'head_s') * 1e3:.2f} ms, "
+                      f"{100 * mean(rows, 'head_s') / total:.1f} %.")
             print("\n| kernel | dispatches | GPU ms | share | us per dispatch |")
             print("| :-- | --: | --: | --: | --: |")
             for name, (n, seconds) in sorted(per_kernel.items(), key=lambda kv: -kv[1][1])[:top]:
