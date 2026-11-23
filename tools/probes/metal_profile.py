@@ -292,6 +292,12 @@ def main():
            "main_tests": args.main_tests}
     mv.ensure_venv(args.cache)
     cells = (args.out / "cells.jsonl").open("a")
+    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
+                          text=True).stdout.strip()
+    cells.write(json.dumps({"kind": "metadata",
+                            "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "geistlib_commit": head, "set": args.set, "ab_base": args.ab_base,
+                            "models": args.models}) + "\n")
     summary = ["## Metal profile, geist against mlx-lm (#590)", ""]
     for key in args.models.split(","):
         model = mv.ensure_model(key, args.cache, args.gguf_cache)
