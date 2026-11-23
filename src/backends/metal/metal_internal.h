@@ -145,10 +145,13 @@ constexpr int METAL_FLASH_SLOTS = 18;
 /* Metal's buffer argument table of a compute encoder has 31 entries. */
 constexpr int METAL_BUFFER_ARGS = 31;
 /* Open-addressed pipeline -> buffer access table (power of two; the
- * backend builds a few hundred pipelines) and the buffers remembered
- * between two memory barriers of the sequence encoder. */
-constexpr int METAL_PIPELINE_ACCESS_SLOTS = 2048;
-constexpr int METAL_SEQ_TRACKED           = 64;
+ * backend builds a few hundred pipelines; entries are never removed, and a
+ * pipeline that finds no slot within the probe bound counts as writing all
+ * its arguments) and the buffers remembered between two memory barriers of
+ * the sequence encoder. */
+constexpr int METAL_PIPELINE_ACCESS_SLOTS  = 2048;
+constexpr int METAL_PIPELINE_ACCESS_PROBES = 64; /* longest probe run looked at */
+constexpr int METAL_SEQ_TRACKED            = 64;
 static_assert(METAL_PIPELINE_ACCESS_SLOTS <= UINT16_MAX + 1, "slot indices are uint16_t");
 constexpr int METAL_PIPELINE_ACCESS_WANTED = 64;
 

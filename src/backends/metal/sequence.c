@@ -22,14 +22,16 @@ void metal_pipeline_access_add(struct metal_state            *st,
                                struct metal_function_h       *function) {
     const size_t mask = (size_t) METAL_PIPELINE_ACCESS_SLOTS - 1u;
     const size_t home = metal_pipeline_access_home(pipeline);
-    for (size_t i = 0; i <= mask; i++) {
+    for (size_t i = 0; i < (size_t) METAL_PIPELINE_ACCESS_PROBES; i++) {
         struct metal_pipeline_access *slot = &st->pipeline_access[(home + i) & mask];
         if (slot->pipeline == nullptr || slot->pipeline == pipeline) {
+            /* The same address again is a new pipeline in a released one's
+             * place: its entry starts over. */
             *slot = (struct metal_pipeline_access) {.pipeline = pipeline, .function = function};
             return;
         }
     }
-    /* Full: the pipeline is not found later and counts as writing everything. */
+    /* No slot: the pipeline is not found later and counts as writing everything. */
 }
 
 /* Reads which buffer arguments the slot's kernel has and which it may write
@@ -102,7 +104,7 @@ void metal_seq_note_pipeline(struct metal_state            *st,
     st->seq_used = st->seq_write = UINT32_MAX;
     const size_t mask            = (size_t) METAL_PIPELINE_ACCESS_SLOTS - 1u;
     const size_t home            = metal_pipeline_access_home(pipeline);
-    for (size_t i = 0; i <= mask; i++) {
+    for (size_t i = 0; i < (size_t) METAL_PIPELINE_ACCESS_PROBES; i++) {
         struct metal_pipeline_access *slot = &st->pipeline_access[(home + i) & mask];
         if (slot->pipeline == pipeline) {
             if (slot->resolved) {
