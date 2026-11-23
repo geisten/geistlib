@@ -162,7 +162,18 @@ void metal_destroy(struct geist_backend *be) {
                     ? (uint32_t) rotate_prefill
             : rotate_set ? (uint32_t) rotate
                          : 16u;
-    st->profile_enabled = geist_env_flag("GEIST_METAL_PROFILE", false);
+    /* The first command buffer of a decode step is committed after 16
+     * dispatches (GEIST_METAL_PIPELINE_FIRST=N, 0: a full period), so the
+     * GPU starts on the step while the rest is encoded (#590). */
+    long rotate_first    = 0;
+    st->seq_rotate_first = geist_parse_long(getenv("GEIST_METAL_PIPELINE_FIRST"), &rotate_first) &&
+                                           rotate_first >= 0 && rotate_first <= UINT32_MAX
+                                   ? (uint32_t) rotate_first
+                                   : 16u;
+    st->profile_enabled  = geist_env_flag("GEIST_METAL_PROFILE", false);
+    /* Concurrent sequence encoders with barriers where a dispatch depends
+     * on an earlier one (#590); 0: the serial encoder, for a comparison. */
+    st->seq_concurrent = geist_env_flag("GEIST_METAL_CONCURRENT", true);
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {

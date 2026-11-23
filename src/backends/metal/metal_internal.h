@@ -142,6 +142,20 @@ struct metal_buf_reg_entry {
 /* Head-dim slots of the prefill flash kernels: hd/32 - 1 for hd up to 576
  * (absorbed MLA's [k_pe | latent] head, #376). */
 constexpr int METAL_FLASH_SLOTS = 18;
+/* Metal's buffer argument table of a compute encoder has 31 entries. */
+constexpr int METAL_BUFFER_ARGS = 31;
+/* Open-addressed pipeline -> buffer access table (power of two; the
+ * backend builds a few hundred pipelines; entries are never removed, and a
+ * pipeline that finds no slot within the probe bound counts as writing all
+ * its arguments) and the buffers remembered between two memory barriers of
+ * the sequence encoder. */
+constexpr int METAL_PIPELINE_ACCESS_SLOTS  = 2048;
+constexpr int METAL_PIPELINE_ACCESS_PROBES = 64; /* longest probe run looked at */
+constexpr int METAL_SEQ_TRACKED            = 64;
+static_assert(METAL_PIPELINE_ACCESS_SLOTS <= UINT16_MAX + 1, "slot indices are uint16_t");
+constexpr int      METAL_PIPELINE_ACCESS_WANTED = 64;
+constexpr uint64_t METAL_SEQ_TRIAL              = 4096;
+constexpr uint64_t METAL_SEQ_ELIDED_MIN         = 20;
 
 /* The widest head the attention kernels take (#376). */
 constexpr size_t METAL_ATTN_HEAD_DIM_MAX = 576;
@@ -685,15 +699,16 @@ struct metal_state {
      * encodes buffer k+1. Buffers on one queue execute in commit order,
      * so cross-buffer data deps hold. 0 = pipelining off. Prefill
      * sequences rotate every seq_rotate_prefill dispatches instead. */
-    uint32_t                         seq_rotate_every;
-    uint32_t                         seq_rotate_prefill;
-    uint32_t                         seq_disp_at_rotate;
-    uint32_t                         seq_pending_count;
-    struct metal_cmdbuf_h           *seq_pending_cmds[16];
-    uint64_t                         seq_pending_mask[16]; /* profile: stages per buffer */
-    uint64_t                         seq_cur_mask;         /* profile: stages so far */
-    uint64_t                         seq_begin_ns;
-    int                              sequence_token;
+    uint32_t               seq_rotate_every;
+    uint32_t               seq_rotate_prefill;
+    uint32_t               seq_rotate_first; /* decode: first buffer's dispatches; 0 off */
+    uint32_t               seq_disp_at_rotate;
+    uint32_t               seq_pending_count;
+    struct metal_cmdbuf_h *seq_pending_cmds[16];
+    uint64_t               seq_pending_mask[16]; /* profile: stages per buffer */
+    uint64_t               seq_cur_mask;         /* profile: stages so far */
+    uint64_t               seq_begin_ns;
+    int                    sequence_token;
     enum geist_command_sequence_kind sequence_kind;
     bool                             sequence_active;
     /* One command sequence per backend, shared by every session of the
@@ -707,6 +722,56 @@ struct metal_state {
     _Atomic(uintptr_t) seq_owner;
     bool               sequence_has_work;
     bool               profile_enabled;
+    /* Concurrent sequence encoders (#590). A serial compute encoder runs
+     * its dispatches one after the other; the sequence's encoder is a
+     * concurrent one instead (GEIST_METAL_CONCURRENT=0: serial), and
+     * metal_seq_order puts a memory barrier before a dispatch only when it
+     * reads a buffer that a dispatch since the last barrier wrote, or
+     * writes one that such a dispatch read or wrote. What a kernel reads
+     * and writes is its pipeline's reflection (metal_pipeline_access): a
+     * `const device` argument is read, any other buffer counts as written.
+     * Buffers are compared as whole MTLBuffers -- two views of one buffer
+     * always depend on each other -- because a handle may be bound at an
+     * offset inside it (metal_submit_copy, the Hadamard rows), so the bind
+     * offset does not name the bytes a kernel touches.
+     *
+     * seq_bound: the encoder's buffer argument table as Metal keeps it
+     * (a binding lasts until it is replaced). seq_wrote/seq_read: the
+     * buffers written and only read since the last barrier. */
+    bool seq_concurrent;
+    struct metal_pipeline_access {
+        const struct metal_pipeline_h *pipeline;
+        struct metal_function_h       *function; /* borrowed: metal_state holds it */
+        bool                           resolved; /* used/write read from the reflection */
+        uint32_t                       used;     /* bit i: the kernel has a buffer argument i */
+        uint32_t                       write;    /* bit i: and may write it */
+    } pipeline_access[METAL_PIPELINE_ACCESS_SLOTS];
+    /* Slots bound on a sequence encoder before they were resolved; until
+     * then their kernel counts as writing every argument. Resolved a few
+     * per sequence end (metal_pipeline_access_resolve_some). */
+    uint16_t                     pipeline_access_wanted[METAL_PIPELINE_ACCESS_WANTED];
+    uint32_t                     pipeline_access_n_wanted;
+    uint32_t                     seq_used, seq_write; /* of the pipeline bound now */
+    const struct metal_buffer_h *seq_bound[METAL_BUFFER_ARGS];
+    const struct metal_buffer_h *seq_wrote[METAL_SEQ_TRACKED];
+    const struct metal_buffer_h *seq_read[METAL_SEQ_TRACKED];
+    uint32_t                     seq_nwrote, seq_nread;
+    uint64_t                     seq_barriers, seq_tracked_dispatches; /* profile */
+    /* Where every dispatch depends on the one before, a concurrent encoder
+     * only adds the barriers and their bookkeeping (Llama 3.2 3B decode on
+     * an M6: a barrier before 99 % of the dispatches, 0.5 % slower). Per
+     * kind of sequence, 0 prefill and 1 the others: once every pipeline it
+     * binds is resolved, the dispatches and barriers of the following
+     * sequences are counted, and if fewer than one barrier in
+     * METAL_SEQ_ELIDED_MIN was spared after METAL_SEQ_TRIAL dispatches the
+     * kind goes back to serial encoders for good. */
+    struct metal_seq_trial {
+        uint64_t dispatches, barriers;
+        bool     decided, serial;
+    } seq_trial[2];
+    uint64_t seq_trial_dispatches0, seq_trial_barriers0; /* counters at this sequence's begin */
+    bool     seq_trial_counts;       /* this sequence began with nothing left to resolve */
+    bool     seq_encoder_concurrent; /* what this sequence's encoders are */
     /* Opt-in PQ2 candidates; compile and allocate only for an eligible call. */
     bool                     pq2_lowp_shared_acc;
     uint32_t                 pq2_lowp_mode, pq2_lowp_tile, pq2_lowp_simdgroups;
@@ -1339,6 +1404,24 @@ void metal_release_pipeline_tables(struct metal_state *st);
 bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes);
 
 struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st);
+/* Defined in resources.c: -[obj respondsToSelector:]; false for nullptr. */
+bool metal_responds(struct metal_state *st, void *obj, const char *selector);
+/* Registers `pipeline`, built from `function`, for the concurrent sequence
+ * encoder. What its kernel reads and writes comes from a pipeline
+ * reflection, which costs 0.3-0.9 ms per pipeline on an M1 Max: 9-16 ms on
+ * the way to the first token if taken at creation or at the first bind. So
+ * a pipeline bound on a sequence encoder is only noted, and the sequences'
+ * ends resolve the noted ones a few at a time. */
+void metal_pipeline_access_add(struct metal_state            *st,
+                               const struct metal_pipeline_h *pipeline,
+                               struct metal_function_h       *function);
+/* The three below act on the sequence's concurrent encoder only; every
+ * other encoder is serial and they return at once. */
+void metal_seq_note_pipeline(struct metal_state            *st,
+                             const struct metal_encoder_h  *enc,
+                             const struct metal_pipeline_h *pipeline);
+/* Before a dispatch on `enc`: the memory barrier it needs, if any. */
+void metal_seq_order(struct metal_state *st, struct metal_encoder_h *enc);
 
 void metal_release_sequence_objects(struct metal_state *st);
 

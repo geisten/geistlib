@@ -204,7 +204,7 @@ static size_t metal_res_home(const struct metal_buffer_h *buf, size_t mask) {
     return (size_t) ((((uint64_t) (uintptr_t) buf >> 4) * 0x9e3779b97f4a7c15u) >> 40) & mask;
 }
 
-static bool metal_responds(struct metal_state *st, void *obj, const char *selector) {
+bool metal_responds(struct metal_state *st, void *obj, const char *selector) {
     union {
         void *raw;
         bool (*fn)(void *, void *, void *);

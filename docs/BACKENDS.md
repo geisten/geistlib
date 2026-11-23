@@ -74,6 +74,25 @@ wired for `GEIST_METAL_KEEP_ALIVE_S` seconds after the last token (default
 180), so the next request does not pay to wire it again; `0` leaves it to
 macOS, which unwires about 2 s after the GPU goes idle.
 
+The dispatches of a prefill chunk or a decode step go into concurrent
+compute encoders. A memory barrier precedes a dispatch only when it reads a
+buffer that a dispatch since the last barrier wrote, or writes one that such
+a dispatch read or wrote; the rest may overlap on the GPU. What a kernel
+reads and writes is taken from its pipeline's reflection (`const device`
+arguments are read, every other buffer counts as written), and buffers are
+compared as whole `MTLBuffer`s. Where that spares almost no barrier (a model
+whose steps are one chain of dispatches, such as Llama 3.2 in decode), that
+kind of sequence returns to serial encoders after its first 4096 dispatches.
+`GEIST_METAL_CONCURRENT=0` selects serial encoders throughout, which run
+every dispatch after the one before; the outputs are the same bit for bit
+either way (`tests/test_metal_concurrent_unit.c`). `GEIST_METAL_PROFILE=1`
+prints how many dispatches kept a barrier.
+
+A decode step commits its first command buffer after 16 dispatches, so the
+GPU starts on the step while the rest of it is encoded, and the following
+buffers every 192 (`GEIST_METAL_PIPELINE_FIRST=N`, `0` for a full first
+buffer; `GEIST_METAL_PIPELINE=N` for the period).
+
 ### Apple M5/M6 tensor acceleration
 
 On Apple GPU family 10 and later, quantized prefill GEMMs automatically use
