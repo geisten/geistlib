@@ -30,6 +30,9 @@
  *                          written since the last barrier. For an
  *                          engine that binds with setBuffer:offset:atIndex:
  *                          and encodes on one thread (geist)
+ *   METAL_TRACE_SPIN_WAIT=1  experiment: waitUntilCompleted polls the
+ *                          buffer's status in a loop first (a core spins;
+ *                          what the wake-up after a wait costs)
  *   metal_trace_mark(s)    a named time stamp (with the process's CPU time)
  *   metal_trace_dump(path) write the trace now
  *
@@ -166,6 +169,7 @@ static IMP o_commit, o_wait, o_enc, o_enc_desc, o_enc_type, o_blit;
 static IMP o_set_pipe, o_disp_groups, o_disp_threads, o_end, o_barrier_scope, o_barrier_res;
 static IMP o_set_buffer;
 static int g_force; /* METAL_TRACE_FORCE_CONCURRENT, see the head of the file */
+static int g_spin;  /* METAL_TRACE_SPIN_WAIT */
 
 /* Modes 3 and 4: what the dispatches since the last barrier of the encoder
  * read and wrote. One encoder is open at a time in the engines traced. */
@@ -479,6 +483,10 @@ static void h_wait(id self, SEL sel) {
     const uint32_t r = s != nullptr ? s->val : UINT32_MAX;
     os_unfair_lock_unlock(&g_lock);
     const double t0 = now_s();
+    if (g_spin) {
+        while ([(id<MTLCommandBuffer>) self status] < MTLCommandBufferStatusCompleted) {
+        }
+    }
     ((void (*)(id, SEL)) o_wait)(self, sel);
     const double t1 = now_s();
     if (r != UINT32_MAX) {
@@ -577,6 +585,8 @@ __attribute__((constructor)) static void metal_trace_init(void) {
     g_tick            = (double) tb.numer / (double) tb.denom * 1e-9;
     const char *force = getenv("METAL_TRACE_FORCE_CONCURRENT");
     g_force           = force != nullptr ? atoi(force) : 0;
+    const char *spin  = getenv("METAL_TRACE_SPIN_WAIT");
+    g_spin            = spin != nullptr ? atoi(spin) : 0;
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (dev == nil) {

@@ -694,15 +694,16 @@ struct metal_state {
      * encodes buffer k+1. Buffers on one queue execute in commit order,
      * so cross-buffer data deps hold. 0 = pipelining off. Prefill
      * sequences rotate every seq_rotate_prefill dispatches instead. */
-    uint32_t                         seq_rotate_every;
-    uint32_t                         seq_rotate_prefill;
-    uint32_t                         seq_disp_at_rotate;
-    uint32_t                         seq_pending_count;
-    struct metal_cmdbuf_h           *seq_pending_cmds[16];
-    uint64_t                         seq_pending_mask[16]; /* profile: stages per buffer */
-    uint64_t                         seq_cur_mask;         /* profile: stages so far */
-    uint64_t                         seq_begin_ns;
-    int                              sequence_token;
+    uint32_t               seq_rotate_every;
+    uint32_t               seq_rotate_prefill;
+    uint32_t               seq_rotate_first; /* decode: first buffer's dispatches; 0 off */
+    uint32_t               seq_disp_at_rotate;
+    uint32_t               seq_pending_count;
+    struct metal_cmdbuf_h *seq_pending_cmds[16];
+    uint64_t               seq_pending_mask[16]; /* profile: stages per buffer */
+    uint64_t               seq_cur_mask;         /* profile: stages so far */
+    uint64_t               seq_begin_ns;
+    int                    sequence_token;
     enum geist_command_sequence_kind sequence_kind;
     bool                             sequence_active;
     /* One command sequence per backend, shared by every session of the

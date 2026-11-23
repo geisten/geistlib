@@ -22,7 +22,9 @@ Cells per pair, each behind mlx_vs_geist.py's gate:
     serial against concurrent encoders: time to the first token, and the
                  logits hash of bench_nll (also of origin/main's build)
 
-Writes the traces (gzip), cells.jsonl and summary.md to --out.
+--set levers runs the second list instead (GEIST_LEVERS): the settings that
+move geist's rates. Writes the traces (gzip), cells.jsonl and summary.md to
+--out.
 """
 import argparse
 import gzip
@@ -58,6 +60,34 @@ GEIST_VARIANTS = [
     ("rotation 192/64", {"GEIST_METAL_PIPELINE": "192", "GEIST_METAL_PIPELINE_PREFILL": "64"}, True),
     ("rotation off", {"GEIST_METAL_PIPELINE": "0"}, True),
     ("tensor API off", {"GEIST_METAL_TENSOR": "0"}, True),
+    ("plain again", {}, False),
+]
+# --set levers: what moves geist's rates, after the profile said where the
+# time goes. GEIST_M_MAX changes the rows per prefill pass, and with them
+# the low bits of the logits; the others leave the output alone.
+GEIST_LEVERS = [
+    ("plain", {}, False),
+    ("trace", {}, True),
+    ("library concurrent encoders", {"GEIST_METAL_CONCURRENT": "1"}, True),
+    ("first buffer after 8", {"GEIST_METAL_PIPELINE_FIRST": "8"}, True),
+    ("first buffer after 16", {"GEIST_METAL_PIPELINE_FIRST": "16"}, True),
+    ("first buffer after 32", {"GEIST_METAL_PIPELINE_FIRST": "32"}, True),
+    ("spin instead of wait", {"METAL_TRACE_SPIN_WAIT": "1"}, True),
+    ("library concurrent, first buffer after 16",
+     {"GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16"}, True),
+    ("library concurrent, first buffer after 16, spin",
+     {"GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16",
+      "METAL_TRACE_SPIN_WAIT": "1"}, True),
+    ("128 rows per prefill pass", {"GEIST_M_MAX": "128"}, True),
+    ("512 rows per prefill pass", {"GEIST_M_MAX": "512"}, True),
+    ("512 rows per prefill pass, library concurrent, first buffer after 16",
+     {"GEIST_M_MAX": "512", "GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16"},
+     True),
+    ("plain again", {}, False),
+]
+MLX_LEVERS = [
+    ("plain", {}, False),
+    ("trace", {}, True),
     ("plain again", {}, False),
 ]
 MLX_VARIANTS = [
@@ -209,6 +239,8 @@ def main():
     parser.add_argument("--models", default="qwen35-0.8b-8bit,llama32-3b-4bit")
     parser.add_argument("--main-tests", type=Path, default=None,
                         help="bin/.../tests of an origin/main build, for the logits check")
+    parser.add_argument("--set", choices=["profile", "levers"], default="profile",
+                        help="which cells to run (GEIST_VARIANTS or GEIST_LEVERS)")
     parser.add_argument("--smoke", action="store_true", help="no gates (method check)")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -222,8 +254,9 @@ def main():
         model["key"] = key
         rows, traces, base_tokens = [], {}, {}
         # geist and mlx-lm cells alternate, so drift of the host hits both.
-        geist = [("geist", geist_cell, v) for v in GEIST_VARIANTS]
-        mlx = [("mlx", mlx_cell, v) for v in MLX_VARIANTS]
+        levers = args.set == "levers"
+        geist = [("geist", geist_cell, v) for v in (GEIST_LEVERS if levers else GEIST_VARIANTS)]
+        mlx = [("mlx", mlx_cell, v) for v in (MLX_LEVERS if levers else MLX_VARIANTS)]
         plan = []
         while geist or mlx:
             plan += geist[:1] + (mlx[:1] if len(mlx) > 1 or not geist[1:] else [])
@@ -268,7 +301,8 @@ def main():
                     f"bench_nll logits identical across the arms: {check['identical']} "
                     + json.dumps(check["logits"]), ""]
         picked = [f"{label}={path}" for label, path in traces.items()
-                  if label.split(" ", 1)[1] in ("trace", "1op", "library concurrent encoders")]
+                  if levers or label.split(" ", 1)[1] in ("trace", "1op",
+                                                          "library concurrent encoders")]
         report = run([sys.executable, HERE / "metal_trace_report.py", *picked], None).stdout
         (args.out / f"{key}.report.md").write_text(report)
         summary += [report, ""]

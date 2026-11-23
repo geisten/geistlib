@@ -213,8 +213,15 @@ struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st) {
     const uint32_t every = st->sequence_kind == GEIST_COMMAND_SEQUENCE_PREFILL_TEXT
                                    ? st->seq_rotate_prefill
                                    : st->seq_rotate_every;
+    /* A decode step's first buffer is cut short: the GPU sits idle from the
+     * end of the last step until a buffer of this one is committed, and
+     * encoding a full period of dispatches first kept it idle that long. */
+    const bool first_due = st->seq_rotate_first != 0u && every != 0u &&
+                           st->sequence_kind != GEIST_COMMAND_SEQUENCE_PREFILL_TEXT &&
+                           st->seq_disp_at_rotate == 0u && st->seq_pending_count == 0u &&
+                           st->seq_dispatch_count >= st->seq_rotate_first;
     if (every == 0u || st->sequence_compute_encoder == nullptr ||
-        (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < every) {
+        (!first_due && (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < every)) {
         return st->sequence_compute_encoder;
     }
     if (st->seq_pending_count >=
