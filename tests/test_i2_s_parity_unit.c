@@ -182,15 +182,25 @@ int main(void) {
         cpu_neon_w_f16_m1(x, &wf, be, y);
         int mm = 0;
         for (size_t r = 0; r < fn_out; r++) {
-            float ref = 0.0f;
-            for (size_t k = 0; k < fn_in; k++)
-                ref += fp16_to_fp32(Wf[r * fn_in + k]) * x[k];
-            const float rel = fabsf(ref - y[r]) / (fabsf(ref) + 1e-6f);
-            /* 2e-3: scalar ref and the NEON gemv sum 2560 terms in different
-             * orders — pure fp-association noise, not a correctness issue. */
-            if (rel > 2e-3f) {
+            double ref = 0.0, mag = 0.0;
+            for (size_t k = 0; k < fn_in; k++) {
+                const double t = (double) fp16_to_fp32(Wf[r * fn_in + k]) * (double) x[k];
+                ref += t;
+                mag += fabs(t);
+            }
+            /* Against the sum of the terms' magnitudes, not |ref|: a row whose
+             * 2560 terms cancel to a small sum made the old relative bound a
+             * coin toss (#580; the rand() sequence is not the same in every
+             * run of the GCD build). One missing or wrong term is about 1e-4
+             * of mag, the kernel's float rounding below 1e-7 of it. */
+            const double rel = fabs(ref - (double) y[r]) / (mag + 1e-6);
+            if (rel > 1e-6) {
                 if (mm < 5)
-                    printf("f16 MISMATCH r=%zu ref=%.6f got=%.6f rel=%.2e\n", r, ref, y[r], rel);
+                    printf("f16 MISMATCH r=%zu ref=%.6f got=%.6f rel=%.2e\n",
+                           r,
+                           ref,
+                           (double) y[r],
+                           rel);
                 mm++;
             }
         }
