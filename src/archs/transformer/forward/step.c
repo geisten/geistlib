@@ -414,6 +414,44 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
     return m;
 }
 
+/* Cache rows with cache_keep_last (#591): row seq - 1 of h_in to row 0 of
+ * h_out, and that row's per-layer inputs (every layer's slice) to row 0 of
+ * their buffer, so the layers after n_cache_layers - 1 run it as a pass of
+ * one row. seq > 1: the rows moved do not overlap their destination. */
+static enum geist_status last_row_to_front(struct transformer_arch_session *sess,
+                                           size_t                           seq,
+                                           struct geist_buffer             *h_in,
+                                           struct geist_buffer             *h_out,
+                                           struct geist_buffer             *ple,
+                                           size_t                           ple_row_bytes) {
+    const struct transformer_arch_state *st    = sess->model;
+    const struct geist_backend_vtbl     *v     = st->backend->desc->vtbl;
+    const size_t                         h_row = st->d_model * sizeof(float);
+    if (st->model_fusions.backend_buffer_copy) {
+        const enum geist_status cs = v->buffer_copy(h_out, 0, h_in, (seq - 1) * h_row, h_row);
+        return cs != GEIST_OK || ple == nullptr
+                       ? cs
+                       : v->buffer_copy(ple, 0, ple, (seq - 1) * ple_row_bytes, ple_row_bytes);
+    }
+    const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
+    uint8_t       *dst = (uint8_t *) v->buffer_map(h_out);
+    if (src == nullptr || dst == nullptr) {
+        return GEIST_E_BACKEND; /* the backend said why */
+    }
+    memcpy(dst, src + (seq - 1) * h_row, h_row);
+    v->buffer_unmap(h_in);
+    v->buffer_unmap(h_out);
+    if (ple != nullptr) {
+        uint8_t *rows = (uint8_t *) v->buffer_map(ple);
+        if (rows == nullptr) {
+            return GEIST_E_BACKEND;
+        }
+        memcpy(rows, rows + (seq - 1) * ple_row_bytes, ple_row_bytes);
+        v->buffer_unmap(ple);
+    }
+    return GEIST_OK;
+}
+
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
                                                            size_t               q_position,
                                                            size_t               seq,
@@ -501,8 +539,26 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
 
     /* Cache rows (#591) end with the last layer that writes a cache: the
      * layers after it read those caches and keep nothing of their own. */
-    const size_t n_run = sess->cache_rows ? st->n_cache_layers : st->n_layers;
-    for (size_t li = st->layer_lo; li < n_run; li++) {
+    const size_t seq_in = seq; /* rows of the pass; seq is 1 from the last row's pass on */
+    for (size_t li = st->layer_lo; li < st->n_layers; li++) {
+        if (sess->cache_rows && li == st->n_cache_layers) {
+            sess->prenorm_layer = 0; /* the tail normalised seq_in rows (#17) */
+            if (!sess->cache_keep_last) {
+                break;
+            }
+            /* The last row alone from here: to row 0 of the other buffer,
+             * its per-layer inputs to row 0 of theirs. */
+            const enum geist_status ls = last_row_to_front(
+                    sess, seq_in, h_in, h_out, per_layer_input_buf, row_bytes_per_tok_ple);
+            if (ls != GEIST_OK) {
+                return ls;
+            }
+            struct geist_buffer *tmp = h_in;
+            h_in                     = h_out;
+            h_out                    = tmp;
+            q_position += seq_in - 1;
+            seq = 1;
+        }
         /* Gather this layer's per_layer_input slices into
          * scratch_ple_lookup when the family has PLE. Non-PLE families
          * pass nullptr and forward_one_layer skips the PLE injection. */
@@ -569,18 +625,22 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
         sess->twin_valid = q_position + seq;
         atomic_fetch_add_explicit(&st->offload->mirrored, 1, memory_order_relaxed);
     }
+    size_t out_off = 0;
     if (sess->cache_rows) {
-        /* No output: the rows' state after layer n_run - 1 is no layer's
-         * output the caller could use, and its tail may have normalised it
-         * for a layer that does not run (#17). */
-        sess->prenorm_layer = 0;
-        sess->n_cache_rows += seq;
-        return GEIST_OK;
+        /* The cache rows' state after layer n_cache_layers - 1 is no
+         * layer's output the caller could use: only the last row, where it
+         * went on, is written, at its place in out_h_buf. */
+        sess->n_cache_rows += seq_in - seq + (sess->cache_keep_last ? 0 : seq);
+        if (!sess->cache_keep_last) {
+            return GEIST_OK;
+        }
+        out_off = (seq_in - 1) * row_bytes_h;
     }
     /* h_in is the last layer's output; copy seq rows to out_h_buf. */
     {
         if (st->model_fusions.backend_buffer_copy) {
-            const enum geist_status cs = v->buffer_copy(out_h_buf, 0, h_in, 0, seq * row_bytes_h);
+            const enum geist_status cs =
+                    v->buffer_copy(out_h_buf, out_off, h_in, 0, seq * row_bytes_h);
             if (cs != GEIST_OK) {
                 return cs;
             }
@@ -590,7 +650,7 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
             if (src == nullptr || dst == nullptr) {
                 return GEIST_E_BACKEND; /* the backend said why */
             }
-            memcpy(dst, src, seq * row_bytes_h);
+            memcpy(dst + out_off, src, seq * row_bytes_h);
             v->buffer_unmap(h_in);
             v->buffer_unmap(out_h_buf);
         }

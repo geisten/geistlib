@@ -21,6 +21,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 
 enum { N_MAX = 1200, CTX = 2048, N_DECODE = 4 };
@@ -42,7 +43,16 @@ struct pair {
     struct transformer_arch_session *a[2];
     size_t                           counted; /* cache rows the cases expect of s[0] so far */
     const char                      *what;    /* the session variant, for messages */
+    /* The pending logits are a prefill's: its last row went through the
+     * KV-shared layers as a pass of one row where the oracle's was a row of
+     * the chunk (Metal only), so they agree to rounding (KVS_LOGIT_TOL of
+     * the largest), not to the bit; the pending token is the same. K/V rows
+     * and a decode step's logits are exact. */
+    bool   rounded;
+    double worst; /* the largest such difference seen, relative */
 };
+
+constexpr double KVS_LOGIT_TOL = 5e-3;
 
 static int fail(const struct pair *p, const char *where, const char *msg) {
     fprintf(stderr, "FAIL [%s] %s: %s\n", p->what, where, msg);
@@ -98,16 +108,27 @@ static int same_state(struct pair *p, const char *where) {
         return fail(p, where, "one session has logits pending, the other not");
     }
     if (l0 != nullptr && memcmp(l0, l1, n0 * sizeof(float)) != 0) {
-        size_t i = 0;
-        while (l0[i] == l1[i]) {
-            i++;
+        size_t i   = 0;
+        double top = 0.0, diff = 0.0;
+        for (size_t k = 0; k < n0; k++) {
+            const double dk = fabs((double) l0[k] - (double) l1[k]);
+            top             = fabs((double) l1[k]) > top ? fabs((double) l1[k]) : top;
+            if (dk > diff) {
+                diff = dk;
+                i    = k;
+            }
         }
-        fprintf(stderr,
-                "  logit %zu: %.9g against the oracle's %.9g\n",
-                i,
-                (double) l0[i],
-                (double) l1[i]);
-        return fail(p, where, "logits differ");
+        const double rel = diff / (top + 1e-30);
+        if (!p->rounded || !(rel <= KVS_LOGIT_TOL)) {
+            fprintf(stderr,
+                    "  logit %zu: %.9g against the oracle's %.9g (%.2e of the largest)\n",
+                    i,
+                    (double) l0[i],
+                    (double) l1[i],
+                    rel);
+            return fail(p, where, "logits differ");
+        }
+        p->worst = rel > p->worst ? rel : p->worst;
     }
     if (a->kv_len != b->kv_len || a->logits_valid != b->logits_valid ||
         (a->logits_valid && a->next_token_pending != b->next_token_pending)) {
@@ -155,10 +176,11 @@ static int same_state(struct pair *p, const char *where) {
 static size_t plan_cache_rows(const struct transformer_arch_session *a, size_t n) {
     size_t cache = 0, pos = a->kv_len;
     for (size_t off = 0, rows = 0; off < n; off += rows, pos += rows) {
-        bool c = false;
-        rows   = transformer_prefill_chunk(a, pos, n - off);
-        rows   = transformer_prefill_pass_rows(a, rows, off + rows == n, &c);
-        cache += c ? rows : 0;
+        bool keep = false;
+        rows      = transformer_prefill_chunk(a, pos, n - off);
+        if (transformer_prefill_cache_rows(a, rows, off + rows == n, &keep)) {
+            cache += rows - (keep ? 1 : 0);
+        }
     }
     return cache;
 }
@@ -177,6 +199,7 @@ static int reset(struct pair *p) {
 
 static int prefill(struct pair *p, size_t n, const geist_token_t *ids, const char *where) {
     p->counted += plan_cache_rows(p->a[0], n);
+    p->rounded = true;
     for (int i = 0; i < 2; i++) {
         if (geist_session_prefill_tokens(p->s[i], n, ids) != GEIST_OK) {
             fprintf(stderr, "  %s\n", geist_session_errmsg(p->s[i]));
@@ -189,6 +212,7 @@ static int prefill(struct pair *p, size_t n, const geist_token_t *ids, const cha
 static int decode(struct pair *p, size_t n, geist_token_t *out, const char *where) {
     for (size_t t = 0; t < n; t++) {
         geist_token_t tok[2] = {-1, -2};
+        p->rounded           = false;
         for (int i = 0; i < 2; i++) {
             if (geist_session_decode_step(p->s[i], &tok[i]) != GEIST_OK) {
                 return fail(p, where, "decode_step failed");
@@ -315,8 +339,9 @@ static int case_snapshot(struct pair *p, size_t n) {
     for (int i = 0; i < 2 && !fails; i++) {
         fails = geist_session_restore(size[i], img[i], p->s[i]) != GEIST_OK;
     }
-    fails = fails || same_state(p, where) || decode(p, N_DECODE, second, where) ||
-            memcmp(first, second, sizeof first) != 0;
+    p->rounded = true; /* the prefill's logits are pending again */
+    fails      = fails || same_state(p, where) || decode(p, N_DECODE, second, where) ||
+                 memcmp(first, second, sizeof first) != 0;
     free(img[0]);
     free(img[1]);
     return fails ? fail(p, where, "the restored session decodes otherwise") : 0;
@@ -329,6 +354,7 @@ static int case_pin_prefix(struct pair *p, size_t n_prefix, size_t n_turn) {
         return 1;
     }
     p->counted += plan_cache_rows(p->a[0], n_prefix); /* at length 0, as pin_prefix prefills */
+    p->rounded = true;
     for (int i = 0; i < 2; i++) {
         if (geist_session_pin_prefix(p->s[i], n_prefix, g_ids) != GEIST_OK) {
             return fail(p, where, "pin_prefix failed");
@@ -380,11 +406,13 @@ static int case_soft_tokens(struct pair *p, size_t n) {
     int          fails = 0;
     const size_t m     = p->a[0]->m_max;
     for (size_t off = 0, rows = 0; off < n; off += rows) {
-        bool c = false;
-        rows   = n - off > m ? m : n - off;
-        rows   = transformer_prefill_pass_rows(p->a[0], rows, off + rows == n, &c);
-        p->counted += c ? rows : 0;
+        bool keep = false;
+        rows      = n - off > m ? m : n - off;
+        if (transformer_prefill_cache_rows(p->a[0], rows, off + rows == n, &keep)) {
+            p->counted += rows - (keep ? 1 : 0);
+        }
     }
+    p->rounded = true;
     for (int i = 0; i < 2 && !fails; i++) {
         fails = transformer_prefill_audio_batch(p->a[i], n, soft) != GEIST_OK;
     }
@@ -423,8 +451,17 @@ static int case_decision(struct pair *p, size_t n) {
             return fail(p, where, "the readout failed");
         }
     }
-    if (memcmp(out[0], out[1], sizeof out[0]) != 0) {
-        return fail(p, where, "the candidates' logits differ");
+    p->rounded = true;
+    for (size_t c = 0; c < 6; c++) {
+        if (fabs((double) out[0][c] - (double) out[1][c]) >
+            KVS_LOGIT_TOL * (fabs((double) out[1][c]) + 1.0)) {
+            fprintf(stderr,
+                    "  candidate %zu: %.9g against %.9g\n",
+                    c,
+                    (double) out[0][c],
+                    (double) out[1][c]);
+            return fail(p, where, "the candidates' logits differ");
+        }
     }
     return same_state(p, where) || count_ok(p, where);
 }
@@ -452,16 +489,16 @@ static bool open_pair(struct pair          *p,
 }
 
 static void close_pair(struct pair *p) {
+    printf("  [%s] a prefill's logits within %.1e of the oracle's largest\n", p->what, p->worst);
+    p->worst = 0.0;
     geist_session_destroy(p->s[0]);
     geist_session_destroy(p->s[1]);
 }
 
-/* The shortest last chunk a GPU backend splits; on a CPU backend, which
- * splits none, a short last chunk's rows. */
+/* A short last chunk's rows, to size the prompts with. */
 static size_t kvs_split_rows(const struct geist_backend *be) {
-    return strcmp(geist_backend_name(be), "metal") != 0
-                   ? 10
-                   : TRANSFORMER_PREFILL_TAIL_ALIGN + TRANSFORMER_PREFILL_TAIL_MIN;
+    (void) be;
+    return 10;
 }
 
 /* The model, from a file or from memory. */
@@ -525,21 +562,13 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
                                           (a->dn_S == nullptr || a->dn_S[li] == nullptr),
                                   "a KV-shared layer owns no cache and no state");
         }
-        /* The shortest last chunk a GPU backend splits, and the rows it
-         * then runs through every layer; a CPU backend splits none
-         * (prefill_tail_rows, arch_ops.c), and sp only sizes its prompts. */
-        const bool   cpu = strcmp(geist_backend_name(be), "metal") != 0;
-        const size_t m   = a->m_max;
-        const size_t sp  = kvs_split_rows(be);
-        const size_t t   = TRANSFORMER_PREFILL_TAIL_MIN;
-        printf("backend %s: %zu of %zu layers write a cache, chunk %zu, a last chunk %s\n",
+        const size_t m  = a->m_max;
+        const size_t sp = kvs_split_rows(be);
+        printf("backend %s: %zu of %zu layers write a cache, chunk %zu\n",
                geist_backend_name(be),
                st->n_cache_layers,
                st->n_layers,
-               m,
-               cpu       ? "is not split"
-               : sp <= m ? "splits from 192 rows"
-                         : "is too short to split");
+               m);
         /* Around every boundary of the plan: a chunk too short to split,
          * the shortest that splits, a whole chunk, one row more (the 8-row
          * last chunk of #554), a chunk and a last one that splits or not. */
@@ -574,7 +603,9 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
         if (fails == 0 && reset(&p) == 0 && sp <= m) {
             const size_t before = p.a[0]->n_cache_rows;
             fails += prefill(&p, m + sp, g_ids, "count");
-            fails += geist_expect(p.a[0]->n_cache_rows - before == (cpu ? m : m + sp - t),
+            const bool alone = strcmp(geist_backend_name(be), "metal") == 0 &&
+                               !p.a[0]->kv_int8_enabled && !p.a[0]->kv_kivi_enabled;
+            fails += geist_expect(p.a[0]->n_cache_rows - before == (alone ? m + sp - 1 : m),
                                   "a chunk and a last chunk: the rows left out");
         }
         fails = fails || case_repeat(&p, 1) || case_repeat(&p, 5) || case_repeat(&p, m);
