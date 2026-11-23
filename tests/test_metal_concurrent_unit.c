@@ -1,10 +1,11 @@
 /* The Metal command sequence encodes into a concurrent compute encoder and
  * puts a memory barrier before a dispatch only when it depends on one since
- * the last barrier (#590, metal_seq_order). Two things are checked on a real
- * GPU: where the barriers land (counted in metal_state), and that chains of
- * dependent dispatches compute what the serial encoder computes -- a missing
- * barrier lets the dispatches of a chain run at once and the sums come out
- * short. */
+ * the last barrier (#590, metal_seq_order). Checked on a real GPU: where
+ * the barriers land (counted in metal_state), that chains of dependent
+ * dispatches compute what the serial encoder computes -- a missing barrier
+ * lets the dispatches of a chain run at once and the sums come out short --
+ * and that a kind of sequence which spares no barrier goes back to serial
+ * encoders. */
 #include "test_helpers.h"
 #include <geist.h>
 #include <geist_backend.h>
@@ -142,6 +143,34 @@ int main(void) {
     v->parallel_region_end(be, tok);
     check(ok && all_equal(v, buf[0], (float) (2 * CHAIN)) && all_equal(v, buf[3], 2.0f),
           "two-buffer chain adds up across command-buffer rotations");
+
+    /* 4. A kind of sequence that spares (almost) no barrier goes back to
+     * serial encoders: decode steps that are one long chain. The prefill
+     * kind, which ran few dispatches, is still on trial. */
+    check(!st->seq_trial[1].decided, "the cases above stay under the trial length");
+    ok = fill(v, buf[0], 0.0f) && fill(v, buf[1], 1.0f);
+    for (int step = 0; step < 48 && ok; step++) {
+        tok = v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP);
+        ok  = tok != 0;
+        for (int i = 0; i < CHAIN && ok; i++) {
+            ok = p->add(be, &t[0], &t[1], &t[0]) == GEIST_OK;
+        }
+        v->parallel_region_end(be, tok);
+    }
+    check(ok && all_equal(v, buf[0], (float) (48 * CHAIN)), "long chain adds up");
+    check(st->seq_trial[1].decided && st->seq_trial[1].serial,
+          "a chain-only kind of sequence goes back to serial encoders");
+    check(!st->seq_trial[0].serial, "the other kind is unaffected");
+    const uint64_t barriers = st->seq_barriers;
+    ok                      = fill(v, buf[0], 0.0f);
+    tok                     = v->parallel_region_begin(be, GEIST_REGION_DECODE_STEP);
+    ok                      = ok && tok != 0;
+    for (int i = 0; i < CHAIN && ok; i++) {
+        ok = p->add(be, &t[0], &t[1], &t[0]) == GEIST_OK;
+    }
+    v->parallel_region_end(be, tok);
+    check(ok && all_equal(v, buf[0], (float) CHAIN) && st->seq_barriers == barriers,
+          "serial encoders after the trial: same sums, no barrier encoded");
 
     for (size_t i = 0; i < 5; i++) {
         v->buffer_destroy(be, buf[i]);

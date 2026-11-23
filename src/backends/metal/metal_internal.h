@@ -153,7 +153,9 @@ constexpr int METAL_PIPELINE_ACCESS_SLOTS  = 2048;
 constexpr int METAL_PIPELINE_ACCESS_PROBES = 64; /* longest probe run looked at */
 constexpr int METAL_SEQ_TRACKED            = 64;
 static_assert(METAL_PIPELINE_ACCESS_SLOTS <= UINT16_MAX + 1, "slot indices are uint16_t");
-constexpr int METAL_PIPELINE_ACCESS_WANTED = 64;
+constexpr int      METAL_PIPELINE_ACCESS_WANTED = 64;
+constexpr uint64_t METAL_SEQ_TRIAL              = 4096;
+constexpr uint64_t METAL_SEQ_ELIDED_MIN         = 20;
 
 /* The widest head the attention kernels take (#376). */
 constexpr size_t METAL_ATTN_HEAD_DIM_MAX = 576;
@@ -755,6 +757,21 @@ struct metal_state {
     const struct metal_buffer_h *seq_read[METAL_SEQ_TRACKED];
     uint32_t                     seq_nwrote, seq_nread;
     uint64_t                     seq_barriers, seq_tracked_dispatches; /* profile */
+    /* Where every dispatch depends on the one before, a concurrent encoder
+     * only adds the barriers and their bookkeeping (Llama 3.2 3B decode on
+     * an M6: a barrier before 99 % of the dispatches, 0.5 % slower). Per
+     * kind of sequence, 0 prefill and 1 the others: once every pipeline it
+     * binds is resolved, the dispatches and barriers of the following
+     * sequences are counted, and if fewer than one barrier in
+     * METAL_SEQ_ELIDED_MIN was spared after METAL_SEQ_TRIAL dispatches the
+     * kind goes back to serial encoders for good. */
+    struct metal_seq_trial {
+        uint64_t dispatches, barriers;
+        bool     decided, serial;
+    } seq_trial[2];
+    uint64_t seq_trial_dispatches0, seq_trial_barriers0; /* counters at this sequence's begin */
+    bool     seq_trial_counts;       /* this sequence began with nothing left to resolve */
+    bool     seq_encoder_concurrent; /* what this sequence's encoders are */
     /* Opt-in PQ2 candidates; compile and allocate only for an eligible call. */
     bool                     pq2_lowp_shared_acc;
     uint32_t                 pq2_lowp_mode, pq2_lowp_tile, pq2_lowp_simdgroups;

@@ -234,9 +234,11 @@ void metal_profile_print_summary(const struct metal_state *st) {
     }
     if (st->seq_tracked_dispatches != 0) {
         fprintf(stderr,
-                "  concurrent encoders: %llu memory barriers before %llu dispatches\n",
+                "  concurrent encoders: %llu memory barriers before %llu dispatches%s%s\n",
                 (unsigned long long) st->seq_barriers,
-                (unsigned long long) st->seq_tracked_dispatches);
+                (unsigned long long) st->seq_tracked_dispatches,
+                st->seq_trial[0].serial ? "; prefill went back to serial encoders" : "",
+                st->seq_trial[1].serial ? "; decode went back to serial encoders" : "");
     }
     if (st->gpu_buffers == 0) {
         return;

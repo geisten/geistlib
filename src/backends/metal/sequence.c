@@ -98,7 +98,7 @@ static void metal_pipeline_access_resolve_some(struct metal_state *st) {
 void metal_seq_note_pipeline(struct metal_state            *st,
                              const struct metal_encoder_h  *enc,
                              const struct metal_pipeline_h *pipeline) {
-    if (!st->seq_concurrent || enc != st->sequence_compute_encoder) {
+    if (!st->seq_encoder_concurrent || enc != st->sequence_compute_encoder) {
         return;
     }
     st->seq_used = st->seq_write = UINT32_MAX;
@@ -143,7 +143,7 @@ static void metal_seq_order_reset(struct metal_state *st) {
 }
 
 void metal_seq_order(struct metal_state *st, struct metal_encoder_h *enc) {
-    if (!st->seq_concurrent || enc != st->sequence_compute_encoder) {
+    if (!st->seq_encoder_concurrent || enc != st->sequence_compute_encoder) {
         return;
     }
     /* A dispatch may overlap the ones since the last barrier unless it
@@ -180,11 +180,39 @@ void metal_seq_order(struct metal_state *st, struct metal_encoder_h *enc) {
     }
 }
 
-/* The compute encoder of a sequence's command buffer: concurrent unless
- * GEIST_METAL_CONCURRENT=0. 1 = MTLDispatchTypeConcurrent. */
+static struct metal_seq_trial *metal_seq_trial_of(struct metal_state *st) {
+    return &st->seq_trial[st->sequence_kind == GEIST_COMMAND_SEQUENCE_PREFILL_TEXT ? 0 : 1];
+}
+
+/* At a sequence's begin, its kind known: which encoders it gets. */
+static void metal_seq_trial_begin(struct metal_state *st) {
+    st->seq_encoder_concurrent = st->seq_concurrent && !metal_seq_trial_of(st)->serial;
+    st->seq_trial_counts       = st->pipeline_access_n_wanted == 0;
+    st->seq_trial_dispatches0  = st->seq_tracked_dispatches;
+    st->seq_trial_barriers0    = st->seq_barriers;
+}
+
+/* At a sequence's end: see metal_state.seq_trial. */
+static void metal_seq_trial_end(struct metal_state *st) {
+    struct metal_seq_trial *trial = metal_seq_trial_of(st);
+    if (!st->seq_encoder_concurrent || trial->decided || !st->seq_trial_counts ||
+        st->pipeline_access_n_wanted != 0) {
+        return;
+    }
+    trial->dispatches += st->seq_tracked_dispatches - st->seq_trial_dispatches0;
+    trial->barriers += st->seq_barriers - st->seq_trial_barriers0;
+    if (trial->dispatches >= METAL_SEQ_TRIAL) {
+        trial->decided = true;
+        trial->serial =
+                (trial->dispatches - trial->barriers) * METAL_SEQ_ELIDED_MIN < trial->dispatches;
+    }
+}
+
+/* The compute encoder of a sequence's command buffer.
+ * 1 = MTLDispatchTypeConcurrent. */
 static struct metal_encoder_h *metal_seq_new_encoder(struct metal_state    *st,
                                                      struct metal_cmdbuf_h *cmd) {
-    return st->seq_concurrent
+    return st->seq_encoder_concurrent
                    ? metal_msg_send_id_ulong(st, cmd, "computeCommandEncoderWithDispatchType:", 1)
                    : metal_msg_send_id0(st, cmd, "computeCommandEncoder");
 }
@@ -409,6 +437,8 @@ void metal_flush_if_referenced(struct metal_state          *st,
                 be, GEIST_E_BACKEND, "metal command sequence: command buffer failed");
         return GEIST_E_BACKEND;
     }
+    st->sequence_kind = kind; /* the trial is per kind */
+    metal_seq_trial_begin(st);
     struct metal_encoder_h *enc = metal_seq_new_encoder(st, cmd);
     if (enc == nullptr) {
         metal_pool_pop(st, pool);
@@ -515,6 +545,7 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
         }
     }
 
+    metal_seq_trial_end(st);
     metal_pipeline_access_resolve_some(st);
 
     /* No-op on the normal submit path (already drained after the wait);

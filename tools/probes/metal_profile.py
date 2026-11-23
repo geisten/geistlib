@@ -23,7 +23,8 @@ Cells per pair, each behind mlx_vs_geist.py's gate:
                  logits hash of bench_nll (also of origin/main's build)
 
 --set levers runs the second list instead (GEIST_LEVERS): the settings that
-move geist's rates. Writes the traces (gzip), cells.jsonl and summary.md to
+move geist's rates, and then tools/bench_revision_ab.py, --ab-base against
+this checkout, on each pair's GGUF. Writes the traces (gzip), cells.jsonl and summary.md to
 --out.
 """
 import argparse
@@ -41,9 +42,12 @@ ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 import mlx_vs_geist as mv  # noqa: E402
 
-# GEIST_METAL_CONCURRENT=0 (the serial encoder, what geist ran before #590)
-# is the base of every geist cell: the profile is of that engine, and the
-# trace library's own concurrent modes replace the serial encoder.
+# What geist ran before #590 is the base of every geist cell: serial encoders
+# and a full first command buffer per decode step. The profile is of that
+# engine, and the trace library's own concurrent modes replace the serial
+# encoder.
+SERIAL = {"GEIST_METAL_CONCURRENT": "0", "GEIST_METAL_PIPELINE_FIRST": "0"}
+BRANCH = {"GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16"}
 GEIST_VARIANTS = [
     # name, environment, traced
     ("plain", {}, False),
@@ -73,16 +77,12 @@ GEIST_LEVERS = [
     ("first buffer after 16", {"GEIST_METAL_PIPELINE_FIRST": "16"}, True),
     ("first buffer after 32", {"GEIST_METAL_PIPELINE_FIRST": "32"}, True),
     ("spin instead of wait", {"METAL_TRACE_SPIN_WAIT": "1"}, True),
-    ("library concurrent, first buffer after 16",
-     {"GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16"}, True),
-    ("library concurrent, first buffer after 16, spin",
-     {"GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16",
-      "METAL_TRACE_SPIN_WAIT": "1"}, True),
+    ("branch defaults (concurrent, first buffer after 16)", BRANCH, True),
+    ("branch defaults, untraced", BRANCH, False),
+    ("branch defaults, spin", {**BRANCH, "METAL_TRACE_SPIN_WAIT": "1"}, True),
     ("128 rows per prefill pass", {"GEIST_M_MAX": "128"}, True),
     ("512 rows per prefill pass", {"GEIST_M_MAX": "512"}, True),
-    ("512 rows per prefill pass, library concurrent, first buffer after 16",
-     {"GEIST_M_MAX": "512", "GEIST_METAL_CONCURRENT": "1", "GEIST_METAL_PIPELINE_FIRST": "16"},
-     True),
+    ("512 rows per prefill pass, branch defaults", {**BRANCH, "GEIST_M_MAX": "512"}, True),
     ("plain again", {}, False),
 ]
 MLX_LEVERS = [
@@ -119,7 +119,7 @@ def gz(path):
 
 def geist_cell(ctx, model, name, extra, traced, decode_n=mv.DECODE_N, repeats=3):
     env = mv.geist_env("metal")
-    env["GEIST_METAL_CONCURRENT"] = "0"
+    env.update(SERIAL)
     env.update(extra)
     trace = ctx["out"] / f"{model['key']}.geist.{slug(name)}.jsonl"
     if traced:
@@ -184,37 +184,38 @@ def gpu_state(ctx, model, engine):
 
 
 def ready_and_identity(ctx, model):
-    """Serial against concurrent encoders: the wall time of a process up to
-    its first token (one-token prompt, alternating, the first two of each
-    dropped) and bench_nll's logits hash over the decode and the prefill
-    path, of this build and of --main-tests (origin/main's binaries) when
-    given."""
+    """The settings before #590 (SERIAL) against the branch's defaults
+    (BRANCH): the wall time of a process up to its first token (one-token
+    prompt, alternating, the first two of each dropped) and bench_nll's
+    logits hash over the decode and the prefill path, of this build and of
+    --main-tests (origin/main's binaries) when given."""
     out = {"ready_ms": {}, "logits": {}}
     gguf = model["gguf"]["path"]
     ready = [ctx["geist"], "--gguf", gguf, "--seq-lens", "1", "--decode-n", "1", "--warmup",
              "0", "--repeats", "1"]
-    times = {"0": [], "1": []}
+    settings = {"serial": SERIAL, "branch defaults": BRANCH}
+    times = {name: [] for name in settings}
     for i in range(12):
-        for flag in ("0", "1") if i % 2 == 0 else ("1", "0"):
+        for name in list(settings) if i % 2 == 0 else list(settings)[::-1]:
             env = mv.geist_env("metal")
-            env["GEIST_METAL_CONCURRENT"] = flag
+            env.update(settings[name])
             tic = time.perf_counter()
             run(ready, env)
-            times[flag].append((time.perf_counter() - tic) * 1e3)
-    for flag, name in (("0", "serial"), ("1", "concurrent")):
-        kept = times[flag][2:]
+            times[name].append((time.perf_counter() - tic) * 1e3)
+    for name in settings:
+        kept = times[name][2:]
         out["ready_ms"][name] = {"median": statistics.median(kept), "min": min(kept),
                                  "max": max(kept), "n": len(kept)}
     prompt = ROOT / mv.PINS["prompt_file"]
-    arms = [("serial", ctx["geist"].parent, "0"), ("concurrent", ctx["geist"].parent, "1")]
+    arms = [(name, ctx["geist"].parent, flags) for name, flags in settings.items()]
     if ctx["main_tests"] is not None:
-        arms.append(("origin/main", ctx["main_tests"], "0"))
+        arms.append(("origin/main", ctx["main_tests"], {}))
     for check, extra, args in (("decode", {}, ["96", "0"]),
                                ("prefill", {"GEIST_NLL_PREFILL": "1"}, ["640", "512"])):
         for name, tests, flag in arms:
             env = mv.geist_env("metal")
             env.update(extra)
-            env["GEIST_METAL_CONCURRENT"] = flag
+            env.update(flag)
             try:
                 line = run([tests / "bench_nll", gguf, prompt, *args], env).stdout.strip()
                 row = json.loads(line.splitlines()[-1])
@@ -228,6 +229,30 @@ def ready_and_identity(ctx, model):
     return out
 
 
+def revision_ab(ctx, model, base, cycles, smoke):
+    """tools/bench_revision_ab.py, `base` against this checkout's HEAD, with
+    the cells' workload and environment. Returns its report."""
+    out = ctx["out"] / f"ab-{model['key']}"
+    env = mv.geist_env("metal")
+    command = [sys.executable, ROOT / "tools" / "bench_revision_ab.py", "--rev", f"base={base}",
+               "--rev", "new=HEAD", "--gguf", model["gguf"]["path"], "--make-arg",
+               "TARGET=mac-omp", "--make-arg", "BACKENDS=cpu_neon cpu_scalar metal",
+               "--seq-lens", mv.PROMPT_TOKENS, "--decode-n", mv.DECODE_N, "--warmup",
+               mv.GEIST_WARMUP, "--prompt-file", ROOT / mv.PINS["prompt_file"], "--cycles",
+               cycles, "--out-dir", out]
+    for key in ("OMP_WAIT_POLICY", "OMP_NUM_THREADS", "GEIST_PREFILL_THREADS",
+                "GEIST_DECODE_THREADS", "GEIST_TEXT_ONLY", "GEIST_BENCH_BACKEND"):
+        command += ["--env", f"{key}={env[key]}"]
+    if smoke:
+        command += ["--no-cool", "--no-power-gate"]
+    try:
+        run(command, env, timeout=5400)
+    except (RuntimeError, subprocess.TimeoutExpired) as error:
+        return f"bench_revision_ab failed: {str(error)[-800:]}"
+    reports = sorted(out.glob("*/revision_ab.md"))
+    return reports[-1].read_text() if reports else "bench_revision_ab wrote no report"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cache", type=Path, required=True)
@@ -239,6 +264,10 @@ def main():
     parser.add_argument("--models", default="qwen35-0.8b-8bit,llama32-3b-4bit")
     parser.add_argument("--main-tests", type=Path, default=None,
                         help="bin/.../tests of an origin/main build, for the logits check")
+    parser.add_argument("--ab-base", default=None,
+                        help="revision for the A/B against HEAD (tools/bench_revision_ab.py)")
+    parser.add_argument("--ab-cycles", type=int, default=None,
+                        help="A/B cycles; default 10 with --set levers, else 0 (no A/B)")
     parser.add_argument("--set", choices=["profile", "levers"], default="profile",
                         help="which cells to run (GEIST_VARIANTS or GEIST_LEVERS)")
     parser.add_argument("--smoke", action="store_true", help="no gates (method check)")
@@ -292,12 +321,18 @@ def main():
         cells.flush()
         summary += ["GPU state over a 768-token decode (macmon, samples with the GPU over 50 % "
                     "active): " + json.dumps(state), ""]
+        cycles = args.ab_cycles if args.ab_cycles is not None else (10 if levers else 0)
+        if cycles > 0 and args.ab_base:
+            mv.log(f"{key}: A/B {args.ab_base} against HEAD, {cycles} cycles")
+            report = revision_ab(ctx, model, args.ab_base, cycles, args.smoke)
+            (args.out / f"{key}.revision_ab.md").write_text(report)
+            summary += [f"#### A/B, {args.ab_base} against HEAD", "", report, ""]
         mv.gate(args.smoke)
         check = ready_and_identity(ctx, model)
         cells.write(json.dumps({"model": key, "serial_vs_concurrent": check}) + "\n")
         cells.flush()
-        summary += ["Serial against concurrent encoders (GEIST_METAL_CONCURRENT=0/1): process "
-                    "start to first token, ms: " + json.dumps(check["ready_ms"]), "",
+        summary += ["Settings before #590 against the branch's defaults: process start to first "
+                    "token, ms: " + json.dumps(check["ready_ms"]), "",
                     f"bench_nll logits identical across the arms: {check['identical']} "
                     + json.dumps(check["logits"]), ""]
         picked = [f"{label}={path}" for label, path in traces.items()

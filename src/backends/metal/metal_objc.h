@@ -347,7 +347,7 @@ static inline void metal_msg_send_set_buffer(struct metal_state     *st,
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
     metal_seq_mark_buffer(st, buffer, offset);
     metal_residency_note(st, buffer);
-    if (st->seq_concurrent && receiver == st->sequence_compute_encoder &&
+    if (st->seq_encoder_concurrent && receiver == st->sequence_compute_encoder &&
         index < (size_t) METAL_BUFFER_ARGS) {
         st->seq_bound[index] = buffer; /* metal_seq_order reads it at the dispatch */
     }

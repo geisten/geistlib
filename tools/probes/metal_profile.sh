@@ -28,17 +28,19 @@ cc -std=gnu23 -dynamiclib -fobjc-arc -O2 -o "$OUT/libmetal_trace.dylib" \
 # bench_nll.c (it prints the logits hash; the library is main's).
 MAIN=$(dirname "$OUT")/metal-profile-main
 MAIN_TESTS=""
+AB_BASE=""
 rm -rf "$MAIN"
 git worktree prune
 if git fetch -q --depth 1 origin main && git worktree add -f --detach "$MAIN" FETCH_HEAD >/dev/null 2>&1; then
+    AB_BASE="--ab-base $(git rev-parse FETCH_HEAD)"
     cp tests/bench_nll.c "$MAIN/tests/bench_nll.c"
     if make -C "$MAIN" -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" \
         bin/mac-omp/release/tests/bench_nll >"$OUT/build-main.log" 2>&1; then
         MAIN_TESTS="--main-tests $MAIN/bin/mac-omp/release/tests"
     fi
 fi
-# shellcheck disable=SC2086 # MAIN_TESTS is empty or two words
+# shellcheck disable=SC2086 # MAIN_TESTS and AB_BASE are empty or two words
 python3 tools/probes/metal_profile.py --cache "$CACHE" --gguf-cache "$(dirname "$MODEL")" \
-    --lib "$OUT/libmetal_trace.dylib" --out "$OUT" $MAIN_TESTS "$@"
+    --lib "$OUT/libmetal_trace.dylib" --out "$OUT" $MAIN_TESTS $AB_BASE "$@"
 rm -f "$OUT/libmetal_trace.dylib"
 git worktree remove --force "$MAIN" 2>/dev/null || rm -rf "$MAIN"
