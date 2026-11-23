@@ -72,6 +72,7 @@
 #endif
 #include <geist_backend.h>
 
+#include <dlfcn.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
@@ -86,6 +87,25 @@
 #else
 #include <sys/resource.h>
 #endif
+
+/* A named time stamp in the trace of tools/probes/metal_trace.m when that
+ * library is loaded into the process (DYLD_INSERT_LIBRARIES); nothing
+ * otherwise. The report cuts the trace into phases at these. */
+static void trace_mark(const char *name) {
+    static union {
+        void *raw;
+        void (*fn)(const char *);
+    } mark;
+    static bool looked;
+    if (!looked) {
+        looked       = true;
+        void *handle = dlopen(nullptr, RTLD_LAZY);
+        mark.raw     = handle != nullptr ? dlsym(handle, "metal_trace_mark") : nullptr;
+    }
+    if (mark.raw != nullptr) {
+        mark.fn(name);
+    }
+}
 
 static double process_rss_mb(void) {
 #if defined(__APPLE__)
@@ -559,9 +579,14 @@ int main(int argc, char **argv) {
                 continue;
             }
 
+            char mark[32];
+            snprintf(mark, sizeof mark, "r%d.start", r);
+            trace_mark(mark);
             const double t0        = geist_test_now_ms();
             s                      = geist_session_prefill_tokens(sess, (size_t) n_p, ids);
             const double t_prefill = geist_test_now_ms() - t0;
+            snprintf(mark, sizeof mark, "r%d.first", r);
+            trace_mark(mark);
             if (s != GEIST_OK) {
                 fprintf(stderr,
                         "prefill failed at seq_len=%d repeat=%d (status %d)\n",
@@ -583,6 +608,8 @@ int main(int argc, char **argv) {
                                                &t_first,
                                                &s);
             const double t_decode = geist_test_now_ms() - t1;
+            snprintf(mark, sizeof mark, "r%d.end", r);
+            trace_mark(mark);
             if (s != GEIST_OK)
                 continue;
             if (tokens != nullptr && n_tokens == 0) {
