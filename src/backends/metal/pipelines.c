@@ -43,6 +43,7 @@ metal_create_named_pipeline(struct geist_backend     *be,
                                 msg != nullptr ? msg : "");
         return GEIST_E_BACKEND;
     }
+    metal_pipeline_access_add(st, *out_pipeline, *out_function);
     return GEIST_OK;
 }
 

@@ -10,6 +10,183 @@ bool metal_ranges_overlap(size_t a_offset, size_t b_offset, size_t n_bytes) {
     return a_offset < b_offset + n_bytes && b_offset < a_offset + n_bytes;
 }
 
+/* ---- Concurrent sequence encoder (#590): see metal_state.seq_concurrent ---- */
+
+static size_t metal_pipeline_access_home(const struct metal_pipeline_h *pipeline) {
+    return (size_t) ((((uint64_t) (uintptr_t) pipeline >> 4) * 0x9e3779b97f4a7c15u) >> 40) &
+           ((size_t) METAL_PIPELINE_ACCESS_SLOTS - 1u);
+}
+
+void metal_pipeline_access_add(struct metal_state            *st,
+                               const struct metal_pipeline_h *pipeline,
+                               struct metal_function_h       *function) {
+    const size_t mask = (size_t) METAL_PIPELINE_ACCESS_SLOTS - 1u;
+    const size_t home = metal_pipeline_access_home(pipeline);
+    for (size_t i = 0; i <= mask; i++) {
+        struct metal_pipeline_access *slot = &st->pipeline_access[(home + i) & mask];
+        if (slot->pipeline == nullptr || slot->pipeline == pipeline) {
+            *slot = (struct metal_pipeline_access) {.pipeline = pipeline, .function = function};
+            return;
+        }
+    }
+    /* Full: the pipeline is not found later and counts as writing everything. */
+}
+
+/* Reads which buffer arguments the slot's kernel has and which it may write
+ * from a pipeline reflection (a second, discarded pipeline state of the
+ * same function: Metal hands the reflection out only at creation). Anything
+ * unexpected leaves every argument written, the safe answer. */
+static void metal_pipeline_access_resolve(struct metal_state           *st,
+                                          struct metal_pipeline_access *slot) {
+    slot->resolved = true;
+    slot->used = slot->write = UINT32_MAX;
+    void *reflection         = nullptr;
+    void *err                = nullptr;
+    /* 1 = MTLPipelineOptionBindingInfo */
+    void *twin = metal_msg_send_id_id_ulong_out_err(
+            st,
+            st->device,
+            "newComputePipelineStateWithFunction:options:reflection:error:",
+            slot->function,
+            1,
+            &reflection,
+            &err);
+    if (twin != nullptr && metal_responds(st, reflection, "bindings")) {
+        void               *bindings = metal_msg_send_id0(st, reflection, "bindings");
+        const unsigned long n        = metal_msg_send_ulong0(st, bindings, "count");
+        bool                known    = bindings != nullptr;
+        uint32_t            used = 0, write = 0;
+        for (unsigned long i = 0; i < n && known; i++) {
+            void *binding = metal_msg_send_id_ulong(st, bindings, "objectAtIndex:", i);
+            if (metal_msg_send_ulong0(st, binding, "type") != 0) { /* 0 = MTLBindingTypeBuffer */
+                continue;
+            }
+            const unsigned long index = metal_msg_send_ulong0(st, binding, "index");
+            if (index >= (unsigned long) METAL_BUFFER_ARGS) {
+                known = false;
+                break;
+            }
+            used |= 1u << index;
+            if (metal_msg_send_ulong0(st, binding, "access") != 0) { /* 0 = ...AccessReadOnly */
+                write |= 1u << index;
+            }
+        }
+        if (known) {
+            slot->used  = used;
+            slot->write = write;
+        }
+    }
+    metal_msg_send_void0(st, twin, "release");
+}
+
+/* At a sequence's end, the GPU idle: resolve up to four of the pipelines
+ * the sequences bound unresolved, so no token waits for more than a few. */
+static void metal_pipeline_access_resolve_some(struct metal_state *st) {
+    uint32_t done = 0;
+    while (st->pipeline_access_n_wanted != 0 && done < 4u) {
+        struct metal_pipeline_access *slot =
+                &st->pipeline_access[st->pipeline_access_wanted[--st->pipeline_access_n_wanted]];
+        if (!slot->resolved) {
+            metal_pipeline_access_resolve(st, slot);
+            done++;
+        }
+    }
+}
+
+void metal_seq_note_pipeline(struct metal_state            *st,
+                             const struct metal_encoder_h  *enc,
+                             const struct metal_pipeline_h *pipeline) {
+    if (!st->seq_concurrent || enc != st->sequence_compute_encoder) {
+        return;
+    }
+    st->seq_used = st->seq_write = UINT32_MAX;
+    const size_t mask            = (size_t) METAL_PIPELINE_ACCESS_SLOTS - 1u;
+    const size_t home            = metal_pipeline_access_home(pipeline);
+    for (size_t i = 0; i <= mask; i++) {
+        struct metal_pipeline_access *slot = &st->pipeline_access[(home + i) & mask];
+        if (slot->pipeline == pipeline) {
+            if (slot->resolved) {
+                st->seq_used  = slot->used;
+                st->seq_write = slot->write;
+            } else if (st->pipeline_access_n_wanted < (uint32_t) METAL_PIPELINE_ACCESS_WANTED) {
+                /* Listed again at each bind until resolved: cheap, and the
+                 * resolver skips a slot it has done. */
+                st->pipeline_access_wanted[st->pipeline_access_n_wanted++] =
+                        (uint16_t) ((home + i) & mask);
+            }
+            return;
+        }
+        if (slot->pipeline == nullptr) {
+            return;
+        }
+    }
+}
+
+static bool
+metal_seq_has(size_t n, const struct metal_buffer_h *const set[], const struct metal_buffer_h *b) {
+    for (size_t i = 0; i < n; i++) {
+        if (set[i] == b) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A fresh encoder has no dispatch to order against and an empty argument
+ * table. */
+static void metal_seq_order_reset(struct metal_state *st) {
+    st->seq_nwrote = st->seq_nread = 0;
+    st->seq_used = st->seq_write = UINT32_MAX;
+    memset(st->seq_bound, 0, sizeof(st->seq_bound));
+}
+
+void metal_seq_order(struct metal_state *st, struct metal_encoder_h *enc) {
+    if (!st->seq_concurrent || enc != st->sequence_compute_encoder) {
+        return;
+    }
+    /* A dispatch may overlap the ones since the last barrier unless it
+     * reads what one of them wrote, or writes what one read or wrote. */
+    bool clash =
+            (size_t) st->seq_nwrote + (size_t) METAL_BUFFER_ARGS > (size_t) METAL_SEQ_TRACKED ||
+            (size_t) st->seq_nread + (size_t) METAL_BUFFER_ARGS > (size_t) METAL_SEQ_TRACKED;
+    for (uint32_t i = 0; i < (uint32_t) METAL_BUFFER_ARGS && !clash; i++) {
+        if (((st->seq_used >> i) & 1u) == 0 || st->seq_bound[i] == nullptr) {
+            continue;
+        }
+        clash = metal_seq_has(st->seq_nwrote, st->seq_wrote, st->seq_bound[i]) ||
+                (((st->seq_write >> i) & 1u) != 0 &&
+                 metal_seq_has(st->seq_nread, st->seq_read, st->seq_bound[i]));
+    }
+    if (clash) {
+        metal_msg_send_void_ulong(st, enc, "memoryBarrierWithScope:", 1); /* ...ScopeBuffers */
+        st->seq_nwrote = st->seq_nread = 0;
+        st->seq_barriers++;
+    }
+    st->seq_tracked_dispatches++;
+    for (uint32_t i = 0; i < (uint32_t) METAL_BUFFER_ARGS; i++) {
+        if (((st->seq_used >> i) & 1u) == 0 || st->seq_bound[i] == nullptr) {
+            continue;
+        }
+        const struct metal_buffer_h *b = st->seq_bound[i];
+        if (((st->seq_write >> i) & 1u) != 0) {
+            if (!metal_seq_has(st->seq_nwrote, st->seq_wrote, b)) {
+                st->seq_wrote[st->seq_nwrote++] = b;
+            }
+        } else if (!metal_seq_has(st->seq_nread, st->seq_read, b)) {
+            st->seq_read[st->seq_nread++] = b;
+        }
+    }
+}
+
+/* The compute encoder of a sequence's command buffer: concurrent unless
+ * GEIST_METAL_CONCURRENT=0. 1 = MTLDispatchTypeConcurrent. */
+static struct metal_encoder_h *metal_seq_new_encoder(struct metal_state    *st,
+                                                     struct metal_cmdbuf_h *cmd) {
+    return st->seq_concurrent
+                   ? metal_msg_send_id_ulong(st, cmd, "computeCommandEncoderWithDispatchType:", 1)
+                   : metal_msg_send_id0(st, cmd, "computeCommandEncoder");
+}
+
 /* Drain the pipelined (committed, unwaited) command buffers: optionally
  * surface their errors, always release. Buffers execute in commit order,
  * so when the caller has waited on the FINAL buffer these are complete. */
@@ -56,8 +233,7 @@ struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st) {
                 st->seq_pending_count * sizeof(st->seq_pending_mask[0]));
     }
     struct metal_cmdbuf_h  *cmd = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
-    struct metal_encoder_h *enc =
-            cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    struct metal_encoder_h *enc = cmd != nullptr ? metal_seq_new_encoder(st, cmd) : nullptr;
     if (cmd == nullptr || enc == nullptr) {
         return st->sequence_compute_encoder; /* keep the old buffer */
     }
@@ -73,6 +249,7 @@ struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st) {
     st->sequence_command_buffer  = cmd;
     st->sequence_compute_encoder = enc;
     st->seq_disp_at_rotate       = (uint32_t) st->seq_dispatch_count;
+    metal_seq_order_reset(st);
     return enc;
 }
 
@@ -223,7 +400,7 @@ void metal_flush_if_referenced(struct metal_state          *st,
                 be, GEIST_E_BACKEND, "metal command sequence: command buffer failed");
         return GEIST_E_BACKEND;
     }
-    struct metal_encoder_h *enc = metal_msg_send_id0(st, cmd, "computeCommandEncoder");
+    struct metal_encoder_h *enc = metal_seq_new_encoder(st, cmd);
     if (enc == nullptr) {
         metal_pool_pop(st, pool);
         geist_backend_set_error(be, GEIST_E_BACKEND, "metal command sequence: encoder failed");
@@ -243,6 +420,7 @@ void metal_flush_if_referenced(struct metal_state          *st,
     st->sequence_active          = true;
     st->sequence_has_work        = false;
     atomic_store_explicit(&st->seq_owner, (uintptr_t) pthread_self(), memory_order_relaxed);
+    metal_seq_order_reset(st);
     st->seq_dispatch_count = 0;
     st->seq_disp_at_rotate = 0;
     st->seq_cur_mask       = 0;
@@ -327,6 +505,8 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
             out = GEIST_E_BACKEND;
         }
     }
+
+    metal_pipeline_access_resolve_some(st);
 
     /* No-op on the normal submit path (already drained after the wait);
      * covers the empty/!submit paths where pendings were committed but

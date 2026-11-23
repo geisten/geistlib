@@ -163,6 +163,9 @@ void metal_destroy(struct geist_backend *be) {
             : rotate_set ? (uint32_t) rotate
                          : 16u;
     st->profile_enabled = geist_env_flag("GEIST_METAL_PROFILE", false);
+    /* Concurrent sequence encoders with barriers where a dispatch depends
+     * on an earlier one (#590); 0: the serial encoder, for a comparison. */
+    st->seq_concurrent = geist_env_flag("GEIST_METAL_CONCURRENT", true);
 
     enum geist_status s = metal_load_runtime(be, st);
     if (s != GEIST_OK) {

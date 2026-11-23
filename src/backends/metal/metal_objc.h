@@ -199,6 +199,35 @@ static inline void *metal_msg_send_id_id_err(
     return send.fn(receiver, sel, a, err);
 }
 
+/* id from one NSUInteger (objectAtIndex:, computeCommandEncoderWithDispatchType:). */
+static inline void *metal_msg_send_id_ulong(struct metal_state *st,
+                                            void               *receiver,
+                                            const char         *selector,
+                                            unsigned long       a) {
+    void *sel = metal_sel_register_name(st, selector);
+    union {
+        void *raw;
+        void *(*fn)(void *, void *, unsigned long);
+    } send = {.raw = st->objc_msgSend};
+    return send.fn(receiver, sel, a);
+}
+
+/* newComputePipelineStateWithFunction:options:reflection:error: */
+static inline void *metal_msg_send_id_id_ulong_out_err(struct metal_state *st,
+                                                       void               *receiver,
+                                                       const char         *selector,
+                                                       void               *a,
+                                                       unsigned long       options,
+                                                       void              **out,
+                                                       void              **err) {
+    void *sel = metal_sel_register_name(st, selector);
+    union {
+        void *raw;
+        void *(*fn)(void *, void *, void *, unsigned long, void **, void **);
+    } send = {.raw = st->objc_msgSend};
+    return send.fn(receiver, sel, a, options, out, err);
+}
+
 /* NSUInteger-returning nullary getter (currentAllocatedSize, ...). */
 static inline unsigned long
 metal_msg_send_ulong0(struct metal_state *st, void *receiver, const char *selector) {
@@ -318,6 +347,10 @@ static inline void metal_msg_send_set_buffer(struct metal_state     *st,
     void *sel = metal_sel_register_name(st, "setBuffer:offset:atIndex:");
     metal_seq_mark_buffer(st, buffer, offset);
     metal_residency_note(st, buffer);
+    if (st->seq_concurrent && receiver == st->sequence_compute_encoder &&
+        index < (size_t) METAL_BUFFER_ARGS) {
+        st->seq_bound[index] = buffer; /* metal_seq_order reads it at the dispatch */
+    }
     union {
         void *raw;
         void (*fn)(void *, void *, void *, size_t, size_t);
@@ -344,6 +377,7 @@ static inline void metal_msg_send_set_pipeline(struct metal_state      *st,
                                                struct metal_encoder_h  *receiver,
                                                struct metal_pipeline_h *pipeline) {
     (void) metal_msg_send_id_id(st, receiver, "setComputePipelineState:", pipeline);
+    metal_seq_note_pipeline(st, receiver, pipeline);
 }
 
 static inline void metal_msg_send_set_threadgroup_memory(struct metal_state     *st,
@@ -363,6 +397,7 @@ static inline void metal_msg_send_dispatch(struct metal_state     *st,
                                            struct metal_size       groups,
                                            struct metal_size       threads) {
     void *sel = metal_sel_register_name(st, "dispatchThreadgroups:threadsPerThreadgroup:");
+    metal_seq_order(st, receiver);
     union {
         void *raw;
         void (*fn)(void *, void *, struct metal_size, struct metal_size);

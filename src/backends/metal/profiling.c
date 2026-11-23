@@ -232,6 +232,12 @@ void metal_profile_print_summary(const struct metal_state *st) {
                     (unsigned long long) stat->workgroups);
         }
     }
+    if (st->seq_tracked_dispatches != 0) {
+        fprintf(stderr,
+                "  concurrent encoders: %llu memory barriers before %llu dispatches\n",
+                (unsigned long long) st->seq_barriers,
+                (unsigned long long) st->seq_tracked_dispatches);
+    }
     if (st->gpu_buffers == 0) {
         return;
     }
