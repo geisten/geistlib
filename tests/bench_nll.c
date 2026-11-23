@@ -26,6 +26,8 @@
  * hottest experts. Output: one JSON line on stdout, with the tokens per
  * second of the feed — a decode rate on real text, whose experts follow
  * the text's routing (synthetic benchmark prompts route differently).
+ * "logits_fnv" is a hash of every scored logits vector's bytes: equal
+ * between two builds exactly when they computed identical logits.
  */
 #include "test_helpers.h"
 
@@ -33,6 +35,7 @@
 #include <geist_util.h>
 
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,6 +115,7 @@ int main(int argc, char **argv) {
 
     double          sum = 0.0;
     size_t          cnt = 0, nl = 0;
+    uint64_t        logits_fnv = 0xcbf29ce484222325u;
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
     /* Time per token: the prefill call, the logits read, the bench's softmax
@@ -145,6 +149,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "no logits at %zu\n", i);
             return GEIST_TEST_ERROR;
         }
+        /* FNV-1a over the bytes of every scored logits vector: two builds
+         * that print the same value computed the same logits, bit for bit. */
+        const unsigned char *raw = (const unsigned char *) lg;
+        for (size_t v = 0; v < nl * sizeof *lg; v++)
+            logits_fnv = (logits_fnv ^ raw[v]) * 0x100000001b3u;
         double mx = lg[0];
         for (size_t v = 1; v < nl; v++)
             mx = lg[v] > mx ? lg[v] : mx;
@@ -174,10 +183,11 @@ int main(int argc, char **argv) {
     }
     const double secs =
             (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
-    printf("{\"tokens\":%zu,\"nll\":%.6f,\"ppl\":%.4f,\"tps\":%.2f}\n",
+    printf("{\"tokens\":%zu,\"nll\":%.6f,\"ppl\":%.4f,\"logits_fnv\":\"%016llx\",\"tps\":%.2f}\n",
            cnt,
            sum / (double) cnt,
            exp(sum / (double) cnt),
+           (unsigned long long) logits_fnv,
            secs > 0.0 ? (double) cnt / secs : 0.0);
     geist_session_destroy(s);
     geist_model_destroy(m);

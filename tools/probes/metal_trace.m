@@ -25,7 +25,9 @@
  *                          what a dispatch since the last barrier wrote, or
  *                          writes what one read or wrote, by (MTLBuffer,
  *                          bind offset) and the kernels' reflected buffer
- *                          access; =4 the same by MTLBuffer alone. For an
+ *                          access; =4 the same by MTLBuffer alone; =5 as 3
+ *                          with memoryBarrierWithResources: on the buffers
+ *                          written since the last barrier. For an
  *                          engine that binds with setBuffer:offset:atIndex:
  *                          and encodes on one thread (geist)
  *   metal_trace_mark(s)    a named time stamp (with the process's CPU time)
@@ -34,7 +36,7 @@
  * Output: JSON lines. {"k":id,"name":..} per kernel, {"mark":..,"t":..,
  * "cpu":..} per mark, {"c":commit,"gs":..,"ge":..,"ks":..,"ke":..,"d":done,
  * "w0":..,"w1":..,"e":encoders,"cc":of them concurrent,"mb":memory
- * barriers,"b":blit encoders,"n":dispatches,
+ * barriers,"mbr":of them memoryBarrierWithResources:,"b":blit encoders,"n":dispatches,
  * "tg":threadgroups,"k":[[id,dispatches],..]} per command buffer, all times
  * in seconds of the mach_absolute_time clock (the clock of GPUStartTime).
  * Cost per hooked call: one unfair lock and a table probe (tens of ns).
@@ -50,7 +52,7 @@ enum { MAX_K = 48, CHUNK = 4096, MAX_CHUNKS = 4096, TABLE = 1 << 14, MAX_KERNELS
 
 struct rec {
     double   commit, gpu_start, gpu_end, k_start, k_end, done, wait0, wait1;
-    uint32_t encoders, concurrent, blits, dispatches, barriers, nk;
+    uint32_t encoders, concurrent, blits, dispatches, barriers, res_barriers, nk;
     uint64_t threadgroups;
     struct {
         uint16_t id;
@@ -176,6 +178,8 @@ static const void *g_track_enc;
 static struct bind g_bound[MAX_BIND];
 static struct bind g_wrote[MAX_TRACK], g_read[MAX_TRACK];
 static uint32_t    g_nwrote, g_nread;
+static const void *g_barrier[MAX_TRACK]; /* mode 5: the buffers written before a clash */
+static uint32_t    g_nbarrier;
 
 static bool track_has(const struct bind *set, uint32_t n, struct bind b) {
     for (uint32_t i = 0; i < n; i++) {
@@ -206,6 +210,16 @@ static bool track_dispatch(const void *enc, uint16_t kid) {
                 (((write >> i) & 1u) != 0 && track_has(g_read, g_nread, g_bound[i]));
     }
     if (clash) {
+        g_nbarrier = 0;
+        for (uint32_t i = 0; i < g_nwrote && g_nbarrier < MAX_TRACK; i++) {
+            bool seen = false;
+            for (uint32_t j = 0; j < g_nbarrier && !seen; j++) {
+                seen = g_barrier[j] == g_wrote[i].buf;
+            }
+            if (!seen) {
+                g_barrier[g_nbarrier++] = g_wrote[i].buf;
+            }
+        }
         g_nwrote = g_nread = 0;
     }
     for (uint32_t i = 0; i < MAX_BIND; i++) {
@@ -374,22 +388,23 @@ static void dispatched(id enc, uint64_t groups) {
     os_unfair_lock_unlock(&g_lock);
 }
 
-static void barrier(id enc) {
+static void barrier(id enc, bool by_resource) {
     os_unfair_lock_lock(&g_lock);
     struct slot *e = table_find(g_encs, (__bridge const void *) enc, false);
     if (e != nullptr && e->val != UINT32_MAX) {
         rec_at(e->val)->barriers++;
+        rec_at(e->val)->res_barriers += by_resource;
     }
     os_unfair_lock_unlock(&g_lock);
 }
 
 static void h_barrier_scope(id self, SEL sel, NSUInteger scope) {
-    barrier(self);
+    barrier(self, false);
     ((void (*)(id, SEL, NSUInteger)) o_barrier_scope)(self, sel, scope);
 }
 
 static void h_barrier_res(id self, SEL sel, const id *resources, NSUInteger count) {
-    barrier(self);
+    barrier(self, true);
     ((void (*)(id, SEL, const id *, NSUInteger)) o_barrier_res)(self, sel, resources, count);
 }
 
@@ -401,7 +416,13 @@ static void h_disp_groups(id self, SEL sel, MTLSize groups, MTLSize per) {
         need = track_dispatch((__bridge const void *) self, e != nullptr ? e->cur : UINT16_MAX);
         os_unfair_lock_unlock(&g_lock);
     }
-    if (need) {
+    if (need && g_force == 5 && g_nbarrier != 0) {
+        /* Encoding is single-threaded in mode 5's engine: g_barrier is ours. */
+        [(id<MTLComputeCommandEncoder>) self
+                memoryBarrierWithResources:(const id<MTLResource> __unsafe_unretained *) (void *)
+                                                   g_barrier
+                                     count:g_nbarrier];
+    } else if (need) {
         [(id<MTLComputeCommandEncoder>) self memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
     dispatched(self, (uint64_t) groups.width * groups.height * groups.depth);
@@ -517,7 +538,7 @@ void metal_trace_dump(const char *path) {
         const struct rec *r = rec_at(i);
         fprintf(f,
                 "{\"c\":%.9f,\"gs\":%.9f,\"ge\":%.9f,\"ks\":%.9f,\"ke\":%.9f,\"d\":%.9f,"
-                "\"w0\":%.9f,\"w1\":%.9f,\"e\":%u,\"cc\":%u,\"mb\":%u,\"b\":%u,\"n\":%u,"
+                "\"w0\":%.9f,\"w1\":%.9f,\"e\":%u,\"cc\":%u,\"mb\":%u,\"mbr\":%u,\"b\":%u,\"n\":%u,"
                 "\"tg\":%llu,\"k\":[",
                 r->commit,
                 r->gpu_start,
@@ -530,6 +551,7 @@ void metal_trace_dump(const char *path) {
                 r->encoders,
                 r->concurrent,
                 r->barriers,
+                r->res_barriers,
                 r->blits,
                 r->dispatches,
                 (unsigned long long) r->threadgroups);

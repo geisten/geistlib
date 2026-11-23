@@ -24,6 +24,21 @@ make -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" bin >"$OUT/build.lo
 }
 cc -std=gnu23 -dynamiclib -fobjc-arc -O2 -o "$OUT/libmetal_trace.dylib" \
     tools/probes/metal_trace.m -framework Metal -framework Foundation
+# origin/main's bench_nll for the logits check, with this revision's
+# bench_nll.c (it prints the logits hash; the library is main's).
+MAIN=$(dirname "$OUT")/metal-profile-main
+MAIN_TESTS=""
+rm -rf "$MAIN"
+git worktree prune
+if git fetch -q --depth 1 origin main && git worktree add -f --detach "$MAIN" FETCH_HEAD >/dev/null 2>&1; then
+    cp tests/bench_nll.c "$MAIN/tests/bench_nll.c"
+    if make -C "$MAIN" -j8 TARGET=mac-omp BACKENDS="cpu_neon cpu_scalar metal" \
+        bin/mac-omp/release/tests/bench_nll >"$OUT/build-main.log" 2>&1; then
+        MAIN_TESTS="--main-tests $MAIN/bin/mac-omp/release/tests"
+    fi
+fi
+# shellcheck disable=SC2086 # MAIN_TESTS is empty or two words
 python3 tools/probes/metal_profile.py --cache "$CACHE" --gguf-cache "$(dirname "$MODEL")" \
-    --lib "$OUT/libmetal_trace.dylib" --out "$OUT" "$@"
+    --lib "$OUT/libmetal_trace.dylib" --out "$OUT" $MAIN_TESTS "$@"
 rm -f "$OUT/libmetal_trace.dylib"
+git worktree remove --force "$MAIN" 2>/dev/null || rm -rf "$MAIN"
