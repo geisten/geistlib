@@ -223,6 +223,21 @@ def ready_and_identity(ctx, model):
             except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
                 row = {"error": str(error)[-300:]}
             out["logits"].setdefault(check, {})[name] = row
+    # The rows per prefill pass: the same logits or not? (Not part of
+    # "identical": a different pass size is a different computation.)
+    base = out["logits"]["prefill"].get("serial")
+    for rows in ("128", "512"):
+        env = mv.geist_env("metal")
+        env.update(SERIAL)
+        env.update({"GEIST_NLL_PREFILL": "1", "GEIST_M_MAX": rows, "GEIST_NLL_M_MAX": rows})
+        try:
+            line = run([ctx["geist"].parent / "bench_nll", gguf, prompt, "640", "512"],
+                       env).stdout.strip()
+            row = json.loads(line.splitlines()[-1])
+            row.pop("tps", None)
+        except (RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+            row = {"error": str(error)[-300:]}
+        out.setdefault("rows_per_pass", {})[rows] = {**row, "same_as_256": row == base}
     out["identical"] = all(
         len({json.dumps(row, sort_keys=True) for row in rows.values()}) == 1
         and "error" not in next(iter(rows.values())) for rows in out["logits"].values())
@@ -334,7 +349,9 @@ def main():
         summary += ["Settings before #590 against the branch's defaults: process start to first "
                     "token, ms: " + json.dumps(check["ready_ms"]), "",
                     f"bench_nll logits identical across the arms: {check['identical']} "
-                    + json.dumps(check["logits"]), ""]
+                    + json.dumps(check["logits"]), "",
+                    "bench_nll prefill-path logits at 128 and 512 rows per pass against the "
+                    "default 256: " + json.dumps(check.get("rows_per_pass")), ""]
         picked = [f"{label}={path}" for label, path in traces.items()
                   if levers or label.split(" ", 1)[1] in ("trace", "1op",
                                                           "library concurrent encoders")]
