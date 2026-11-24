@@ -1000,11 +1000,22 @@ transformer_layer_run_deltanet_block(struct transformer_layer_forward_ctx *ctx) 
             args.row_delta_state = &t_rs;
             args.rows_written    = &rows_written;
         }
+        /* A forward committed ahead (#590) leaves this state as it is and
+         * writes the next one to the second buffers; there is no host
+         * mixer for that. */
+        struct geist_tensor t_co, t_so;
+        if (sess->ahead.encoding) {
+            t_co = view_2d(sess->ahead.dn_conv[ctx->layer_idx], (int64_t) (K - 1), (int64_t) convd);
+            t_so = view_3d(
+                    sess->ahead.dn_S[ctx->layer_idx], (int64_t) n_vh, (int64_t) d_k, (int64_t) d_v);
+            args.conv_state_out  = &t_co;
+            args.delta_state_out = &t_so;
+        }
         s = fused->deltanet_mix(be, &args);
 
         if (s == GEIST_OK)
             mixed_on_backend = true;
-        else if (s != GEIST_E_UNSUPPORTED)
+        else if (s != GEIST_E_UNSUPPORTED || sess->ahead.encoding)
             return s;
     }
     if (rows_req && !(mixed_on_backend && rows_written))

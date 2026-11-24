@@ -59,6 +59,7 @@ static struct transformer_runtime_flags transformer_runtime_flags_from_env(void)
             .batch_attn_copy       = geist_env_flag("GEIST_DECODE_BATCH_ATTN_COPY", false),
             .batch_moe_host        = geist_env_flag("GEIST_DECODE_BATCH_MOE_HOST", false),
             .kv_shared_full        = geist_env_flag("GEIST_KV_SHARED_FULL", false),
+            .decode_ahead          = geist_env_flag("GEIST_DECODE_AHEAD", true),
     };
 }
 
@@ -2819,6 +2820,7 @@ struct transformer_arch_session *transformer_session_alloc(struct transformer_ar
         transformer_session_free(state, sess);
         return nullptr;
     }
+    sess->ahead.on = true; /* transformer_ahead_ok decides per step */
     return sess;
 }
 
@@ -2841,6 +2843,8 @@ void transformer_session_free(struct transformer_arch_state   *state,
     safe_free(&split_rows);
     sess->split_rows = nullptr;
     twin_session_free(state, sess);
+    /* Before any buffer goes: the device may still be writing them. */
+    transformer_ahead_free(sess);
 
     /* The family's own state first (arch_family.h). */
     if (state != nullptr && state->family != nullptr && state->family->session_free != nullptr) {

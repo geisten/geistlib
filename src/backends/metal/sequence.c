@@ -250,7 +250,13 @@ struct metal_encoder_h *metal_sequence_encoder(struct metal_state *st) {
                            st->sequence_kind != GEIST_COMMAND_SEQUENCE_PREFILL_TEXT &&
                            st->seq_disp_at_rotate == 0u && st->seq_pending_count == 0u &&
                            st->seq_dispatch_count >= st->seq_rotate_first;
-    if (every == 0u || st->sequence_compute_encoder == nullptr ||
+    /* A decode step encoded behind a sequence that is still in flight
+     * (#590) stays in one buffer: the GPU is busy, so an early commit
+     * starts nothing sooner, and every further buffer adds the gap between
+     * two buffers (about 80 us on an M1 Max even when both are queued). */
+    const bool behind = st->sequence_kind != GEIST_COMMAND_SEQUENCE_PREFILL_TEXT &&
+                        atomic_load_explicit(&st->async_live, memory_order_relaxed) != 0u;
+    if (every == 0u || st->sequence_compute_encoder == nullptr || behind ||
         (!first_due && (uint32_t) st->seq_dispatch_count - st->seq_disp_at_rotate < every)) {
         return st->sequence_compute_encoder;
     }
@@ -373,12 +379,13 @@ bool metal_seq_references(struct metal_state          *st,
 /* Submit the open batch and start a fresh one of the same kind. Called
  * whenever the host is about to read or overwrite GPU-referenced memory. */
 void metal_batch_flush(struct metal_state *st) {
+    metal_async_join(st);
     if (st == nullptr || !metal_seq_mine(st) || !st->sequence_has_work) {
         return;
     }
     struct geist_backend                  *be   = st->backend;
     const enum geist_command_sequence_kind kind = st->sequence_kind;
-    (void) metal_command_sequence_end(be, st->sequence_token, true);
+    (void) metal_command_sequence_end(be, st->sequence_token, true, nullptr);
     metal_seq_ref_clear(st);
     int tok = 0;
     (void) metal_command_sequence_begin(be, kind, &tok);
@@ -388,9 +395,98 @@ void metal_flush_if_referenced(struct metal_state          *st,
                                const struct metal_buffer_h *mtl_buf,
                                size_t                       off,
                                size_t                       n) {
+    metal_async_join(st);
     if (metal_seq_references(st, mtl_buf, off, n)) {
         metal_batch_flush(st);
     }
+}
+
+/* ---- Sequences committed and not waited for (#590): metal_state.async ---- */
+
+/* Waits for entry i's command buffer and records its status. seq_lock held. */
+static void metal_async_finish(struct metal_state *st, struct metal_async *a) {
+    if (a->cmd == nullptr) {
+        return;
+    }
+    metal_msg_send_void0(st, a->cmd, "waitUntilCompleted");
+    a->failed = metal_msg_send_id0(st, a->cmd, "error") != nullptr;
+    metal_msg_send_void0(st, a->cmd, "release");
+    a->cmd = nullptr;
+    atomic_fetch_sub_explicit(&st->async_live, 1u, memory_order_relaxed);
+}
+
+/* Before the host reads or writes buffer contents: everything committed
+ * and not waited for has run. The queue runs its buffers in commit order,
+ * so this also covers a host access in the middle of a sequence that is
+ * being encoded behind them. The statuses stay for their owners. */
+void metal_async_join(struct metal_state *st) {
+    if (st == nullptr || atomic_load_explicit(&st->async_live, memory_order_relaxed) == 0u) {
+        return;
+    }
+    pthread_mutex_lock(&st->seq_lock);
+    for (uint32_t i = 0; i < st->async_n; i++) {
+        metal_async_finish(st, &st->async[i]);
+    }
+    pthread_mutex_unlock(&st->seq_lock);
+}
+
+enum geist_status
+metal_region_end_async(struct geist_backend *be, int token, uint64_t *out_ticket) {
+    if (out_ticket == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    *out_ticket = 0;
+    if (be == nullptr || be->state == nullptr || token == 0) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st = be->state;
+    if (!metal_seq_mine(st)) {
+        return GEIST_E_INVALID_STATE;
+    }
+    /* Shortcut: the profile and the sequence trace read a buffer's GPU
+     * times when its sequence ends, which is before it has run here; with
+     * either on, and with every slot taken, the sequence ends with a wait. */
+    struct metal_cmdbuf_h *cmd = nullptr;
+    const bool detach = !st->profile_enabled && st->async_n < (uint32_t) METAL_ASYNC_MAX &&
+                        st->sequence_has_work && !geist_env_flag("GEIST_METAL_SEQ_TRACE", false);
+    const enum geist_status s =
+            metal_command_sequence_end(be, st->sequence_token, true, detach ? &cmd : nullptr);
+    metal_seq_ref_clear(st);
+    if (cmd != nullptr) {
+        st->async[st->async_n++] = (struct metal_async) {.ticket = ++st->async_ticket, .cmd = cmd};
+        atomic_fetch_add_explicit(&st->async_live, 1u, memory_order_relaxed);
+        *out_ticket = st->async_ticket;
+    }
+    pthread_mutex_unlock(&st->seq_lock); /* taken by metal_parallel_region_begin */
+    return s;
+}
+
+enum geist_status metal_async_wait(struct geist_backend *be, uint64_t ticket) {
+    if (be == nullptr || be->state == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    if (ticket == 0) {
+        return GEIST_OK; /* ended with a wait */
+    }
+    struct metal_state *st = be->state;
+    enum geist_status   s  = GEIST_E_INVALID_ARG;
+    pthread_mutex_lock(&st->seq_lock);
+    for (uint32_t i = 0; i < st->async_n; i++) {
+        if (st->async[i].ticket != ticket) {
+            continue;
+        }
+        /* Commit order: the ones before it are complete when it is. */
+        metal_async_finish(st, &st->async[i]);
+        s = st->async[i].failed ? GEIST_E_BACKEND : GEIST_OK;
+        st->async_n--;
+        memmove(&st->async[i], &st->async[i + 1], (st->async_n - i) * sizeof st->async[0]);
+        break;
+    }
+    pthread_mutex_unlock(&st->seq_lock);
+    if (s == GEIST_E_BACKEND) {
+        geist_backend_set_error(be, GEIST_E_BACKEND, "metal command sequence: command failed");
+    }
+    return s;
 }
 
 [[nodiscard]] enum geist_status metal_command_sequence_begin(struct geist_backend            *be,
@@ -468,8 +564,14 @@ void metal_flush_if_referenced(struct metal_state          *st,
     return GEIST_OK;
 }
 
-[[nodiscard]] enum geist_status
-metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
+/* `detach` (with submit, and work encoded): the last command buffer is
+ * committed and handed out retained instead of waited for; the buffers
+ * committed before it are released unchecked, as on the paths below that
+ * do not wait. */
+[[nodiscard]] enum geist_status metal_command_sequence_end(struct geist_backend   *be,
+                                                           int                     token,
+                                                           bool                    submit,
+                                                           struct metal_cmdbuf_h **detach) {
 
     if (be == nullptr || be->state == nullptr) {
         return GEIST_E_INVALID_ARG;
@@ -501,6 +603,10 @@ metal_command_sequence_end(struct geist_backend *be, int token, bool submit) {
          * to free the queue slot, but skip the ~0.4 ms wait handshake —
          * nothing observes its completion. */
         metal_msg_send_void0(st, cmd, "commit");
+    } else if (submit && detach != nullptr) {
+        metal_msg_send_void0(st, cmd, "commit");
+        metal_msg_send_void0(st, cmd, "retain");
+        *detach = cmd;
     } else if (submit) {
         const enum metal_profile_stage wait_stage =
                 metal_profile_wait_stage_for_sequence(st->sequence_kind);

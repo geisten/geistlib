@@ -751,6 +751,7 @@ void *metal_buffer_map(struct geist_buffer *buf) {
      * visible; write: encoded ops must not observe the new contents). */
     {
         struct metal_state *st = buf->owner;
+        metal_async_join(st);
         if (metal_seq_references(st, buf->buffer, buf->base_off, buf->bytes)) {
             if (geist_env_flag("GEIST_METAL_STRICT_BATCH", false)) {
                 geist_backend_set_error(st->backend,

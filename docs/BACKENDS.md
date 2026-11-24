@@ -93,6 +93,32 @@ GPU starts on the step while the rest of it is encoded, and the following
 buffers every 192 (`GEIST_METAL_PIPELINE_FIRST=N`, `0` for a full first
 buffer; `GEIST_METAL_PIPELINE=N` for the period).
 
+A greedy decode step is not waited for (#590).
+`geist_session_decode_step` returns the token the last forward chose; the
+forward that appends it is committed to the GPU before the call returns,
+and at the next call the forward of the token after it is committed behind
+it, in one command buffer, its input token read on the GPU from the
+argmax, before the host has that token. The GPU then goes from one step
+into the next instead of idling while the host reads a token and encodes a
+step. Until the next call takes it over, the forward writes only where no
+reader looks: the cache row past the session's length, a second logits row
+and a second DeltaNet state. A snapshot, a reset or a batched step
+therefore see the session as it was, and any other call takes the forward
+as run, as it would have run it itself; the logits, tokens and snapshot
+images are those of a session that waits for every step
+(`tests/test_decode_ahead_unit.c`). A stop costs at most the one forward in
+flight, and only a caller that comes back before it has finished waits for
+it. This applies to sessions whose step stays on the GPU from the
+embedding to the argmax: greedy without repetition penalties, a dense F16
+or FP32 KV cache, a tied embedding table, no per-layer embeddings
+(Gemma 4), no mixture of experts, no MTP drafting, no split or offloaded
+layers, and a DeltaNet state of at most 64 MiB (the second one costs as
+much again: 19 MiB on Qwen3.5 0.8B, 50 MiB on the 4B; Qwen3.8-27B has
+150 MiB and a step of 86 ms). Every other session waits for each step as
+before, and with `GEIST_DECODE_AHEAD=0` at model load all do.
+`GEIST_METAL_PROFILE=1` and `GEIST_METAL_SEQ_TRACE=1` also wait: they read
+a command buffer's GPU times when its sequence ends.
+
 ### Apple M5/M6 tensor acceleration
 
 On Apple GPU family 10 and later, quantized prefill GEMMs automatically use

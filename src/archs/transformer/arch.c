@@ -115,8 +115,21 @@ static enum geist_status op_gains(struct geist_arch_state *arch_state, float **o
  * forward ran in decode_step or here; reset drops the debt instead. On
  * failure the debt stays and the next call retries the same forward. */
 [[nodiscard]] static enum geist_status settle(struct transformer_arch_session *sess) {
-    if (sess == nullptr || !sess->advance_deferred) {
+    if (sess == nullptr) {
         return GEIST_OK;
+    }
+    /* The owed forward may be on the device already (#590): it is taken
+     * as run here if the session still is what it was committed on. */
+    if (sess->ahead.inflight) {
+        if (sess->advance_deferred && sess->kv_len == sess->ahead.at) {
+            const enum geist_status as = transformer_ahead_adopt(sess);
+            return as == GEIST_OK ? transformer_ahead_home(sess) : as;
+        }
+        transformer_ahead_drop(sess);
+    }
+    const enum geist_status hs = transformer_ahead_home(sess);
+    if (hs != GEIST_OK || !sess->advance_deferred) {
+        return hs;
     }
     geist_token_t           next = -1;
     const enum geist_status s    = transformer_decode_step(sess, sess->next_token_pending, &next);
@@ -245,22 +258,51 @@ static enum geist_status op_decode_step(struct geist_arch_session *session, geis
          * that sends the caller looking for a missing prefill. */
         return GEIST_E_UNSUPPORTED;
     }
-    enum geist_status s = settle(sess);
-    if (s != GEIST_OK) {
-        return s;
+    /* Decode ahead (#590): with the owed forward in flight, the forward
+     * of the token this call is about to return is committed behind it
+     * before that token has reached the host, so the device goes from one
+     * step into the next. The one in flight is then adopted without
+     * putting the logits buffer back: the next step swaps it again. */
+    struct transformer_ahead *a      = &sess->ahead;
+    uint64_t                  ticket = 0;
+    unsigned                  slot   = 0;
+    bool                      behind = false;
+    enum geist_status         s;
+    if (a->inflight && sess->advance_deferred && sess->kv_len == a->at) {
+        behind = transformer_ahead_ok(sess, sess->kv_len + 1) &&
+                 transformer_ahead_launch(sess, true, &ticket, &slot) == GEIST_OK;
+        s      = transformer_ahead_adopt(sess);
+    } else {
+        s = settle(sess);
     }
-    if (!sess->logits_valid) {
-        return GEIST_E_INVALID_STATE; /* nothing pending — prefill first */
+    if (s == GEIST_OK && !sess->logits_valid) {
+        s = GEIST_E_INVALID_STATE; /* nothing pending — prefill first */
     }
     /* What the forward does before it touches the cache: a full context
      * fails here, with no token emitted, as when the forward ran here. */
-    transformer_recurrent_txn_commit(sess);
-    s = transformer_check_kv_room(sess, 1);
+    if (s == GEIST_OK) {
+        transformer_recurrent_txn_commit(sess);
+        s = transformer_check_kv_room(sess, 1);
+    }
     if (s != GEIST_OK) {
+        if (behind) { /* committed on a forward that failed: it is no one's */
+            a->ticket   = ticket;
+            a->inflight = true;
+            transformer_ahead_drop(sess);
+        }
         return s;
     }
     *out                   = sess->next_token_pending;
     sess->advance_deferred = true;
+    if (!behind && transformer_ahead_ok(sess, sess->kv_len)) {
+        behind = transformer_ahead_launch(sess, false, &ticket, &slot) == GEIST_OK;
+    }
+    if (behind) {
+        a->ticket   = ticket;
+        a->slot     = slot;
+        a->at       = sess->kv_len;
+        a->inflight = true;
+    }
     return GEIST_OK;
 }
 
@@ -316,7 +358,13 @@ static enum geist_status op_decode_batch(size_t                           n,
                 return GEIST_E_INVALID_ARG;
             }
         }
-        const enum geist_status ms = batch_member_ok(sess, st);
+        /* A forward committed ahead (#590) is dropped: the owed forward
+         * runs in the batch below, on its kernels, as without it. */
+        transformer_ahead_drop(sess);
+        enum geist_status ms = transformer_ahead_home(sess);
+        if (ms == GEIST_OK) {
+            ms = batch_member_ok(sess, st);
+        }
         if (ms != GEIST_OK) {
             return ms;
         }

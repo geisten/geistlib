@@ -194,23 +194,31 @@ sample_row(struct transformer_arch_session *sess, size_t n_ctx, const float *log
         return GEIST_OK;
     }
 
-    struct geist_tensor t_h_2d      = view_2d(sess->scratch_h_a, 1, st->d_model);
-    struct geist_tensor t_logits_2d = view_2d(sess->scratch_logits, 1, st->vocab_size);
-    t0                              = profile ? geist_now_ns() : 0;
-    s                               = linear_w_or_legacy(be,
-                                                         v,
-                                                         sess->scratch_h_a,
-                                                         sess->scratch_logits,
-                                                         &st->embed_table_w,
-                                                         /* seq = */ 1,
-                                                         &t_h_2d,
-                                                         &st->output_table,
-                                                         &t_logits_2d);
+    /* A forward committed ahead (#590) writes the second logits row and
+     * leaves its argmax on the device. */
+    const bool           ahead       = sess->ahead.encoding;
+    struct geist_buffer *logits_buf  = ahead ? sess->ahead.logits : sess->scratch_logits;
+    struct geist_tensor  t_h_2d      = view_2d(sess->scratch_h_a, 1, st->d_model);
+    struct geist_tensor  t_logits_2d = view_2d(logits_buf, 1, st->vocab_size);
+    t0                               = profile ? geist_now_ns() : 0;
+    s                                = linear_w_or_legacy(be,
+                                                          v,
+                                                          sess->scratch_h_a,
+                                                          logits_buf,
+                                                          &st->embed_table_w,
+                                                          /* seq = */ 1,
+                                                          &t_h_2d,
+                                                          &st->output_table,
+                                                          &t_logits_2d);
     if (s == GEIST_OK)
-        s = transformer_head_bias(st, 1, sess->scratch_logits);
+        s = transformer_head_bias(st, 1, logits_buf);
     transformer_profile_add(&g_head_profile, HEAD_PROFILE_LM_HEAD, t0);
     if (s != GEIST_OK) {
         return s;
+    }
+    if (ahead) {
+        *out_token = -1;
+        return fused->argmax_f32_ids(be, &t_logits_2d, sess->ahead.ids, sess->ahead.slot);
     }
 
     /* Greedy fast path: device argmax reads back a 4-byte index instead

@@ -2170,6 +2170,80 @@ metal_embedding_lookup_scaled_rows(struct geist_backend      *be,
     return GEIST_OK;
 }
 
+/* embedding_lookup_scaled of the token in slot `slot` of the uint32 buffer
+ * `ids`, read by the kernel (#590): the batched kernel with one row, its
+ * ids bound to that slot instead of to bytes of the host. The same
+ * per-element math as the single-token kernel; an id outside the table
+ * (argmax_f32_ids over the vocabulary writes none) reads row 0. */
+[[nodiscard]] static enum geist_status
+metal_embedding_lookup_scaled_ids(struct geist_backend      *be,
+                                  const struct geist_tensor *embed_table,
+                                  struct geist_buffer       *ids,
+                                  size_t                     slot,
+                                  float                      scale,
+                                  struct geist_tensor       *out) {
+    if (be == nullptr || be->state == nullptr || embed_table == nullptr || ids == nullptr ||
+        out == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st    = be->state;
+    size_t              out_n = 0, out_offset = 0, row_bytes = 0, blocks_per_row = 0;
+    if (!metal_tensor_is_f32_vector(out, &out_n, &out_offset) || embed_table->buffer == nullptr ||
+        embed_table->ndim != 2 || embed_table->shape[0] <= 0 ||
+        (size_t) embed_table->shape[1] != out_n || embed_table->buffer->owner != st ||
+        out->buffer->owner != st || ids->owner != st || slot >= ids->bytes / sizeof(uint32_t) ||
+        !metal_seq_mine(st)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const size_t      vocab = (size_t) embed_table->shape[0];
+    enum geist_status s =
+            metal_embed_table_geometry(be, embed_table, out_n, &row_bytes, &blocks_per_row);
+    if (s == GEIST_OK) {
+        s = metal_ensure(be, METAL_TAB_QUANT);
+    }
+    if (s != GEIST_OK) {
+        return s;
+    }
+    if (row_bytes == 0 || vocab > SIZE_MAX / row_bytes ||
+        embed_table->offset > embed_table->buffer->bytes ||
+        vocab * row_bytes > embed_table->buffer->bytes - embed_table->offset ||
+        out->offset > out->buffer->bytes ||
+        out_n > (out->buffer->bytes - out->offset) / sizeof(float) || out_n > UINT32_MAX ||
+        vocab > UINT32_MAX || blocks_per_row > UINT32_MAX || embed_table->offset > UINT32_MAX ||
+        out_offset > UINT32_MAX) {
+        return GEIST_E_INVALID_ARG;
+    }
+    const struct metal_embed_params params = {
+            .n              = (uint32_t) out_n,
+            .dtype          = (uint32_t) embed_table->dtype,
+            .blocks_per_row = (uint32_t) blocks_per_row,
+            .w_byte_offset  = (uint32_t) embed_table->offset,
+            .y_offset       = (uint32_t) out_offset,
+            .scale          = scale,
+            .vocab          = (uint32_t) vocab,
+    };
+    struct metal_encoder_h *enc = metal_sequence_encoder(st);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_msg_send_set_pipeline(st, enc, st->embed_lookup_scaled_ids_pipeline);
+    metal_msg_send_set_buffer(
+            st, enc, embed_table->buffer->buffer, embed_table->buffer->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, out->buffer->buffer, out->buffer->base_off, 1);
+    metal_msg_send_set_bytes(st, enc, &params, sizeof params, 2);
+    metal_msg_send_set_buffer(st, enc, ids->buffer, ids->base_off + slot * sizeof(uint32_t), 3);
+    const struct metal_size groups = {
+            .width  = ((uint32_t) out_n + METAL_ELEM_THREADS - 1u) / METAL_ELEM_THREADS,
+            .height = 1,
+            .depth  = 1,
+    };
+    const struct metal_size threads = {.width = METAL_ELEM_THREADS, .height = 1, .depth = 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_EMBED, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    st->sequence_has_work = true;
+    return GEIST_OK;
+}
+
 /* Bounded, grow-only activation data + per-128 FP32 scales and sums.
  * Block modes read original PQ2; staged modes reuse one prepared pair. */
 [[nodiscard]] static bool
@@ -3534,6 +3608,38 @@ static struct metal_pipeline_h *metal_mv3_pipeline(const struct metal_state *st,
     return metal_rmsnorm_add(be, res, proj_scratch, norm_w, eps, y);
 }
 
+/* The two argmax passes over n logits at element x_off of `logits`, the
+ * index written as a uint32 at byte `out_off` of `out`. */
+static void metal_encode_argmax(struct metal_state        *st,
+                                struct metal_encoder_h    *enc,
+                                const struct geist_buffer *logits,
+                                size_t                     x_off,
+                                size_t                     n,
+                                struct metal_buffer_h     *out,
+                                size_t                     out_off) {
+    const size_t per_group = 256u * 8u;
+    const size_t ng        = n / per_group >= METAL_ARGMAX_PARTS ? METAL_ARGMAX_PARTS
+                             : n / per_group == 0                ? 1u
+                                                                 : n / per_group;
+    struct {
+        uint32_t n, xo, ng;
+    } ap = {(uint32_t) n, (uint32_t) x_off, (uint32_t) ng};
+    metal_msg_send_set_pipeline(st, enc, st->argmax_part_pipeline);
+    metal_msg_send_set_buffer(st, enc, logits->buffer, logits->base_off, 0);
+    metal_msg_send_set_buffer(st, enc, st->argmax_part_buffer, 0, 1);
+    metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 2);
+    const struct metal_size groups  = {ng, 1, 1};
+    const struct metal_size one     = {1, 1, 1};
+    const struct metal_size threads = {256, 1, 1};
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, groups);
+    metal_msg_send_dispatch(st, enc, groups, threads);
+    metal_msg_send_set_pipeline(st, enc, st->argmax_merge_pipeline);
+    metal_msg_send_set_buffer(st, enc, st->argmax_part_buffer, 0, 0);
+    metal_msg_send_set_buffer(st, enc, out, out_off, 1);
+    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, one);
+    metal_msg_send_dispatch(st, enc, one, threads);
+}
+
 /* Device greedy argmax (vtbl slot) over the [1, n] logits row on the GPU;
  * the host flush then reads a 4-byte token instead of mapping the whole
  * 1 MB logits row. Tie-break = lowest index, matching geist_sampler_argmax.
@@ -3554,35 +3660,14 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
     if (s != GEIST_OK) {
         return s;
     }
-    struct metal_state *st = be->state;
-
-    const size_t per_group = 256u * 8u;
-    const size_t ng        = n / per_group >= METAL_ARGMAX_PARTS ? METAL_ARGMAX_PARTS
-                             : n / per_group == 0                ? 1u
-                                                                 : n / per_group;
-    struct {
-        uint32_t n, xo, ng;
-    } ap = {(uint32_t) n, (uint32_t) x_off, (uint32_t) ng};
+    struct metal_state                             *st   = be->state;
     GEIST_CLEANUP(metal_pool_end) struct metal_pool pool = metal_standalone_pool(st);
     struct metal_cmdbuf_h                          *cmd  = nullptr;
     struct metal_encoder_h                         *enc  = metal_op_begin(be, nullptr, &cmd);
     if (enc == nullptr) {
         return GEIST_E_BACKEND;
     }
-    metal_msg_send_set_pipeline(st, enc, st->argmax_part_pipeline);
-    metal_msg_send_set_buffer(st, enc, logits->buffer->buffer, logits->buffer->base_off, 0);
-    metal_msg_send_set_buffer(st, enc, st->argmax_part_buffer, 0, 1);
-    metal_msg_send_set_bytes(st, enc, &ap, sizeof(ap), 2);
-    const struct metal_size groups  = {ng, 1, 1};
-    const struct metal_size one     = {1, 1, 1};
-    const struct metal_size threads = {256, 1, 1};
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, groups);
-    metal_msg_send_dispatch(st, enc, groups, threads);
-    metal_msg_send_set_pipeline(st, enc, st->argmax_merge_pipeline);
-    metal_msg_send_set_buffer(st, enc, st->argmax_part_buffer, 0, 0);
-    metal_msg_send_set_buffer(st, enc, st->argmax_result_buffer, 0, 1);
-    metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_ARGMAX, one);
-    metal_msg_send_dispatch(st, enc, one, threads);
+    metal_encode_argmax(st, enc, logits->buffer, x_off, n, st->argmax_result_buffer, 0);
     if (cmd == nullptr) {
         st->sequence_has_work = true;
         /* The 4-byte result read is the token's only host sync point. */
@@ -3591,6 +3676,43 @@ metal_argmax_f32(struct geist_backend *be, const struct geist_tensor *logits, in
         return GEIST_E_BACKEND;
     }
     *out_index = (int32_t) ((const uint32_t *) st->argmax_result_mapped)[0];
+    return GEIST_OK;
+}
+
+/* argmax_f32 into slot `slot` of the uint32 buffer `ids`, in the open
+ * sequence and without the flush (#590): the index stays on the GPU for
+ * embedding_lookup_scaled_ids, and the host reads it once the sequence has
+ * run. */
+[[nodiscard]] static enum geist_status metal_argmax_f32_ids(struct geist_backend      *be,
+                                                            const struct geist_tensor *logits,
+                                                            struct geist_buffer       *ids,
+                                                            size_t                     slot) {
+    if (be == nullptr || be->state == nullptr || logits == nullptr || ids == nullptr) {
+        return GEIST_E_INVALID_ARG;
+    }
+    struct metal_state *st   = be->state;
+    size_t              rows = 0, n = 0, x_off = 0, x_stride = 0;
+    if (!metal_tensor_is_f32_rows(logits, &rows, &n, &x_off, &x_stride) || rows != 1u || n == 0 ||
+        n > UINT32_MAX || x_off > UINT32_MAX || logits->buffer->owner != st || ids->owner != st ||
+        slot >= ids->bytes / sizeof(uint32_t) || !metal_seq_mine(st)) {
+        return GEIST_E_UNSUPPORTED;
+    }
+    const enum geist_status s = metal_ensure(be, METAL_TAB_ARGMAX);
+    if (s != GEIST_OK) {
+        return s;
+    }
+    struct metal_encoder_h *enc = metal_sequence_encoder(st);
+    if (enc == nullptr) {
+        return GEIST_E_BACKEND;
+    }
+    metal_encode_argmax(st,
+                        enc,
+                        logits->buffer,
+                        x_off,
+                        n,
+                        ids->buffer,
+                        ids->base_off + slot * sizeof(uint32_t));
+    st->sequence_has_work = true;
     return GEIST_OK;
 }
 
@@ -4425,6 +4547,25 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
     if (status != GEIST_OK) {
         return status;
     }
+    /* The new state into other buffers (#590): the decode kernels' _o
+     * twins, one row. Anything else is refused before a state changes. The
+     * views are the state's, at its offsets. */
+    const bool out_state = args->conv_state_out != nullptr || args->delta_state_out != nullptr;
+    if (out_state) {
+        size_t o_rows = 0, o_cols = 0, o_off = 0, o_stride = 0, o0 = 0, o1 = 0, o2 = 0, os_off = 0;
+        if (args->conv_state_out == nullptr || args->delta_state_out == nullptr || args->seq != 1 ||
+            st->dn_dec_qk_o_pipeline == nullptr || st->dn_dec_v_o_pipeline == nullptr ||
+            args->head_k > 128u ||
+            !metal_pipeline_fits(st, st->dn_dec_v_o_pipeline, 4u * args->head_v) ||
+            !metal_tensor_is_f32_matrix(
+                    args->conv_state_out, &o_rows, &o_cols, &o_off, &o_stride) ||
+            !metal_tensor_is_f32_3d(args->delta_state_out, &o0, &o1, &o2, &os_off) ||
+            o_rows != cs_rows || o_cols != cs_cols || o_off != cs_off || o0 != s0 || o1 != s1 ||
+            o2 != s2 || os_off != s_off || args->conv_state_out->buffer->owner != st ||
+            args->delta_state_out->buffer->owner != st) {
+            return GEIST_E_UNSUPPORTED;
+        }
+    }
     struct metal_deltanet_params params = {.seq                = (uint32_t) args->seq,
                                            .n_k_heads          = (uint32_t) args->n_k_heads,
                                            .n_v_heads          = (uint32_t) args->n_v_heads,
@@ -4460,7 +4601,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
      * value-column block (the shader's DNF_DVB). */
     constexpr int DNF_CALL = 512;
     constexpr int DNF_DVB  = 16;
-    bool fast = args->seq > METAL_DN_DECODE_ROWS && args->conv_kernel == 4u &&
+    bool fast = !out_state && args->seq > METAL_DN_DECODE_ROWS && args->conv_kernel == 4u &&
                 args->head_k % 32u == 0 && args->head_k <= 128u && args->head_v % 32u == 0 &&
                 args->head_v <= 256u && st->dnf_out_pipeline != nullptr;
     if (fast) {
@@ -4521,6 +4662,32 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
             metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DN_OUT, g_ch);
             metal_msg_send_dispatch(st, enc, g_ch, t128);
         }
+    } else if (out_state) {
+        /* dn_dec_qk_o + dn_dec_v_o: the single-row branch below with the
+         * state written to the out views. Buffers 11 and 12 are the unused
+         * row slots, bound as there. */
+        const struct geist_buffer *so = args->delta_state_out->buffer;
+        const struct geist_buffer *co = args->conv_state_out->buffer;
+        metal_msg_send_set_buffer(st,
+                                  enc,
+                                  args->delta_state->buffer->buffer,
+                                  args->delta_state->buffer->base_off,
+                                  11);
+        metal_msg_send_set_buffer(
+                st, enc, args->conv_state->buffer->buffer, args->conv_state->buffer->base_off, 12);
+        metal_msg_send_set_buffer(st, enc, co->buffer, co->base_off, 13);
+        metal_msg_send_set_buffer(st, enc, so->buffer, so->base_off, 14);
+        metal_msg_send_set_bytes(st, enc, &params, sizeof params, 10);
+        const struct metal_size gk = {args->n_k_heads, 1, 1};
+        const struct metal_size tk = {256, 1, 1};
+        metal_msg_send_set_pipeline(st, enc, st->dn_dec_qk_o_pipeline);
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gk);
+        metal_msg_send_dispatch(st, enc, gk, tk);
+        metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_o_pipeline);
+        const struct metal_size gv = {args->n_v_heads, 1, 1};
+        const struct metal_size tv = {4u * args->head_v, 1, 1};
+        metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
+        metal_msg_send_dispatch(st, enc, gv, tv);
     } else if (args->seq <= METAL_DN_DECODE_ROWS && st->dn_dec_v_pipeline != nullptr &&
                (args->seq == 1 || st->dn_dec_v_rows_pipeline != nullptr) && args->head_k <= 128u &&
                metal_pipeline_fits(st,
@@ -5738,6 +5905,10 @@ static const struct geist_backend_fused metal_fused = {
         .embedding_lookup_scaled_rows = metal_embedding_lookup_scaled_rows,
         .kv_append_f16                = metal_kv_append_f16,
         .argmax_f32                   = metal_argmax_f32,
+        .argmax_f32_ids               = metal_argmax_f32_ids,
+        .embedding_lookup_scaled_ids  = metal_embedding_lookup_scaled_ids,
+        .region_end_async             = metal_region_end_async,
+        .async_wait                   = metal_async_wait,
         .ffn_gate_up                  = metal_ffn_gate_up,
         .ffn_gate_up_silu             = metal_ffn_gate_up_silu,
         .attn_qkv_prep                = metal_attn_qkv_prep,
