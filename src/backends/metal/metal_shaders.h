@@ -1509,34 +1509,177 @@ static const char metal_q6k_mm32_source[] =
         "{y[p.yo+(r1+j/64u)*p.ys+r0+j%64u]=T[j];}}"
         "}\n";
 
-/* Tensor-API GEMMs (#314): the Metal 4 matmul2d of MetalPerformancePrimitives,
- * which Apple GPU family 10+ (M5, M6, A19) runs on the matrix units of each
- * GPU core; the simdgroup_matrix GEMMs above stay on the ALUs. The unit
- * compiles with language version 4.0 (metal_tensor_options) only, and only
- * on a device that has the units (metal_state.tensor_mm). It is llama.cpp's
- * kernel_mul_mm under GGML_METAL_HAS_TENSOR, retiled for the M6 (#314): per
- * 64-wide K step the 256 threads dequantize a 64-row x 64 weight tile to
- * half in threadgroup memory (one 16-element chunk each), and eight
- * simdgroups multiply it with the activations' 128-row x 64 tile read as
- * float straight from device memory, accumulating 64 x 128 outputs in
- * float. The tensors' extents bound every edge (ragged row tile, n_out %
- * 64, the last K step; a chunk at or past K stages zeros and reads no
- * block), so one kernel takes every shape. M6 sweep (mac-probe runs
- * 2401-2408, prefill tok/s against llama's 64x128, K step 32, 4
- * simdgroups): K step 64 +6-9 %, then 8 simdgroups +2-16 % more on Gemma 4
- * E2B, +9-11 % together on Qwen3.5 4B Q4_0, +7-11 % on Bonsai 2 27B
- * PQ2_0; 128-row weight tiles, 64- or
+/* Tensor-API GEMMs (#314, #590): the Metal 4 matmul2d of
+ * MetalPerformancePrimitives, which Apple GPU family 10+ (M5, M6, A19) runs
+ * on the matrix units of each GPU core; the simdgroup_matrix GEMMs above
+ * stay on the ALUs. The unit compiles with language version 4.0
+ * (metal_tensor_options) only, and only on a device that has the units
+ * (metal_state.tensor_mm). Two kernels per format, one of them compiled.
+ *
+ * matmul_<T>_mm_tc of fragments (#590, the default on a GPU with matrix
+ * units) is tiled as mlx's affine_qmm_t_nax: a simdgroup owns 32 activation
+ * rows x 32 outputs and multiplies 16 x 32 x 16 fragments whose operands
+ * and result sit in its registers (cooperative tensors of an
+ * execution_simdgroup matmul2d). TC_NG pairs of simdgroups make a
+ * threadgroup of 32 TC_NG rows x 64 outputs. Per TC_NK-wide K step its
+ * threads dequantize the 64-output weight tile to half in threadgroup
+ * memory, rows TC_LD apart (not a power of two, as mlx pads them); a
+ * simdgroup then takes, per 16 K, its 32 x 16 weight fragment from there
+ * and its two 16-row x 16 activation fragments as float straight from
+ * device memory, accumulating in float.
+ *
+ * Where an operand element goes is the cooperative tensor's business
+ * (get_multidimensional_index). The offsets are taken once, before the K
+ * loop: asked per element inside it, they cost two thirds of the kernel's
+ * time on the M6. On the matrix units a thread holds
+ * its elements as runs of four along K, which TC_VEC loads as vectors;
+ * tc_frag_layout says whether that holds on this device. Where it does
+ * not (the ALUs' matmul2d lays them out otherwise) the backend compiles
+ * the unit again: as the cooperative kernels, or, when
+ * GEIST_METAL_TC_COOP=0 asked for fragments, with TC_VEC 0, every element
+ * loaded by its own offset (a seventh slower than vectors on the M6 even
+ * with a branch per thread between the two).
+ *
+ * Edges: a row at or past `rows` reads the last row and is not stored (the
+ * store clips at the output tensor's extents, and a simdgroup without rows
+ * or outputs runs no matmul); a weight row at or past n_out and a chunk at
+ * or past K stage zeros and read no block; a 16-K fragment at or past K is
+ * skipped (K is a multiple of 16 in every block format), so one kernel
+ * takes every shape. The grid is (row tiles, output tiles) or, when the
+ * host says so by its shape, (output tiles, row tiles): see
+ * metal_encode_mm_tc.
+ *
+ * With GEIST_TC_COOP defined (GEIST_METAL_TC_COOP=1, and the default on a
+ * GPU without matrix units) the kernel of #314 is compiled under the same
+ * name instead: llama.cpp's kernel_mul_mm under GGML_METAL_HAS_TENSOR,
+ * retiled for the M6. Per 64-wide K step 256 threads dequantize the weight
+ * tile (one 16-element chunk each), and eight simdgroups multiply it in
+ * one cooperative matmul2d with the activations' 128-row x 64 tile, read
+ * through a tensor over device memory, into 64 x 128 outputs; the tensors'
+ * extents bound every edge. Its own sweep (mac-probe runs 2401-2408): K
+ * step 64 and 8 simdgroups were its best; 128-row weight tiles, 64- or
  * 256-row activation tiles, K step 128, 16 simdgroups and double-buffered
- * staging were all slower. */
+ * staging were all slower.
+ *
+ * Both give the same output bit for bit, on the matrix units and on the
+ * ALUs (tests/test_backend_metal_parity_unit.c). Numbers:
+ * benchmark/results/METAL_PREFILL_GEMM_M6_2026-11-24.md. */
 static const char metal_mm_tc_head_source[] =
         "#include <metal_tensor>\n"
-        "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n";
+        "#include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>\n"
+        "#ifndef TC_VEC\n#define TC_VEC 1\n#endif\n"
+        "#define TC_NG 4\n#define TC_NK 64\n#define TC_LD 72\n";
+/* What metal_compile_library puts before the unit: for the cooperative
+ * kernels (metal_state.tensor_coop), and for fragments loaded element by
+ * element (metal_state.tensor_scalar). */
+static const char metal_mm_tc_coop_define[]   = "#define GEIST_TC_COOP 1\n";
+static const char metal_mm_tc_scalar_define[] = "#define TC_VEC 0\n";
 
-/* One tc GEMM on block type BLK with the 16-element dequant DQ (device
- * const BLK*, short il, thread half4x4&) and QKNL chunks per block. Grid:
- * ((rows + 127) / 128, (n_out + 63) / 64), 256 threads, 8192 bytes of
- * threadgroup memory. */
-#define GEIST_METAL_MM_TC_KERNEL(NAME, BLK, DQ, QKNL)                                         \
+/* tc_frag_layout: one simdgroup; ok[lane] = 1 when that thread holds the
+ * fragments' operands as TC_VEC needs them: 8 left and 16 right elements,
+ * all valid, in runs of four along K within one row. Compiled after
+ * metal_qsg_common_source (FOR_UNROLL). */
+static const char metal_mm_tc_layout_source[] =
+        "kernel void tc_frag_layout(device uint*ok[[buffer(0)]],ushort "
+        "ln[[thread_index_in_simdgroup]]){\n"
+        "using namespace mpp::tensor_ops;"
+        "constexpr auto desc=matmul2d_descriptor(16,32,16,false,true,true,"
+        "matmul2d_descriptor::mode::multiply_accumulate);"
+        "matmul2d<desc,execution_simdgroup> op;"
+        "auto ca=op.get_left_input_cooperative_tensor<float,half,float>();"
+        "auto cb=op.get_right_input_cooperative_tensor<float,half,float>();"
+        "bool good=ca.get_capacity()==8&&cb.get_capacity()==16;"
+        "FOR_UNROLL(uint16_t i=0;i<8;++i){if(good){good=ca.is_valid_element(i);}}"
+        "FOR_UNROLL(uint16_t i=0;i<16;++i){if(good){good=cb.is_valid_element(i);}}"
+        "FOR_UNROLL(uint16_t g=0;g<2;++g){if(good){auto b=ca.get_multidimensional_index(4*g);"
+        "good=b[0]>=0&&b[0]+3<16&&b[1]>=0&&b[1]<16;"
+        "FOR_UNROLL(uint16_t j=1;j<4;++j){auto ix=ca.get_multidimensional_index(4*g+j);"
+        "good=good&&ix[0]==b[0]+j&&ix[1]==b[1];}}}"
+        "FOR_UNROLL(uint16_t g=0;g<4;++g){if(good){auto b=cb.get_multidimensional_index(4*g);"
+        "good=b[0]>=0&&b[0]+3<16&&b[1]>=0&&b[1]<32;"
+        "FOR_UNROLL(uint16_t j=1;j<4;++j){auto ix=cb.get_multidimensional_index(4*g+j);"
+        "good=good&&ix[0]==b[0]+j&&ix[1]==b[1];}}}"
+        "ok[ln]=good?1u:0u;}\n";
+
+/* One tc GEMM of fragments on block type BLK with the 16-element dequant DQ
+ * (device const BLK*, short il, thread half4x4&) and QKNL chunks per block,
+ * in two string literals (4095 characters each). Grid: row tiles of 32
+ * TC_NG rows and output tiles of 64, in either order; 64 TC_NG threads; 128
+ * TC_LD bytes of threadgroup memory. The 4 TC_NK chunks of a weight tile go
+ * to the first threads, TC_NK / (16 TC_NG) each. */
+#define GEIST_METAL_MM_TC_KERNEL_A(NAME, BLK, DQ, QKNL)                                       \
+    "#ifndef GEIST_TC_COOP\n"                                                                 \
+    "kernel void matmul_" NAME "_mm_tc(device const float*x[[buffer(0)]],device const "       \
+    "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
+    "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],uint3 "            \
+    "gs[[threadgroups_per_grid]],ushort ti[[thread_index_in_threadgroup]],ushort "            \
+    "sg[[simdgroup_index_in_threadgroup]]){\n"                                                \
+    "using namespace mpp::tensor_ops;"                                                        \
+    "constexpr int NK=TC_NK,LD=TC_LD,NKC=NK/16,RT=32*TC_NG;"                                  \
+    "constexpr int CH=TC_NG<=NKC?NKC/TC_NG:1,QK_NL=" QKNL ";"                                 \
+    "const int K=int(p.ni),M=int(p.no),N=int(p.rows),XS=int(p.xs);"                           \
+    "const bool of=int(gs.x)!=(N+RT-1)/RT;"                                                   \
+    "const int ra=int(of?tg.x:tg.y)*64,rb=int(of?tg.y:tg.x)*RT;"                              \
+    "threadgroup half*sa=(threadgroup half*)shmem;device const float*xb=x+p.xo;"              \
+    "constexpr auto desc=matmul2d_descriptor(16,32,16,false,true,true,"                       \
+    "matmul2d_descriptor::mode::multiply_accumulate);"                                        \
+    "matmul2d<desc,execution_simdgroup> op;"                                                  \
+    "auto ca=op.get_left_input_cooperative_tensor<float,half,float>();"                       \
+    "auto cb=op.get_right_input_cooperative_tensor<float,half,float>();"                      \
+    "auto c0=op.get_destination_cooperative_tensor<decltype(ca),decltype(cb),float>();"       \
+    "auto c1=op.get_destination_cooperative_tensor<decltype(ca),decltype(cb),float>();"       \
+    "FOR_UNROLL(uint16_t i=0;i<c0.get_capacity();++i){if(c0.is_valid_element(i)){"            \
+    "c0[i]=0.0f;c1[i]=0.0f;}}"                                                                \
+    "const int id=int(ti)*CH,row=min(id/NKC,63),kc=id%NKC;"                                   \
+    "const bool live=id<64*NKC&&ra+row<M;"                                                    \
+    "device const " BLK "*wp=(device const " BLK "*)(w+p.wo)+min(ra+row,M-1)*int(p.bpr);"     \
+    "const int oc=32*(int(sg)%2),on=ra+oc,rn=rb+32*(int(sg)/2);const bool act=on<M&&rn<N;"    \
+    "int ob[16],oa0[8],oa1[8];"                                                               \
+    "FOR_UNROLL(uint16_t i=0;i<16;++i){ob[i]=-1;"                                             \
+    "if(i<cb.get_capacity()&&cb.is_valid_element(i)){"                                        \
+    "auto ix=cb.get_multidimensional_index(i);ob[i]=(oc+ix[1])*LD+ix[0];}}"                   \
+    "FOR_UNROLL(uint16_t i=0;i<8;++i){oa0[i]=-1;oa1[i]=-1;"                                   \
+    "if(i<ca.get_capacity()&&ca.is_valid_element(i)){"                                        \
+    "auto ix=ca.get_multidimensional_index(i);oa0[i]=min(rn+ix[1],N-1)*XS+ix[0];"             \
+    "oa1[i]=min(rn+16+ix[1],N-1)*XS+ix[0];}}\n"
+#define GEIST_METAL_MM_TC_KERNEL_B(DQ)                                                      \
+    "for(int k0=0;k0<K;k0+=NK){"                                                            \
+    "if(id<64*NKC){FOR_UNROLL(int c=0;c<CH;c++){"                                           \
+    "const int kp=k0+(kc+c)*16;half4x4 t=half4x4(0.0h);"                                    \
+    "if(live&&kp<K){" DQ "(wp+kp/(16*QK_NL),short((kp/16)%QK_NL),t);}"                      \
+    "FOR_UNROLL(short i=0;i<4;i++){*(threadgroup half4*)(sa+row*LD+(kc+c)*16+i*4)=t[i];}}}" \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);"                                      \
+    "if(act){FOR_UNROLL(int kk=0;kk<NK;kk+=16){if(k0+kk<K){\n"                              \
+    "#if TC_VEC\n"                                                                          \
+    "FOR_UNROLL(int g=0;g<4;g++){"                                                          \
+    "const half4 v=half4(*(threadgroup packed_half4*)(sa+ob[4*g]+kk));"                     \
+    "cb[4*g]=v.x;cb[4*g+1]=v.y;cb[4*g+2]=v.z;cb[4*g+3]=v.w;}"                               \
+    "FOR_UNROLL(int g=0;g<2;g++){"                                                          \
+    "const float4 v=float4(*(device const packed_float4*)(xb+oa0[4*g]+k0+kk));"             \
+    "ca[4*g]=v.x;ca[4*g+1]=v.y;ca[4*g+2]=v.z;ca[4*g+3]=v.w;}"                               \
+    "op.run(ca,cb,c0);"                                                                     \
+    "FOR_UNROLL(int g=0;g<2;g++){"                                                          \
+    "const float4 v=float4(*(device const packed_float4*)(xb+oa1[4*g]+k0+kk));"             \
+    "ca[4*g]=v.x;ca[4*g+1]=v.y;ca[4*g+2]=v.z;ca[4*g+3]=v.w;}"                               \
+    "op.run(ca,cb,c1);\n"                                                                   \
+    "#else\n"                                                                               \
+    "FOR_UNROLL(uint16_t i=0;i<16;++i){if(ob[i]>=0)cb[i]=sa[ob[i]+kk];}"                    \
+    "FOR_UNROLL(uint16_t i=0;i<8;++i){if(oa0[i]>=0)ca[i]=xb[oa0[i]+k0+kk];}"                \
+    "op.run(ca,cb,c0);"                                                                     \
+    "FOR_UNROLL(uint16_t i=0;i<8;++i){if(oa1[i]>=0)ca[i]=xb[oa1[i]+k0+kk];}"                \
+    "op.run(ca,cb,c1);\n"                                                                   \
+    "#endif\n"                                                                              \
+    "}}}"                                                                                   \
+    "threadgroup_barrier(mem_flags::mem_threadgroup);}"                                     \
+    "if(act){auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"  \
+    "c0.store(tD.slice(on,rn));if(rn+16<N){c1.store(tD.slice(on,rn+16));}}}\n"              \
+    "#endif\n"
+
+/* The same GEMM as one cooperative matmul2d of eight simdgroups (#314),
+ * compiled instead when GEIST_TC_COOP is defined. Grid: ((rows + 127) /
+ * 128, (n_out + 63) / 64), 256 threads, 8192 bytes of threadgroup memory. */
+#define GEIST_METAL_MM_TC_COOP_KERNEL(NAME, BLK, DQ, QKNL)                                    \
+    "#ifdef GEIST_TC_COOP\n"                                                                  \
     "kernel void matmul_" NAME "_mm_tc(device const float*x[[buffer(0)]],device const "       \
     "uchar*w[[buffer(1)]],device float*y[[buffer(2)]],constant P&p[[buffer(3)]],threadgroup " \
     "char*shmem[[threadgroup(0)]],uint3 tg[[threadgroup_position_in_grid]],ushort "           \
@@ -1568,7 +1711,17 @@ static const char metal_mm_tc_head_source[] =
     "mm.run(tBv,tAv,cT);"                                                                     \
     "threadgroup_barrier(mem_flags::mem_threadgroup);}"                                       \
     "auto tD=tensor(y+p.yo,dextents<int32_t,2>(M,N),array<int,2>({1,int(p.ys)}));"            \
-    "cT.store(tD.slice(ra,rb));}\n"
+    "cT.store(tD.slice(ra,rb));}\n"                                                           \
+    "#endif\n"
+
+/* A format's kernels: metal_mm_tc_<ID>_source and _b_source (fragments),
+ * metal_mm_tc_<ID>_coop_source. */
+#define GEIST_METAL_MM_TC_SOURCES(ID, NAME, BLK, DQ, QKNL)                            \
+    static const char metal_mm_tc_##ID##_source[] =                                   \
+            GEIST_METAL_MM_TC_KERNEL_A(NAME, BLK, DQ, QKNL);                          \
+    static const char metal_mm_tc_##ID##_b_source[] = GEIST_METAL_MM_TC_KERNEL_B(DQ); \
+    static const char metal_mm_tc_##ID##_coop_source[] =                              \
+            GEIST_METAL_MM_TC_COOP_KERNEL(NAME, BLK, DQ, QKNL)
 
 /* Q6_K has no block struct in metal_q6k_dq_source; the tc template steps
  * blocks by type. */
@@ -1576,26 +1729,21 @@ static const char metal_mm_tc_q6k_block_source[] =
         "struct block_q6_K{uchar b[210];};\n"
         "static inline void dq6b(device const block_q6_K*xb,short il,thread "
         "half4x4&r){dq6(xb->b,il,r);}\n";
-static const char metal_mm_tc_q4k_source[] =
-        GEIST_METAL_MM_TC_KERNEL("q4k", "block_q4_K", "dq4", "16");
-static const char metal_mm_tc_q6k_source[] =
-        GEIST_METAL_MM_TC_KERNEL("q6k", "block_q6_K", "dq6b", "16");
+GEIST_METAL_MM_TC_SOURCES(q4k, "q4k", "block_q4_K", "dq4", "16");
+GEIST_METAL_MM_TC_SOURCES(q6k, "q6k", "block_q6_K", "dq6b", "16");
 
 /* The simdgroup quant unit's formats (their block structs and dequants
  * come from metal_qsg_common_source, metal_qsg_common2_source and
  * metal_qsg_pq2_dq_source). */
-static const char metal_mm_tc_q40_source[] = GEIST_METAL_MM_TC_KERNEL("q40", "bq40", "dq40", "2");
-static const char metal_mm_tc_q80_source[] = GEIST_METAL_MM_TC_KERNEL("q80", "bq80", "dq80", "2");
-static const char metal_mm_tc_q41_source[] = GEIST_METAL_MM_TC_KERNEL("q41", "bq41", "dq41", "2");
-static const char metal_mm_tc_q5k_source[] = GEIST_METAL_MM_TC_KERNEL("q5k", "bq5k", "dq5k", "16");
-static const char metal_mm_tc_iq4nl_source[] =
-        GEIST_METAL_MM_TC_KERNEL("iq4nl", "biq4nl", "dqiq4nl", "2");
-static const char metal_mm_tc_iq4xs_source[] =
-        GEIST_METAL_MM_TC_KERNEL("iq4xs", "biq4xs", "dqiq4xs", "16");
-static const char metal_mm_tc_q3k_source[] = GEIST_METAL_MM_TC_KERNEL("q3k", "bq3k", "dq3k", "16");
-static const char metal_mm_tc_iq3s_source[] =
-        GEIST_METAL_MM_TC_KERNEL("iq3s", "biq3s", "dqiq3s", "16");
-static const char metal_mm_tc_pq2_source[] = GEIST_METAL_MM_TC_KERNEL("pq2", "bpq2", "dqpq2", "8");
+GEIST_METAL_MM_TC_SOURCES(q40, "q40", "bq40", "dq40", "2");
+GEIST_METAL_MM_TC_SOURCES(q80, "q80", "bq80", "dq80", "2");
+GEIST_METAL_MM_TC_SOURCES(q41, "q41", "bq41", "dq41", "2");
+GEIST_METAL_MM_TC_SOURCES(q5k, "q5k", "bq5k", "dq5k", "16");
+GEIST_METAL_MM_TC_SOURCES(iq4nl, "iq4nl", "biq4nl", "dqiq4nl", "2");
+GEIST_METAL_MM_TC_SOURCES(iq4xs, "iq4xs", "biq4xs", "dqiq4xs", "16");
+GEIST_METAL_MM_TC_SOURCES(q3k, "q3k", "bq3k", "dq3k", "16");
+GEIST_METAL_MM_TC_SOURCES(iq3s, "iq3s", "biq3s", "dqiq3s", "16");
+GEIST_METAL_MM_TC_SOURCES(pq2, "pq2", "bpq2", "dqpq2", "8");
 
 /* Tensor-API prefill flash attention (#314): llama.cpp's
  * kernel_flash_attn_ext_tensor on geist's flash parameters and cache

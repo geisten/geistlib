@@ -129,6 +129,32 @@ back to its simdgroup kernels. `GEIST_METAL_TENSOR=0` disables the tensor
 path; `=1` requests it on older devices too, where it may be slower.
 Single-token decode keeps the specialized quantized matvec kernels.
 
+The GEMM comes as two kernels, of which a backend compiles one. Where the
+GPU has matrix units, a simdgroup multiplies 16 x 32 x 16 fragments whose
+operands and result it holds in registers, 32 rows x 32 outputs each, as
+mlx's quantized GEMM is tiled (#590). The other one, a single cooperative
+`matmul2d` of eight simdgroups over tensors in memory (#314), is what
+`GEIST_METAL_TENSOR=1` runs on a GPU without matrix units, where it is the
+faster of the two. `GEIST_METAL_TC_COOP=1` or `=0` at backend creation picks
+the cooperative or the fragment kernel on any GPU. Both compute the same
+output bit for bit; `test_backend_metal_parity_unit` compares them on every
+Metal device. The fragment kernel loads its operands as vectors where the
+device lays a thread's elements out in runs of four along K, which a
+one-simdgroup kernel checks when the unit is first compiled. The matrix
+units do; where a device does not, the unit is compiled a second time, as
+the cooperative kernels, or with element-wise loads if
+`GEIST_METAL_TC_COOP=0` asked for fragments (the ALUs' `matmul2d`). Numbers and what else was tried:
+[`METAL_PREFILL_GEMM_M6_2026-11-24.md`](../benchmark/results/METAL_PREFILL_GEMM_M6_2026-11-24.md).
+
+With `relaxed_precision`, which both kernels set, as mlx's do (without it
+the M6 takes three times as long per GEMM), the matrix units
+take FP32 activations as FP16 truncated toward zero: the tensor path's
+difference to the scalar backend on one GEMM is that of half weights and
+truncated half activations (4.3e-4 of the largest output on a 1024-wide
+Q8_0 GEMM, against 2.7e-4 with activations rounded to half as the
+simdgroup kernels stage them, and 1.9e-4 with FP32 activations on the
+ALUs). The same document has the measurement.
+
 PQ2_0 tensor prefill reads FP32 activations directly and keeps weights in
 their packed format, dequantizing tiles to FP16 in threadgroup memory. It
 does not allocate the simdgroup path's full FP16 activation scratch for

@@ -212,6 +212,7 @@ int main(int argc, char **argv) {
     static const struct shape shapes[] = {
             {"bonsai", 16, 48, 128, 128, 48},
             {"q35-4b", 16, 32, 128, 128, 24},
+            {"q35-08b", 16, 16, 128, 128, 18},
     };
     size_t ms[16] = {64, 320, 512};
     size_t n_m    = 3;

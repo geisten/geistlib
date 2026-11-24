@@ -141,9 +141,14 @@ static void metal_encode_mv_m8(struct metal_state            *st,
                             (struct metal_size) {METAL_Q4K_N4_THREADS, 1, 1});
 }
 
-/* The tensor-API GEMM (#314, metal_mm_tc_*) on pipe: 64 outputs x 128
- * rows per threadgroup of 256 threads, bounds by the kernel's tensor
- * extents, so any rows >= 2 shape. */
+/* The tensor-API GEMM (#314, #590, metal_mm_tc_*) on pipe: 64 outputs x
+ * metal_mm_tc_rows rows per threadgroup; the kernel bounds every edge, so
+ * any rows >= 2 shape. The grid is (row tiles, output tiles). With the
+ * fragment kernels a call of at most two row tiles (a prefill pass of 256
+ * rows is two) is laid out (output tiles, row tiles) instead, which they
+ * tell by the grid's width not being the row tiles: on the M6 that order
+ * takes 3.5 % less time per GEMM at two row tiles and 60 % more at four
+ * (benchmark/results/METAL_PREFILL_GEMM_M6_2026-11-24.md). */
 static void metal_encode_mm_tc(struct metal_state            *st,
                                struct metal_encoder_h        *enc,
                                struct metal_pipeline_h       *pipe,
@@ -156,11 +161,15 @@ static void metal_encode_mm_tc(struct metal_state            *st,
     metal_msg_send_set_buffer(st, enc, w->buffer->buffer, w->buffer->base_off, 1);
     metal_msg_send_set_buffer(st, enc, y->buffer->buffer, y->buffer->base_off, 2);
     metal_msg_send_set_bytes(st, enc, params, sizeof(*params), 3);
-    metal_msg_send_set_threadgroup_memory(st, enc, 64u * 64u * 2u, 0u);
-    const struct metal_size groups  = {.width  = (params->rows + 127u) / 128u,
-                                       .height = (params->n_out + 63u) / 64u,
-                                       .depth  = 1};
-    const struct metal_size threads = {.width = 256u, .height = 1u, .depth = 1u};
+    metal_msg_send_set_threadgroup_memory(st, enc, metal_mm_tc_shmem(st->tensor_coop), 0u);
+    const uint32_t          tile   = metal_mm_tc_rows(st->tensor_coop);
+    const uint32_t          g_rows = (params->rows + tile - 1u) / tile;
+    const uint32_t          g_outs = (params->n_out + 63u) / 64u;
+    const bool              outs_x = !st->tensor_coop && g_rows <= 2u && g_rows != g_outs;
+    const struct metal_size groups = {
+            .width = outs_x ? g_outs : g_rows, .height = outs_x ? g_rows : g_outs, .depth = 1};
+    const struct metal_size threads = {
+            .width = metal_mm_tc_threads(st->tensor_coop), .height = 1u, .depth = 1u};
     metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_MM_TC, groups);
     metal_msg_send_dispatch(st, enc, groups, threads);
 }

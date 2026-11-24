@@ -304,6 +304,7 @@ static const struct metal_pipeline_row metal_moe_rows[] = {
 };
 
 static const struct metal_pipeline_row metal_tensor_rows[] = {
+        METAL_PIPE(mm_tc, "tc_frag_layout", tc_frag_layout),
         METAL_PIPE(mm_tc, "matmul_q4k_mm_tc", q4k_mm_tc),
         METAL_PIPE(mm_tc, "matmul_q6k_mm_tc", q6k_mm_tc),
         METAL_PIPE(mm_tc, "matmul_q40_mm_tc", q40_mm_tc),
@@ -695,7 +696,9 @@ static const struct metal_library_row metal_moe_libs[] = {
                   metal_moe_mm_glu_tail_source),
 };
 
-/* Compiled with language version 4.0 (metal_tensor_options). */
+/* Compiled with language version 4.0 (metal_tensor_options). A GEMM
+ * format contributes both of its kernels, of which the unit compiles one
+ * (metal_state.tensor_coop, metal_compile_library). */
 static const struct metal_library_row metal_tensor_libs[] = {
         /* metal_qsg_common_source opens with the head the Q4_K/Q6_K units
          * take from metal_qmm_head_source; nullptr is the IQ3_S grid. */
@@ -709,17 +712,40 @@ static const struct metal_library_row metal_tensor_libs[] = {
                   metal_q4k_dq_source,
                   metal_q6k_dq_source,
                   metal_mm_tc_q6k_block_source,
+                  metal_mm_tc_layout_source,
                   metal_mm_tc_q4k_source,
+                  metal_mm_tc_q4k_b_source,
+                  metal_mm_tc_q4k_coop_source,
                   metal_mm_tc_q6k_source,
+                  metal_mm_tc_q6k_b_source,
+                  metal_mm_tc_q6k_coop_source,
                   metal_mm_tc_q40_source,
+                  metal_mm_tc_q40_b_source,
+                  metal_mm_tc_q40_coop_source,
                   metal_mm_tc_q80_source,
+                  metal_mm_tc_q80_b_source,
+                  metal_mm_tc_q80_coop_source,
                   metal_mm_tc_q41_source,
+                  metal_mm_tc_q41_b_source,
+                  metal_mm_tc_q41_coop_source,
                   metal_mm_tc_q5k_source,
+                  metal_mm_tc_q5k_b_source,
+                  metal_mm_tc_q5k_coop_source,
                   metal_mm_tc_iq4nl_source,
+                  metal_mm_tc_iq4nl_b_source,
+                  metal_mm_tc_iq4nl_coop_source,
                   metal_mm_tc_iq4xs_source,
+                  metal_mm_tc_iq4xs_b_source,
+                  metal_mm_tc_iq4xs_coop_source,
                   metal_mm_tc_q3k_source,
+                  metal_mm_tc_q3k_b_source,
+                  metal_mm_tc_q3k_coop_source,
                   metal_mm_tc_iq3s_source,
+                  metal_mm_tc_iq3s_b_source,
+                  metal_mm_tc_iq3s_coop_source,
                   metal_mm_tc_pq2_source,
+                  metal_mm_tc_pq2_b_source,
+                  metal_mm_tc_pq2_coop_source,
                   metal_mv_q50_body,
                   metal_qsg_q50_source,
                   metal_moe_mm_tc_head_source,
@@ -779,7 +805,10 @@ static char *metal_iq3s_grid_source(void) {
     return grid;
 }
 
-/* Concatenates the row's parts and compiles them into its library field. */
+/* Concatenates the row's parts and compiles them into its library field.
+ * The tensor-API GEMM unit is preceded by the define that selects its
+ * cooperative kernels, or the fragments' element-wise loads, when the
+ * backend state says so. */
 [[nodiscard]] static enum geist_status metal_compile_library(struct geist_backend *be,
                                                              void                 *ns_string,
                                                              void                 *options,
@@ -796,7 +825,13 @@ static char *metal_iq3s_grid_source(void) {
             }
         }
     }
-    size_t total = 1u;
+    const char *head = "";
+    if (row->parts[0] == metal_mm_tc_head_source) {
+        head = st->tensor_coop     ? metal_mm_tc_coop_define
+               : st->tensor_scalar ? metal_mm_tc_scalar_define
+                                   : "";
+    }
+    size_t total = 1u + strlen(head);
     for (size_t i = 0; i < row->n_parts; i++) {
         total += strlen(row->parts[i] != nullptr ? row->parts[i] : grid);
     }
@@ -807,7 +842,8 @@ static char *metal_iq3s_grid_source(void) {
                 be, GEIST_E_OOM, "metal: %s shader source alloc failed", row->label);
         return GEIST_E_OOM;
     }
-    size_t off = 0;
+    size_t off = strlen(head);
+    memcpy(buf, head, off);
     for (size_t i = 0; i < row->n_parts; i++) {
         const char  *part = row->parts[i] != nullptr ? row->parts[i] : grid;
         const size_t len  = strlen(part);
@@ -1121,9 +1157,61 @@ static void *metal_tensor_options(struct metal_state *st) {
     return opt;
 }
 
+/* Whether the fragment GEMM's vector loads fit this device: tc_frag_layout
+ * on one simdgroup, on a command buffer of its own; false too when it
+ * could not run. */
+static bool metal_tc_frag_layout_ok(struct metal_state *st) {
+    constexpr int                                   LANES = 32;
+    GEIST_CLEANUP(metal_pool_end) struct metal_pool pool  = metal_standalone_pool(st);
+    struct metal_buffer_h  *flags = metal_msg_send_id_size_uint(st,
+                                                                st->device,
+                                                                "newBufferWithLength:options:",
+                                                                LANES * sizeof(uint32_t),
+                                                                METAL_RESOURCE_STORAGE_MODE_SHARED);
+    struct metal_cmdbuf_h  *cmd   = metal_msg_send_id0(st, st->command_queue, "commandBuffer");
+    struct metal_encoder_h *enc =
+            cmd != nullptr ? metal_msg_send_id0(st, cmd, "computeCommandEncoder") : nullptr;
+    uint32_t *lane = flags != nullptr ? metal_msg_send_id0(st, flags, "contents") : nullptr;
+    bool      ok   = enc != nullptr && lane != nullptr;
+    if (ok) {
+        memset(lane, 0, LANES * sizeof(uint32_t));
+        metal_msg_send_set_pipeline(st, enc, st->tc_frag_layout_pipeline);
+        metal_msg_send_set_buffer(st, enc, flags, 0, 0);
+        metal_msg_send_dispatch(
+                st, enc, (struct metal_size) {1, 1, 1}, (struct metal_size) {LANES, 1, 1});
+    }
+    if (enc != nullptr) {
+        metal_msg_send_void0(st, enc, "endEncoding");
+        metal_msg_send_void0(st, cmd, "commit");
+        metal_msg_send_void0(st, cmd, "waitUntilCompleted");
+    }
+    for (int i = 0; ok && i < LANES; i++) {
+        ok = lane[i] == 1u;
+    }
+    metal_msg_send_void0(st, flags, "release");
+    return ok;
+}
+
+/* Releases the tensor unit and clears its slots. */
+static void metal_drop_tensor(struct metal_state *st) {
+    metal_release_rows(st, METAL_N(metal_tensor_rows), metal_tensor_rows);
+    metal_release_libs(st, METAL_N(metal_tensor_libs), metal_tensor_libs);
+    for (size_t i = 0; i < METAL_N(metal_tensor_rows); i++) {
+        *metal_function_slot(st, metal_tensor_rows[i].function) = nullptr;
+        *metal_pipeline_slot(st, metal_tensor_rows[i].pipeline) = nullptr;
+    }
+    for (size_t i = 0; i < METAL_N(metal_tensor_libs); i++) {
+        *metal_library_slot(st, metal_tensor_libs[i].library) = nullptr;
+    }
+}
+
 /* The tensor-API GEMMs, once, after the QUANT table. Not fatal: if the unit
  * does not compile (the OS lacks the tensor API), tensor_mm drops and the
- * simdgroup GEMMs take every shape. */
+ * simdgroup GEMMs take every shape. The fragment kernels are compiled for
+ * vector loads first; where tc_frag_layout says the device lays their
+ * operands out otherwise, the unit is compiled once more, as the
+ * cooperative kernels or, if GEIST_METAL_TC_COOP=0 asked for fragments,
+ * with element-wise loads. */
 static void metal_ensure_tensor(struct geist_backend *be) {
     struct metal_state *st = be->state;
     if (!st->tensor_mm ||
@@ -1131,26 +1219,42 @@ static void metal_ensure_tensor(struct geist_backend *be) {
                 nullptr) {
         return;
     }
-    void                   *opt = metal_tensor_options(st);
-    const enum geist_status s   = opt == nullptr ? GEIST_E_UNSUPPORTED
-                                                 : metal_ensure_tables(be,
-                                                                       opt,
-                                                                       METAL_N(metal_tensor_libs),
-                                                                       metal_tensor_libs,
-                                                                       METAL_N(metal_tensor_rows),
-                                                                       metal_tensor_rows);
-    metal_msg_send_void0(st, opt, "release");
-    if (s != GEIST_OK) {
-        st->tensor_mm = false;
-        metal_release_rows(st, METAL_N(metal_tensor_rows), metal_tensor_rows);
-        metal_release_libs(st, METAL_N(metal_tensor_libs), metal_tensor_libs);
-        for (size_t i = 0; i < METAL_N(metal_tensor_rows); i++) {
-            *metal_function_slot(st, metal_tensor_rows[i].function) = nullptr;
-            *metal_pipeline_slot(st, metal_tensor_rows[i].pipeline) = nullptr;
+    for (int pass = 0; pass < 2; pass++) {
+        void             *opt = metal_tensor_options(st);
+        enum geist_status s   = opt == nullptr ? GEIST_E_UNSUPPORTED
+                                               : metal_ensure_tables(be,
+                                                                     opt,
+                                                                     METAL_N(metal_tensor_libs),
+                                                                     metal_tensor_libs,
+                                                                     METAL_N(metal_tensor_rows),
+                                                                     metal_tensor_rows);
+        metal_msg_send_void0(st, opt, "release");
+        /* A GEMM kernel whose threadgroup the pipeline cannot hold would be
+         * dropped at every dispatch without an error (#266); the limit
+         * depends on the compiled kernel's registers. */
+        for (size_t i = 0; s == GEIST_OK && i < METAL_N(metal_tensor_rows); i++) {
+            if (strncmp(metal_tensor_rows[i].name, "matmul_", 7) == 0 &&
+                metal_msg_send_ulong0(st,
+                                      *metal_pipeline_slot(st, metal_tensor_rows[i].pipeline),
+                                      "maxTotalThreadsPerThreadgroup") <
+                        metal_mm_tc_threads(st->tensor_coop)) {
+                s = GEIST_E_UNSUPPORTED;
+            }
         }
-        for (size_t i = 0; i < METAL_N(metal_tensor_libs); i++) {
-            *metal_library_slot(st, metal_tensor_libs[i].library) = nullptr;
+        if (s != GEIST_OK) {
+            st->tensor_mm = false;
+            metal_drop_tensor(st);
+            return;
         }
+        if (st->tensor_coop || st->tensor_scalar || metal_tc_frag_layout_ok(st)) {
+            return;
+        }
+        /* Another layout than the vector loads need: element-wise loads
+         * cost the fragment kernel its lead, so the cooperative kernel
+         * takes over unless the fragments were asked for. */
+        st->tensor_scalar = st->tensor_frag_asked;
+        st->tensor_coop   = !st->tensor_frag_asked;
+        metal_drop_tensor(st);
     }
 }
 

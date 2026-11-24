@@ -28,6 +28,9 @@
  * the text's routing (synthetic benchmark prompts route differently).
  * "logits_fnv" is a hash of every scored logits vector's bytes: equal
  * between two builds exactly when they computed identical logits.
+ * GEIST_NLL_DUMP=<file> also writes those vectors (float32, one after the
+ * other), so that the size of a difference can be measured
+ * (tools/probes/logits_diff.py).
  */
 #include "test_helpers.h"
 
@@ -124,7 +127,13 @@ int main(int argc, char **argv) {
     /* GEIST_NLL_PREFILL=1: the context [0, first) in one prefill call, in
      * the session's chunks, so that its K/V rows come from the prefill
      * path (#239); the scored tokens follow one at a time. */
-    size_t      i0 = 0;
+    size_t      i0   = 0;
+    const char *dp   = getenv("GEIST_NLL_DUMP");
+    FILE       *dump = dp != nullptr && dp[0] != '\0' ? fopen(dp, "wb") : nullptr;
+    if (dp != nullptr && dp[0] != '\0' && dump == nullptr) {
+        fprintf(stderr, "cannot write %s\n", dp);
+        return GEIST_TEST_ERROR;
+    }
     const char *pf = getenv("GEIST_NLL_PREFILL");
     if (first > 1 && pf != nullptr && strcmp(pf, "1") == 0) {
         if (geist_session_prefill_tokens(s, first - 1, ids) != GEIST_OK) {
@@ -154,6 +163,10 @@ int main(int argc, char **argv) {
         const unsigned char *raw = (const unsigned char *) lg;
         for (size_t v = 0; v < nl * sizeof *lg; v++)
             logits_fnv = (logits_fnv ^ raw[v]) * 0x100000001b3u;
+        if (dump != nullptr && fwrite(lg, sizeof *lg, nl, dump) != nl) {
+            fprintf(stderr, "write to %s failed\n", dp);
+            return GEIST_TEST_ERROR;
+        }
         double mx = lg[0];
         for (size_t v = 1; v < nl; v++)
             mx = lg[v] > mx ? lg[v] : mx;
@@ -171,6 +184,10 @@ int main(int argc, char **argv) {
 #undef NLL_MS
     }
     clock_gettime(CLOCK_MONOTONIC, &t1);
+    if (dump != nullptr && fclose(dump) != 0) {
+        fprintf(stderr, "write to %s failed\n", dp);
+        return GEIST_TEST_ERROR;
+    }
     if (n > 1)
         fprintf(stderr,
                 "bench_nll: per token ms: prefill %.3f, peek_logits %.3f, softmax %.3f\n",

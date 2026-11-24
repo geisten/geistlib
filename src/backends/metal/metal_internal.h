@@ -368,6 +368,8 @@ struct metal_state {
     struct metal_pipeline_h *q6k_mm32_pipeline;
     /* Tensor-API GEMMs (#314, metal_mm_tc_*): built only when tensor_mm. */
     struct metal_library_h  *mm_tc_library;
+    struct metal_function_h *tc_frag_layout_function;
+    struct metal_pipeline_h *tc_frag_layout_pipeline;
     struct metal_function_h *q4k_mm_tc_function;
     struct metal_pipeline_h *q4k_mm_tc_pipeline;
     struct metal_function_h *q6k_mm_tc_function;
@@ -809,7 +811,21 @@ struct metal_state {
      * (Apple family 10+: M5, M6, A19), or GEIST_METAL_TENSOR=1 forces it;
      * GEIST_METAL_TENSOR=0 keeps the simdgroup GEMMs. Cleared when the
      * tensor unit does not compile (an OS without the Metal 4 tensor API). */
-    bool                      tensor_mm;
+    bool tensor_mm;
+    /* Which tensor-API GEMM the unit compiles (#590): false, the kernels
+     * of 16 x 32 x 16 fragments per simdgroup; true, #314's cooperative
+     * matmul2d of eight simdgroups. Fragments where the GPU has matrix
+     * units, cooperative where it has none; GEIST_METAL_TC_COOP=0/1 picks
+     * one. Read once at backend creation. */
+    bool tensor_coop;
+    /* GEIST_METAL_TC_COOP=0 was given: the fragment kernels whatever the
+     * device's layout. */
+    bool tensor_frag_asked;
+    /* The fragments' operands are loaded element by element: set when
+     * tc_frag_layout finds another layout than runs of four along K and
+     * the fragments were asked for (the unit is then compiled a second
+     * time; without the request it is compiled as the cooperative one). */
+    bool                      tensor_scalar;
     struct metal_profile_stat profile[METAL_PROFILE_STAGE_COUNT];
     /* GPU time of committed command buffers (profile only): the sum of the
      * buffers' own times, and their union on the GPU timeline (busy). */
@@ -891,6 +907,25 @@ constexpr int METAL_Q4K_M_TILE                    = 8;
 constexpr int METAL_Q4K_M16_TILE                  = 16;
 constexpr int METAL_ELEM_THREADS                  = 256;
 constexpr int METAL_QNORM_ATTENTION_MAX_HEAD_DIM  = 512;
+/* The tensor-API GEMM's threadgroup (matmul_<T>_mm_tc): METAL_MM_TC_NG
+ * pairs of simdgroups of 32 rows x 64 outputs each (the shader's TC_NG),
+ * and the 64 rows of its weight tile METAL_MM_TC_LD halves apart in
+ * threadgroup memory (TC_LD). The cooperative kernel's is 128 rows on 256
+ * threads, its weight rows 64 apart. */
+constexpr uint32_t METAL_MM_TC_NG = 4;
+constexpr uint32_t METAL_MM_TC_LD = 72;
+
+/* Rows, threads and threadgroup-memory bytes of one tensor-API GEMM
+ * threadgroup. */
+static inline uint32_t metal_mm_tc_rows(bool coop) {
+    return coop ? 128u : 32u * METAL_MM_TC_NG;
+}
+static inline uint32_t metal_mm_tc_threads(bool coop) {
+    return coop ? 256u : 64u * METAL_MM_TC_NG;
+}
+static inline uint32_t metal_mm_tc_shmem(bool coop) {
+    return 64u * (coop ? 64u : METAL_MM_TC_LD) * 2u;
+}
 
 /* The dtypes whose linear is metal_quant_linear: one validator
  * (metal_tensor_is_quant_matrix), one host path; only the encoder differs
