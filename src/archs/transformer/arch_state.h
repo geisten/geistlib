@@ -596,6 +596,32 @@ struct transformer_arch_session {
      * extends the cache runs that forward first (settle, arch.c); reset
      * drops it. kv_len does not count the token until it has run. */
     bool advance_deferred;
+    /* Decode ahead (#590, step.c): the forward advance_deferred owes,
+     * committed to the device without waiting, so the device runs it while
+     * the caller looks at the token, and the forward of the next token is
+     * committed behind it before its own token has reached the host (the
+     * device reads it from `ids`). Until it is adopted (settle, arch.c) the
+     * session is what it would be had the forward not started: the forward
+     * writes KV row kv_len, which no reader looks at, and the logits and
+     * the DeltaNet state into the second buffers below; adopting swaps
+     * them in, dropping it (reset, a batched decode) only waits. */
+    struct transformer_ahead {
+        bool     on;       /* this session may; cleared for good on a failure */
+        bool     inflight; /* a forward is committed and not adopted */
+        bool     encoding; /* one is being encoded: the embed, DeltaNet and head hooks */
+        bool     chained;  /* ... and reads its token from ids[slot ^ 1] */
+        unsigned slot;     /* ids slot the argmax writes: of the one in flight,
+                            * or while encoding of the one being encoded */
+        uint64_t ticket;   /* fused->async_wait's, of the one in flight */
+        size_t   at;       /* kv_len the one in flight was committed at */
+        /* Allocated at the first forward ahead. logits is one row; the
+         * session's scratch_logits and it change places at each adopt, and
+         * logits_small says which of the two is the one-row buffer. */
+        struct geist_buffer  *ids;      /* 2 x uint32, host-visible */
+        const uint32_t       *ids_host; /* its mapping, kept while it lives */
+        struct geist_buffer  *logits, *logits_small;
+        struct geist_buffer **dn_conv, **dn_S; /* per layer, as dn_conv_state / dn_S */
+    } ahead;
 
     /* ---- Sampler state.
      * temperature == 0.0 → greedy argmax; top_k>1 / top_p<1 narrow the
@@ -662,6 +688,9 @@ struct transformer_runtime_flags {
     bool dn_seq_prefill;    /* force the sequential DeltaNet prefill path
                              * (GEIST_DN_SEQ_PREFILL=1) — the equivalence
                              * oracle for the chunked formulation */
+    bool decode_ahead;      /* a decode step is committed without waiting where the
+                             * session allows it (#590, transformer_ahead);
+                             * GEIST_DECODE_AHEAD=0: every step waited for */
     bool kv_shared_full;    /* prefill runs the KV-shared layers for every row
                              * (GEIST_KV_SHARED_FULL=1), the oracle and A/B of
                              * the rows it otherwise leaves out (#591) */
@@ -1337,6 +1366,25 @@ transformer_kv_bytes_per_token(size_t *out_bytes, const struct transformer_arch_
 [[nodiscard]] enum geist_status
 transformer_session_apply_opts(struct transformer_arch_session *sess,
                                const struct geist_session_opts *opts);
+
+/* Decode ahead (#590, step.c; struct transformer_ahead). _ok: a forward at
+ * position `pos` may be committed ahead now. _launch commits the forward of
+ * next_token_pending without waiting (chained: behind the one in flight,
+ * its token read on the device) and returns its ticket and slot; on a
+ * failure the session stops decoding ahead and nothing a reader sees has
+ * changed. _adopt makes the in-flight forward the session's, as the
+ * forward run by settle would have; _drop waits for it and forgets it;
+ * _home puts the session's own logits buffer back (no copy when the logits
+ * are not valid). */
+bool transformer_ahead_ok(const struct transformer_arch_session *sess, size_t pos);
+[[nodiscard]] enum geist_status transformer_ahead_launch(struct transformer_arch_session *sess,
+                                                         bool                             chained,
+                                                         uint64_t                        *ticket,
+                                                         unsigned                        *slot);
+[[nodiscard]] enum geist_status transformer_ahead_adopt(struct transformer_arch_session *sess);
+void                            transformer_ahead_drop(struct transformer_arch_session *sess);
+[[nodiscard]] enum geist_status transformer_ahead_home(struct transformer_arch_session *sess);
+void                            transformer_ahead_free(struct transformer_arch_session *sess);
 
 /* Record the tokens about to fill positions [pos, pos + n) in tok_hist (#695);
  * `ids` nullptr records soft tokens. Positions past max_seq_len are not

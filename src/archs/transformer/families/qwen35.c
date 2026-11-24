@@ -233,7 +233,12 @@ static bool populate_layers_qwen35(struct transformer_arch_state *st) {
     const size_t s_n    = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v;
     sess->dn_conv_state = heap_alloc_aligned(st->n_layers * sizeof(*sess->dn_conv_state), 64);
     sess->dn_S          = heap_alloc_aligned(st->n_layers * sizeof(*sess->dn_S), 64);
-    if (sess->dn_conv_state == nullptr || sess->dn_S == nullptr) {
+    /* The second state of a session that decodes ahead (#590): the slots
+     * here, the buffers at its first such step (step.c). */
+    sess->ahead.dn_conv = heap_calloc_array_aligned(struct geist_buffer *, st->n_layers);
+    sess->ahead.dn_S    = heap_calloc_array_aligned(struct geist_buffer *, st->n_layers);
+    if (sess->dn_conv_state == nullptr || sess->dn_S == nullptr || sess->ahead.dn_conv == nullptr ||
+        sess->ahead.dn_S == nullptr) {
         geist_backend_set_error(be, GEIST_E_OOM, "transformer: dn state alloc failed");
         return GEIST_E_OOM;
     }
@@ -431,6 +436,8 @@ static void qwen35_session_free(struct transformer_arch_session *sess) {
     struct geist_backend *be = sess->model->backend;
     free_layer_buffers(be, sess->model->n_layers, &sess->dn_conv_state);
     free_layer_buffers(be, sess->model->n_layers, &sess->dn_S);
+    free_layer_buffers(be, sess->model->n_layers, &sess->ahead.dn_conv);
+    free_layer_buffers(be, sess->model->n_layers, &sess->ahead.dn_S);
     sess->dn_prefill_ws_floats = 0;
     void *host[]               = {
             sess->dn_prefill_ws,

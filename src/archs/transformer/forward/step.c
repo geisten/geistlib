@@ -677,7 +677,20 @@ enum geist_status transformer_embed_rows(struct transformer_arch_session *sess,
          * dispatch where the backend has it (#322; the same per-element
          * math), else one per row. */
         bool done = false;
-        if (n > 1 && fused->embedding_lookup_scaled_rows != nullptr) {
+        if (sess->ahead.encoding && sess->ahead.chained) {
+            /* Decode ahead (#590): the token is the argmax of the forward
+             * in flight, read on the device; ids[0] is a placeholder. */
+            struct geist_tensor t_row = view_1d_at(out, 0, st->d_model);
+            s    = n == 1 ? fused->embedding_lookup_scaled_ids(be,
+                                                               &st->embed_table,
+                                                               sess->ahead.ids,
+                                                               sess->ahead.slot ^ 1u,
+                                                               scale,
+                                                               &t_row)
+                          : GEIST_E_INTERNAL;
+            done = true;
+        }
+        if (!done && n > 1 && fused->embedding_lookup_scaled_rows != nullptr) {
             struct geist_tensor t_rows = view_2d(out, (int64_t) n, st->d_model);
             done                       = fused->embedding_lookup_scaled_rows(
                                                  be, n, &st->embed_table, ids, scale, &t_rows) == GEIST_OK;
@@ -822,11 +835,270 @@ enum geist_status transformer_decode_step(struct transformer_arch_session *sess,
     return s;
 }
 
+/* ---- Decode ahead (#590): struct transformer_ahead, arch_state.h -------- */
+
+/* The second DeltaNet state this may take: past it the gain (the device's
+ * idle time between two steps, a fraction of a millisecond) is far below
+ * a percent of a step and not worth the memory. */
+constexpr size_t TRANSFORMER_AHEAD_STATE_MAX = (size_t) 64 << 20;
+
+static bool
+ahead_dn_geometry(const struct transformer_arch_session *sess, size_t *conv_n, size_t *s_n) {
+    const struct transformer_arch_state *st        = sess->model;
+    const size_t                         key_dim   = st->config.dn_n_k_heads * st->config.dn_head_k;
+    const size_t                         value_dim = st->config.dn_n_v_heads * st->config.dn_head_v;
+    *conv_n = (st->config.dn_conv_kernel - 1) * (2 * key_dim + value_dim) * sizeof(float);
+    *s_n    = st->config.dn_n_v_heads * st->config.dn_head_k * st->config.dn_head_v * sizeof(float);
+    size_t total = 0;
+    for (size_t li = 0; sess->dn_S != nullptr && li < st->n_layers; li++) {
+        total += sess->dn_S[li] != nullptr ? *conv_n + *s_n : 0;
+    }
+    return total <= TRANSFORMER_AHEAD_STATE_MAX;
+}
+
+/* What does not change while the session lives: a backend with the four
+ * slots, and a step that stays on the device from the embedding to the
+ * argmax and writes nothing but dense KV rows, the logits and DeltaNet
+ * state. Everything else keeps today's path: per-layer embeddings and
+ * untied tables (looked up on the host), mixtures of experts (a flag read
+ * after the step, #201), quantized and KIVI caches (host loops and
+ * counters), split, offloaded and MTP models, the spec head, embeddings. */
+static bool ahead_session_ok(const struct transformer_arch_session *sess) {
+    const struct transformer_arch_state *st    = sess->model;
+    const struct geist_backend_vtbl     *v     = st->backend->desc->vtbl;
+    const struct geist_backend_fused    *fused = geist_backend_fused_tbl(st->backend);
+    size_t                               conv_n, s_n;
+    return st->runtime_flags.decode_ahead && fused != nullptr &&
+           fused->region_end_async != nullptr && fused->async_wait != nullptr &&
+           fused->argmax_f32_ids != nullptr && fused->embedding_lookup_scaled_ids != nullptr &&
+           v->parallel_region_begin != nullptr && v->buffer_copy != nullptr &&
+           st->model_fusions.argmax && st->model_fusions.embed_lookup_scaled &&
+           st->model_fusions.backend_buffer_copy && !st->config.has_ple &&
+           st->config.moe_n_experts == 0 && !geist_pooling_is_embedding(st->config.pooling) &&
+           st->spec_state != 1 && st->offload == nullptr && st->moe_cpu == nullptr &&
+           st->layer_lo == 0 && sess->split_sess == nullptr && sess->twin_sess == nullptr &&
+           !sess->kv_int8_enabled && !sess->kv_kivi_enabled && sess->kv_sim_qbits == 0 &&
+           sess->dn_fresh == nullptr && sess->logits_host == nullptr &&
+           sess->scratch_logits != nullptr && ahead_dn_geometry(sess, &conv_n, &s_n);
+}
+
+bool transformer_ahead_ok(const struct transformer_arch_session *sess, size_t pos) {
+    return sess->ahead.on && sess->temperature == 0.0f &&
+           !geist_sampler_penalties_active(&sess->pen) && !sess->mtp_enabled &&
+           !sess->dn_txn_active && sess->logits_valid && pos < sess->max_seq_len &&
+           ahead_session_ok(sess);
+}
+
+/* The second buffers, at the first forward ahead. */
+[[nodiscard]] static enum geist_status ahead_alloc(struct transformer_arch_session *sess) {
+    struct transformer_ahead            *a  = &sess->ahead;
+    const struct transformer_arch_state *st = sess->model;
+    struct geist_backend                *be = st->backend;
+    const struct geist_backend_vtbl     *v  = be->desc->vtbl;
+    if (a->ids != nullptr) {
+        return GEIST_OK;
+    }
+    enum geist_status s = v->buffer_create(
+            be, 2 * sizeof(uint32_t), GEIST_BUFFER_SCRATCH, GEIST_MEMORY_HOST_VISIBLE, &a->ids);
+    if (s == GEIST_OK) {
+        /* Mapped once, while nothing of this session is in flight; the
+         * slots' contract (geist_backend.h) keeps the mapping readable. */
+        a->ids_host = (const uint32_t *) v->buffer_map(a->ids);
+        s           = a->ids_host != nullptr ? GEIST_OK : GEIST_E_BACKEND;
+    }
+    if (s == GEIST_OK) {
+        s               = v->buffer_create(be,
+                                           (size_t) st->vocab_size * sizeof(float),
+                                           GEIST_BUFFER_SCRATCH,
+                                           GEIST_MEMORY_HOST_VISIBLE,
+                                           &a->logits);
+        a->logits_small = a->logits;
+    }
+    size_t conv_n, s_n;
+    (void) ahead_dn_geometry(sess, &conv_n, &s_n);
+    if (s == GEIST_OK && sess->dn_S != nullptr) {
+        for (size_t li = 0; s == GEIST_OK && li < st->n_layers; li++) {
+            if (sess->dn_S[li] == nullptr) {
+                continue;
+            }
+            /* As the family allocates the state itself (qwen35.c). */
+            s = v->buffer_create(
+                    be, conv_n, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &a->dn_conv[li]);
+            if (s == GEIST_OK) {
+                s = v->buffer_create(
+                        be, s_n, GEIST_BUFFER_KV_CACHE, GEIST_MEMORY_AUTO, &a->dn_S[li]);
+            }
+        }
+    }
+    return s;
+}
+
+/* The session's logits and DeltaNet state change places with the second
+ * buffers. */
+static void ahead_swap(struct transformer_arch_session *sess) {
+    struct transformer_ahead *a = &sess->ahead;
+    struct geist_buffer      *t = sess->scratch_logits;
+    sess->scratch_logits        = a->logits;
+    a->logits                   = t;
+    for (size_t li = 0; a->dn_S != nullptr && li < sess->model->n_layers; li++) {
+        t                       = sess->dn_S[li];
+        sess->dn_S[li]          = a->dn_S[li];
+        a->dn_S[li]             = t;
+        t                       = sess->dn_conv_state[li];
+        sess->dn_conv_state[li] = a->dn_conv[li];
+        a->dn_conv[li]          = t;
+    }
+}
+
+enum geist_status transformer_ahead_launch(struct transformer_arch_session *sess,
+                                           bool                             chained,
+                                           uint64_t                        *ticket,
+                                           unsigned                        *slot) {
+    struct transformer_ahead         *a     = &sess->ahead;
+    struct transformer_arch_state    *st    = sess->model;
+    struct geist_backend             *be    = st->backend;
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    *ticket                                 = 0;
+    *slot                                   = chained ? a->slot ^ 1u : 0u;
+    enum geist_status s                     = ahead_alloc(sess);
+    if (s != GEIST_OK) {
+        a->on = false;
+        return s;
+    }
+    /* Encoded as a step of the session it will be once the forward in
+     * flight is adopted: one position further, that forward's logits and
+     * state in place. The step reads the session's buffers and writes the
+     * second ones (the hooks under a->encoding in transformer_embed_rows,
+     * the DeltaNet mixer and finalize_logits_row); what it sets in the
+     * session on the way is put back. */
+    const size_t   kv_len     = sess->kv_len;
+    const bool     softcapped = sess->logits_softcapped, sparse = sess->logits_sparse;
+    const unsigned slot_now = a->slot;
+    if (chained) {
+        ahead_swap(sess);
+        sess->kv_len = kv_len + 1;
+    }
+    a->encoding                            = true;
+    a->chained                             = chained;
+    a->slot                                = *slot;
+    const struct transformer_region region = transformer_region_begin(st, GEIST_REGION_DECODE_STEP);
+    s = region.be != 0 ? GEIST_OK : GEIST_E_UNSUPPORTED; /* no region of its own to end */
+    if (s == GEIST_OK) {
+        s = embed_lookup_and_scale(sess, chained ? 0 : sess->next_token_pending, sess->scratch_h_a);
+    }
+    if (s == GEIST_OK) {
+        s = transformer_run_all_layers(
+                sess, sess->kv_len, 1, sess->scratch_h_a, nullptr, sess->scratch_h_b);
+    }
+    geist_token_t none = -1; /* the argmax stays on the device */
+    if (s == GEIST_OK) {
+        s = finalize_logits_one_row(sess, 0, sess->kv_len + 1, &none);
+    }
+    a->encoding             = false;
+    a->slot                 = slot_now;
+    sess->kv_len            = kv_len;
+    sess->logits_softcapped = softcapped;
+    sess->logits_sparse     = sparse;
+    if (chained) {
+        ahead_swap(sess);
+    }
+    if (s == GEIST_OK) {
+        s = fused->region_end_async(be, region.be, ticket);
+    } else if (region.be != 0) {
+        /* What was encoded runs (part of it is committed already) and
+         * writes what no reader sees. */
+        transformer_region_end(st, region);
+    }
+    if (s != GEIST_OK) {
+        a->on = false;
+    }
+    return s;
+}
+
+enum geist_status transformer_ahead_adopt(struct transformer_arch_session *sess) {
+    struct transformer_ahead      *a  = &sess->ahead;
+    struct transformer_arch_state *st = sess->model;
+    a->inflight                       = false;
+    enum geist_status s = geist_backend_fused_tbl(st->backend)->async_wait(st->backend, a->ticket);
+    /* Through the mapping kept since ahead_alloc, not a map now: a map
+     * waits for everything in flight, the forward behind this one too. */
+    const uint32_t tok = s == GEIST_OK ? a->ids_host[a->slot] : UINT32_MAX;
+    if (s == GEIST_OK && tok >= (uint32_t) st->vocab_size) {
+        s = GEIST_E_BACKEND;
+    }
+    if (s != GEIST_OK) {
+        a->on = false; /* the debt stays: settle runs the forward itself */
+        return s;
+    }
+    /* What transformer_decode_step leaves, in its order. */
+    transformer_recurrent_txn_commit(sess);
+    transformer_hist_put(sess, sess->kv_len, 1, &sess->next_token_pending);
+    ahead_swap(sess);
+    sess->logits_softcapped = false;
+    sess->logits_sparse     = false;
+    sess->kv_len += 1;
+    sess->next_token_pending = (geist_token_t) tok;
+    sess->logits_valid       = true;
+    sess->advance_deferred   = false;
+    return GEIST_OK;
+}
+
+void transformer_ahead_drop(struct transformer_arch_session *sess) {
+    struct transformer_ahead *a = &sess->ahead;
+    if (!a->inflight) {
+        return;
+    }
+    a->inflight              = false;
+    struct geist_backend *be = sess->model->backend;
+    /* Its buffers are free again once it has run; its status is no one's. */
+    (void) geist_backend_fused_tbl(be)->async_wait(be, a->ticket);
+}
+
+enum geist_status transformer_ahead_home(struct transformer_arch_session *sess) {
+    struct transformer_ahead *a = &sess->ahead;
+    if (a->logits_small == nullptr || sess->scratch_logits != a->logits_small) {
+        return GEIST_OK;
+    }
+    enum geist_status s = GEIST_OK;
+    if (sess->logits_valid) {
+        s = sess->model->backend->desc->vtbl->buffer_copy(
+                a->logits, 0, a->logits_small, 0, (size_t) sess->model->vocab_size * sizeof(float));
+    }
+    struct geist_buffer *t = sess->scratch_logits;
+    sess->scratch_logits   = a->logits;
+    a->logits              = t;
+    return s;
+}
+
+void transformer_ahead_free(struct transformer_arch_session *sess) {
+    struct transformer_ahead *a = &sess->ahead;
+    if (sess->model == nullptr) {
+        return;
+    }
+    struct geist_backend *be = sess->model->backend;
+    transformer_ahead_drop(sess);
+    sess->logits_valid = false;
+    (void) transformer_ahead_home(sess);
+    if (a->ids_host != nullptr) {
+        be->desc->vtbl->buffer_unmap(a->ids);
+        a->ids_host = nullptr;
+    }
+    transformer_buffer_release(be, &a->ids);
+    transformer_buffer_release(be, &a->logits_small);
+    a->logits = nullptr;
+    /* The second DeltaNet state goes with the family's (qwen35.c). */
+    a->on = false;
+}
+
 void transformer_session_reset(struct transformer_arch_session *sess) {
     if (sess == nullptr) {
         return;
     }
     transformer_recurrent_txn_commit(sess);
+    /* A forward committed ahead (#590) is dropped with the debt it paid. */
+    transformer_ahead_drop(sess);
+    sess->logits_valid = false; /* nothing for _home to copy */
+    (void) transformer_ahead_home(sess);
     /* Truncate to pinned prefix length (0 if no prefix has been pinned).
      * The KV state up to prefix_length stays valid in the cache buffers;
      * future prefill/decode appends start at kv_len. */
