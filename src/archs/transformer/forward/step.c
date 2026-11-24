@@ -680,7 +680,7 @@ enum geist_status transformer_embed_rows(struct transformer_arch_session *sess,
         if (sess->ahead.encoding && sess->ahead.chained) {
             /* Decode ahead (#590): the token is the argmax of the forward
              * in flight, read on the device; ids[0] is a placeholder. */
-            struct geist_tensor t_row = view_1d_at(out, 0, st->d_model);
+            struct geist_tensor t_row = view_1d_at(out, 0, (int64_t) st->d_model);
             s    = n == 1 ? fused->embedding_lookup_scaled_ids(be,
                                                                &st->embed_table,
                                                                sess->ahead.ids,

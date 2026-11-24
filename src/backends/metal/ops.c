@@ -4685,7 +4685,7 @@ metal_deltanet_mix(struct geist_backend *be, const struct geist_deltanet_mix_arg
         metal_msg_send_dispatch(st, enc, gk, tk);
         metal_msg_send_set_pipeline(st, enc, st->dn_dec_v_o_pipeline);
         const struct metal_size gv = {args->n_v_heads, 1, 1};
-        const struct metal_size tv = {4u * (uint32_t) args->head_v, 1, 1};
+        const struct metal_size tv = {4u * args->head_v, 1, 1};
         metal_profile_add_dispatch(st, METAL_PROFILE_DISPATCH_DELTANET_DECODE, gv);
         metal_msg_send_dispatch(st, enc, gv, tv);
     } else if (args->seq <= METAL_DN_DECODE_ROWS && st->dn_dec_v_pipeline != nullptr &&
