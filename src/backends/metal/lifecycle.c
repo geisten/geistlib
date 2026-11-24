@@ -32,6 +32,7 @@ static void metal_destroy_state(struct geist_backend *be, struct metal_state *st
             metal_msg_send_void0(st, st->sequence_compute_encoder, "endEncoding");
         }
         metal_release_sequence_objects(st);
+        metal_async_join(st); /* releases what a session left in flight */
         metal_release_pipeline_tables(st);
         metal_msg_send_void0(st, st->argmax_result_buffer, "release");
         metal_msg_send_void0(st, st->argmax_part_buffer, "release");
@@ -293,7 +294,7 @@ void metal_parallel_region_end(struct geist_backend *be, int token) {
     if (!metal_seq_mine(st)) {
         return;
     }
-    (void) metal_command_sequence_end(be, st->sequence_token, true);
+    (void) metal_command_sequence_end(be, st->sequence_token, true, nullptr);
     metal_seq_ref_clear(st);
     pthread_mutex_unlock(&st->seq_lock);
 }

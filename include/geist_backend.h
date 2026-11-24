@@ -421,6 +421,14 @@ struct geist_deltanet_mix_args {
     struct geist_tensor *row_conv_state;
     struct geist_tensor *row_delta_state;
     bool                *rows_written;
+    /* Optional (#590, a decode step the session may take back), both or
+     * neither, seq 1, set only for a backend with fused->region_end_async:
+     * views of the state's shape that receive the state after the row,
+     * while conv_state and delta_state are read and left as they are. The
+     * values are those of the in-place update. A backend that cannot
+     * returns GEIST_E_UNSUPPORTED with every state unchanged. */
+    struct geist_tensor *conv_state_out;
+    struct geist_tensor *delta_state_out;
 };
 
 /* Arguments for fused->attention_kv_int8 and attention_kv_int4 (the int4
@@ -797,6 +805,48 @@ struct geist_backend_fused {
     enum geist_status (*argmax_f32)(struct geist_backend      *be,
                                     const struct geist_tensor *logits,
                                     int32_t                   *out_index);
+
+    /* A decode step that is not waited for (#590). The four slots come
+     * together or not at all; the consumer is the transformer's decode
+     * step, which commits the forward of the token it has just returned and
+     * the next one behind it while that runs, the next input token being
+     * the argmax the device has not handed to the host yet.
+     *
+     * argmax_f32_ids: argmax_f32 over the row, the index written as a
+     * uint32 to slot `slot` of `ids` (a host-visible buffer of uint32)
+     * inside the open region, without the flush and the read. The caller
+     * maps `ids` once and keeps the mapping: a slot is read through it
+     * after async_wait of the region that wrote it, because a map at that
+     * point would wait for the regions submitted since as well.
+     * embedding_lookup_scaled_ids: embedding_lookup_scaled of the token id
+     * in that slot, read on the device when the kernel runs; the same
+     * values as embedding_lookup_scaled of that id. Both return
+     * GEIST_E_UNSUPPORTED outside a region. */
+    enum geist_status (*argmax_f32_ids)(struct geist_backend      *be,
+                                        const struct geist_tensor *logits,
+                                        struct geist_buffer       *ids,
+                                        size_t                     slot);
+    enum geist_status (*embedding_lookup_scaled_ids)(struct geist_backend      *be,
+                                                     const struct geist_tensor *embed_table,
+                                                     struct geist_buffer       *ids,
+                                                     size_t                     slot,
+                                                     float                      scale,
+                                                     struct geist_tensor       *out);
+
+    /* region_end_async: parallel_region_end for a region opened with
+     * parallel_region_begin (token as there, not 0), but the work is
+     * submitted and not waited for. *out_ticket names it for async_wait;
+     * 0 means the backend waited after all (nothing is in flight). Work
+     * submitted later runs after it. The backend waits for everything in
+     * flight before any host access to buffer contents (map, upload,
+     * download), so only the session state the in-flight work writes needs
+     * the caller's care.
+     * async_wait: returns once the ticket's work has run, with its status;
+     * each ticket is waited for exactly once, 0 is a no-op. */
+    enum geist_status (*region_end_async)(struct geist_backend *be,
+                                          int                   token,
+                                          uint64_t             *out_ticket);
+    enum geist_status (*async_wait)(struct geist_backend *be, uint64_t ticket);
 
     /* BitNet activation fake-quant, in place: per row, scale = 127 / max(
      * absmax, 1e-5), q = clamp(round-half-away(x * scale), -128, 127), x =

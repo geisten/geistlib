@@ -2198,7 +2198,7 @@ static const char metal_elem_simd_add_norm_source[] =
 static const char metal_embed_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
-        "struct E{uint n,dtype,bpr,wbo,yo,token;float scale;};\n"
+        "struct E{uint n,dtype,bpr,wbo,yo,token;float scale;uint vocab;};\n"
         "static inline float h(device const uchar*w,uint o){ushort "
         "b=ushort(w[o])|(ushort(w[o+1])<<8);return float(as_type<half>(b));}\n"
         "static inline float bf(device const uchar*w,uint o){return "
@@ -2262,6 +2262,20 @@ static const char metal_embed_rows_source[] =
         "dtype==7u?q80(w,p,row,gid.x):(p.dtype==9u?q4(w,p,row,gid.x):(p.dtype==10u?q5(w,p,row,"
         "gid.x):(p.dtype==22u?pq2(w,p,row,gid.x):q6(w,p,row,gid.x))))))));"
         "y[p.yo+gid.y*p.n+gid.x]=v*p.scale;}\n";
+
+/* One row whose id the kernel reads from a buffer another kernel wrote
+ * (argmax_f32_merge, #590), not from the host: the single-token kernel's
+ * per-element math. An id outside the table reads row 0. */
+static const char metal_embed_ids_source[] =
+        "kernel void embed_lookup_scaled_ids(device const uchar*w[[buffer(0)]],device "
+        "float*y[[buffer(1)]],constant E&p[[buffer(2)]],device const uint*ids[[buffer(3)]],uint "
+        "gid[[thread_position_in_grid]]){if(gid>=p.n)return;uint row=ids[0];if(row>=p.vocab)"
+        "row=0u;float "
+        "v=p.dtype==0u?f32(w,p.wbo+(row*p.n+gid)*4u):(p.dtype==1u?h(w,p.wbo+(row*p.n+gid)*"
+        "2u):(p.dtype==2u?bf(w,p.wbo+(row*p.n+gid)*2u):(p.dtype==5u?q40(w,p,row,gid):(p."
+        "dtype==7u?q80(w,p,row,gid):(p.dtype==9u?q4(w,p,row,gid):(p.dtype==10u?q5(w,p,row,"
+        "gid):(p.dtype==22u?pq2(w,p,row,gid):q6(w,p,row,gid))))))));"
+        "y[p.yo+gid]=v*p.scale;}\n";
 
 /* matmul_<NAME> (one row per threadgroup) and matmul_<NAME>_sg (8x8
  * simdgroup tiles), instantiated for F32 weights and for F16 / BF16 ones
@@ -3609,14 +3623,22 @@ static const char metal_deltanet_source[] =
  * (ceil(dk/4) rows each, the last one short); conv +
  * silu of v, then S is read once for mem, updated and read for out with the
  * dk rows split four ways and the partial sums reduced in threadgroup
- * memory, then the gated RMS norm. Same math as deltanet_mix. */
+ * memory, then the gated RMS norm. Same math as deltanet_mix.
+ *
+ * Each is a macro body instantiated twice (#590): dn_dec_qk / dn_dec_v
+ * update the state in place, as before (their text after preprocessing is
+ * the old one); dn_dec_qk_o / dn_dec_v_o read cs and S and write the new
+ * state to co and So, so a step can be taken back by not using them. The
+ * conv roll reads row r + 1 and writes row r, and S is read before it is
+ * written, per element: the values are the in-place kernels'. */
 static const char metal_dn_decode_source[] =
-        "kernel void dn_dec_qk(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "#define DN_DEC_QK(NAME,CO,XP) "
+        "kernel void NAME(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
         "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
         "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
         "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
         "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
-        "device float*rcs[[buffer(12)]],"
+        "device float*rcs[[buffer(12)]] XP,"
         "uint hk[[threadgroup_position_in_grid]],uint j[[thread_index_in_threadgroup]]){"
         "threadgroup float red[256];uint keyd=p.nkh*p.dk,vd=p.nvh*p.dv,cd=2u*keyd+vd;"
         "if(hk>=p.nkh)return;float qs=rsqrt(float(p.dk));uint qb=p.qo,kb=qb+keyd;"
@@ -3625,10 +3647,10 @@ static const char metal_dn_decode_source[] =
         "for(uint r=0;r<p.K;r++){float qx=r+1u<p.K?cs[p.cso+r*cd+cq]:qr;"
         "float kx=r+1u<p.K?cs[p.cso+r*cd+ck]:kr;qc+=cw[p.cwo+cq*p.K+r]*qx;"
         "kc+=cw[p.cwo+ck*p.K+r]*kx;}for(uint r=0;r+2u<p.K;r++){"
-        "cs[p.cso+r*cd+cq]=cs[p.cso+(r+1u)*cd+cq];cs[p.cso+r*cd+ck]=cs[p.cso+(r+1u)*cd+ck];}"
-        "if(p.K>=2u){cs[p.cso+(p.K-2u)*cd+cq]=qr;cs[p.cso+(p.K-2u)*cd+ck]=kr;}"
+        "CO[p.cso+r*cd+cq]=cs[p.cso+(r+1u)*cd+cq];CO[p.cso+r*cd+ck]=cs[p.cso+(r+1u)*cd+ck];}"
+        "if(p.K>=2u){CO[p.cso+(p.K-2u)*cd+cq]=qr;CO[p.cso+(p.K-2u)*cd+ck]=kr;}"
         "if(p.rt<p.rslots){for(uint r=0;r+1u<p.K;r++){uint o=p.rcso+(p.rt*(p.K-1u)+r)*cd;"
-        "rcs[o+cq]=cs[p.cso+r*cd+cq];rcs[o+ck]=cs[p.cso+r*cd+ck];}}"
+        "rcs[o+cq]=CO[p.cso+r*cd+cq];rcs[o+ck]=CO[p.cso+r*cd+ck];}}"
         "qc=silu1(qc);kc=silu1(kc);}"
         "red[j]=j<p.dk?qc*qc:0.0f;threadgroup_barrier(mem_flags::mem_threadgroup);"
         "for(uint s=128u;s>0u;s>>=1u){if(j<s)red[j]+=red[j+s];"
@@ -3638,11 +3660,17 @@ static const char metal_dn_decode_source[] =
         "for(uint s=128u;s>0u;s>>=1u){if(j<s)red[j]+=red[j+s];"
         "threadgroup_barrier(mem_flags::mem_threadgroup);}float ki=rsqrt(red[0]+p.eps);"
         "if(j<p.dk){qkv[qb+hk*p.dk+j]=qc*qi*qs;qkv[kb+hk*p.dk+j]=kc*ki;}}\n"
-        "kernel void dn_dec_v(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
+        "DN_DEC_QK(dn_dec_qk,cs,)\n"
+        "#define DN_XO ,device float*co[[buffer(13)]],device float*So[[buffer(14)]]\n"
+        "DN_DEC_QK(dn_dec_qk_o,co,DN_XO)\n";
+/* (a second array: the 4095-character limit of a string literal) */
+static const char metal_dn_decode_v_source[] =
+        "#define DN_DEC_V(NAME,CO,SO,XP) "
+        "kernel void NAME(device float*qkv[[buffer(0)]],device float*z[[buffer(1)]],"
         "device const float*beta[[buffer(2)]],device const float*alpha[[buffer(3)]],"
         "device const float*cw[[buffer(4)]],device const float*aw[[buffer(5)]],"
         "device const float*dt[[buffer(6)]],device const float*nw[[buffer(7)]],"
-        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]],"
+        "device float*cs[[buffer(8)]],device float*S[[buffer(9)]],constant P&p[[buffer(10)]] XP,"
         "uint h[[threadgroup_position_in_grid]],uint lid[[thread_index_in_threadgroup]]){"
         "threadgroup float tq[256];threadgroup float tk[256];threadgroup float vv[256];"
         "threadgroup float part[1024];"
@@ -3652,8 +3680,8 @@ static const char metal_dn_decode_source[] =
         "if(g==0u){uint cv=2u*keyd+h*p.dv+j;float vr=qkv[qb+cv],vc=0.0f;"
         "for(uint r=0;r<p.K;r++){float vx=r+1u<p.K?cs[p.cso+r*cd+cv]:vr;"
         "vc+=cw[p.cwo+cv*p.K+r]*vx;}for(uint r=0;r+2u<p.K;r++)"
-        "cs[p.cso+r*cd+cv]=cs[p.cso+(r+1u)*cd+cv];"
-        "if(p.K>=2u)cs[p.cso+(p.K-2u)*cd+cv]=vr;vc=silu1(vc);qkv[qb+cv]=vc;vv[j]=vc;}"
+        "CO[p.cso+r*cd+cv]=cs[p.cso+(r+1u)*cd+cv];"
+        "if(p.K>=2u)CO[p.cso+(p.K-2u)*cd+cv]=vr;vc=silu1(vc);qkv[qb+cv]=vc;vv[j]=vc;}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "float be=1.0f/(1.0f+exp(-beta[p.bo+h]));"
         "float sp=log(1.0f+exp(alpha[p.ao+h]+dt[p.dto+h]));float decay=exp(aw[p.awo+h]*sp);"
@@ -3663,7 +3691,7 @@ static const char metal_dn_decode_source[] =
         "float mem=(part[j]+part[p.dv+j]+part[2u*p.dv+j]+part[3u*p.dv+j])*decay;"
         "float d=(vv[j]-mem)*be;float op=0.0f;"
         "for(uint i=i0;i<i1;i++){uint si=sb+i*p.dv+j;float sv=S[si]*decay+tk[i]*d;"
-        "S[si]=sv;op+=sv*tq[i];}"
+        "SO[si]=sv;op+=sv*tq[i];}"
         "threadgroup_barrier(mem_flags::mem_threadgroup);part[g*p.dv+j]=op;"
         "threadgroup_barrier(mem_flags::mem_threadgroup);"
         "float out=part[j]+part[p.dv+j]+part[2u*p.dv+j]+part[3u*p.dv+j];"
@@ -3671,7 +3699,9 @@ static const char metal_dn_decode_source[] =
         "if(g==0u)part[j]=out*out;threadgroup_barrier(mem_flags::mem_threadgroup);"
         "if(g==0u){float ss=0.0f;for(uint c=0u;c<p.dv;c++)ss+=part[c];"
         "float inv=rsqrt(ss/float(p.dv)+p.eps);float gate=z[p.zo+h*p.dv+j];"
-        "z[p.zo+h*p.dv+j]=out*inv*nw[p.no+j]*silu1(gate);}}\n";
+        "z[p.zo+h*p.dv+j]=out*inv*nw[p.no+j]*silu1(gate);}}\n"
+        "DN_DEC_V(dn_dec_v,cs,S,)\n"
+        "DN_DEC_V(dn_dec_v_o,co,So,DN_XO)\n";
 
 /* dn_dec_qk_b / dn_dec_v_b (#26, batched decode): dn_dec_qk and dn_dec_v for
  * n independent sessions in one dispatch each. Threadgroup row y is session

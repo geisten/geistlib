@@ -144,6 +144,9 @@ struct metal_buf_reg_entry {
 constexpr int METAL_FLASH_SLOTS = 18;
 /* Metal's buffer argument table of a compute encoder has 31 entries. */
 constexpr int METAL_BUFFER_ARGS = 31;
+/* Sequences in flight at once (metal_state.async): one per session that
+ * decodes ahead; a ninth ends its sequence with a wait. */
+constexpr int METAL_ASYNC_MAX = 8;
 /* Open-addressed pipeline -> buffer access table (power of two; the
  * backend builds a few hundred pipelines; entries are never removed, and a
  * pipeline that finds no slot within the probe bound counts as writing all
@@ -461,6 +464,10 @@ struct metal_state {
     struct metal_pipeline_h *dn_dec_qk_pipeline;
     struct metal_function_h *dn_dec_v_function;
     struct metal_pipeline_h *dn_dec_v_pipeline;
+    struct metal_function_h *dn_dec_qk_o_function;
+    struct metal_pipeline_h *dn_dec_qk_o_pipeline;
+    struct metal_function_h *dn_dec_v_o_function;
+    struct metal_pipeline_h *dn_dec_v_o_pipeline;
     struct metal_function_h *dn_dec_v_rows_function;
     struct metal_pipeline_h *dn_dec_v_rows_pipeline;
     struct metal_function_h *dn_dec_v_cs_function; /* #469: column-split rows */
@@ -509,6 +516,8 @@ struct metal_state {
     struct metal_pipeline_h *embed_lookup_scaled_pipeline;
     struct metal_function_h *embed_lookup_scaled_rows_function;
     struct metal_pipeline_h *embed_lookup_scaled_rows_pipeline;
+    struct metal_function_h *embed_lookup_scaled_ids_function;
+    struct metal_pipeline_h *embed_lookup_scaled_ids_pipeline;
     struct metal_library_h  *f32_library;
     struct metal_function_h *f16w_matmul_function;
     struct metal_pipeline_h *f16w_matmul_pipeline;
@@ -720,8 +729,22 @@ struct metal_state {
      * thread reading its own id back is never wrong (metal_seq_mine). */
     pthread_mutex_t    seq_lock;
     _Atomic(uintptr_t) seq_owner;
-    bool               sequence_has_work;
-    bool               profile_enabled;
+    /* Sequences committed and not waited for (#590, metal_region_end_async):
+     * the last command buffer of each, retained, oldest first. Entries are
+     * added and removed under seq_lock; async_live counts them, so the host
+     * access paths (metal_async_join) test one atomic when there is none.
+     * `done`: waited for, by its owner or by a host access; `failed` is
+     * then its status, kept until the owner asks (metal_async_wait). */
+    struct metal_async {
+        uint64_t               ticket;
+        struct metal_cmdbuf_h *cmd; /* nullptr once done */
+        bool                   failed;
+    } async[METAL_ASYNC_MAX];
+    uint32_t          async_n;
+    uint64_t          async_ticket; /* the last one handed out */
+    _Atomic(uint32_t) async_live;   /* entries with a cmd */
+    bool              sequence_has_work;
+    bool              profile_enabled;
     /* Concurrent sequence encoders (#590). A serial compute encoder runs
      * its dispatches one after the other; the sequence's encoder is a
      * concurrent one instead (GEIST_METAL_CONCURRENT=0: serial), and
@@ -1173,6 +1196,7 @@ struct metal_embed_params {
     uint32_t y_offset;
     uint32_t token_id;
     float    scale;
+    uint32_t vocab; /* embed_lookup_scaled_ids: rows of the table */
 };
 
 struct metal_f32_params {
@@ -1445,8 +1469,14 @@ void metal_flush_if_referenced(struct metal_state          *st,
                                                              enum geist_command_sequence_kind kind,
                                                              int *out_token);
 
+[[nodiscard]] enum geist_status metal_command_sequence_end(struct geist_backend   *be,
+                                                           int                     token,
+                                                           bool                    submit,
+                                                           struct metal_cmdbuf_h **detach);
+void                            metal_async_join(struct metal_state *st);
 [[nodiscard]] enum geist_status
-metal_command_sequence_end(struct geist_backend *be, int token, bool submit);
+metal_region_end_async(struct geist_backend *be, int token, uint64_t *out_ticket);
+[[nodiscard]] enum geist_status metal_async_wait(struct geist_backend *be, uint64_t ticket);
 
 #include "metal_shaders.h"
 #include "metal_objc.h"
