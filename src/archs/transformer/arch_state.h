@@ -461,6 +461,7 @@ struct transformer_arch_session {
      * n_cache_rows counts them over the session's life: what the tests read
      * to know the rows were left out, not merely that nothing changed. */
     bool   cache_rows;
+    bool   cache_keep_last; /* with cache_rows: the pass's last row runs every layer */
     size_t n_cache_rows;
     /* geist_session_checkpoint (#192): up to TRANSFORMER_CKPT_SLOTS lengths
      * to which truncate can return, DeltaNet state included (ckpt_conv_buf /
@@ -1023,23 +1024,16 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
 [[nodiscard]] size_t
 transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_position, size_t n);
 
-/* Cache rows (#591, arch_ops.c): the rows of a prefill's next pass, out of
- * the `chunk` its plan gives it, and in *cache_rows whether they stop after
- * layer n_cache_layers - 1. A chunk before the last is one pass of cache
- * rows. The last chunk is one pass through every layer, except on a GPU
- * backend where it can be split without moving a bit: then its first rows
- * are a pass of cache rows and its tail, which starts at a multiple of
- * TRANSFORMER_PREFILL_TAIL_ALIGN rows and has at least
- * TRANSFORMER_PREFILL_TAIL_MIN, runs every layer (prefill_tail_rows says
- * why there and why not on a CPU backend). Always `chunk` and false for a
- * model or session without cache rows. */
-constexpr size_t TRANSFORMER_PREFILL_TAIL_ALIGN = 128;
-constexpr size_t TRANSFORMER_PREFILL_TAIL_MIN   = 64;
-
-[[nodiscard]] size_t transformer_prefill_pass_rows(const struct transformer_arch_session *sess,
-                                                   size_t                                 chunk,
-                                                   bool                                   last,
-                                                   bool *cache_rows);
+/* Cache rows (#591, arch_ops.c): whether the rows of a prefill's chunk stop
+ * after layer n_cache_layers - 1, and in *keep_last whether the chunk's
+ * last row goes on through the KV-shared layers (the last chunk's does: it
+ * is the row a prefill's reader reads). False for a model or session
+ * without cache rows, for a last chunk of one row, and for a last chunk
+ * off Metal, which runs every layer for every row. */
+[[nodiscard]] bool transformer_prefill_cache_rows(const struct transformer_arch_session *sess,
+                                                  size_t                                 chunk,
+                                                  bool                                   last,
+                                                  bool                                  *keep_last);
 
 /* Offload (#78): write seq rows of K and V ([seq, kv_out] floats each,
  * after RoPE, as the layer's attention produces them) for layer layer_idx

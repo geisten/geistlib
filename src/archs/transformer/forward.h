@@ -71,7 +71,8 @@ transformer_check_kv_room(struct transformer_arch_session *sess, size_t n_new) {
  * q_position; advance_kv inside transformer_forward_one_layer is
  * the caller's job, this helper iterates and orchestrates.
  * With sess->cache_rows (#591) the rows run layers [0, n_cache_layers)
- * only and out_h_buf is not written. */
+ * only; with cache_keep_last the last row then runs the rest alone and is
+ * the one row of out_h_buf that is written, at its place. */
 [[nodiscard]] enum geist_status transformer_run_all_layers(struct transformer_arch_session *sess,
                                                            size_t               q_position,
                                                            size_t               seq,

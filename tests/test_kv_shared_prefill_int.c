@@ -6,14 +6,18 @@
  * Gemma 4's last layers are KV-shared: they read an earlier layer's cache
  * and keep nothing per position (E2B 20 of 35, E4B 18 of 42). A prefill reads
  * one row's output, the last one's, so the rows of every chunk before the
- * last run layers [0, n_cache_layers) only, and on a GPU backend the first
- * rows of a last chunk of 192 or more too (transformer_prefill_pass_rows).
- * The oracle is the same model loaded with GEIST_KV_SHARED_FULL=1, which
- * runs every layer for every row as before the change.
+ * last run layers [0, n_cache_layers) only. On Metal with an FP32 or F16
+ * cache the last chunk's rows do too, and its last row goes through the
+ * KV-shared layers alone, as a pass of one row
+ * (transformer_prefill_cache_rows). The oracle is the same model loaded
+ * with GEIST_KV_SHARED_FULL=1, which runs every layer for every row.
  *
  * Both are driven through the same calls; after each, the two sessions must
- * agree bit for bit on the logits, the pending token, the length, the token
- * history and every K/V row of every layer that owns a cache:
+ * agree bit for bit on the pending token, the length, the token history and
+ * every K/V row of every layer that owns a cache, and on the logits: bit
+ * for bit after a decode step and wherever the last chunk is not split,
+ * within KVS_LOGIT_TOL of the largest logit after a prefill whose last row
+ * ran alone (a decode step's kernels round differently from a chunk's):
  *
  *   - one prefill call at lengths around every boundary of the plan (a
  *     last chunk too short to split, the shortest that splits, one chunk,
