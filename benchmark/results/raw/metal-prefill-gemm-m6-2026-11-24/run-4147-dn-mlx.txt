@@ -1,0 +1,6 @@
+mlx-gdn heads=16/16 d=128/128 m=256 0.403 ms/call (min 0.355 max 0.428)
+mlx-gdn heads=16/16 d=128/128 m=512 0.501 ms/call (min 0.444 max 0.614)
+mlx-gdn heads=16/32 d=128/128 m=256 0.373 ms/call (min 0.373 max 0.385)
+mlx-gdn heads=16/32 d=128/128 m=512 0.722 ms/call (min 0.720 max 0.724)
+mlx-gdn heads=16/16 d=128/128 m=256 0.205 ms/call (min 0.204 max 0.205)
+mlx-gdn heads=16/16 d=128/128 m=512 0.392 ms/call (min 0.392 max 0.393)

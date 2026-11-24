@@ -146,8 +146,8 @@ the cooperative kernels, or with element-wise loads if
 `GEIST_METAL_TC_COOP=0` asked for fragments (the ALUs' `matmul2d`). Numbers and what else was tried:
 [`METAL_PREFILL_GEMM_M6_2026-11-24.md`](../benchmark/results/METAL_PREFILL_GEMM_M6_2026-11-24.md).
 
-With `relaxed_precision`, which both kernels and llama.cpp's and mlx's set
-(without it the M6 takes three times as long per GEMM), the matrix units
+With `relaxed_precision`, which both kernels set, as mlx's do (without it
+the M6 takes three times as long per GEMM), the matrix units
 take FP32 activations as FP16 truncated toward zero: the tensor path's
 difference to the scalar backend on one GEMM is that of half weights and
 truncated half activations (4.3e-4 of the largest output on a 1024-wide

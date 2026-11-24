@@ -35,6 +35,13 @@ amount of weight data and generate the same tokens, and Llama 3.2 3B at
   and from 7151 to 7367 tok/s in prefill, with the same logits bit for bit;
   mlx-lm decodes at 160.4. Details under [Levers](#levers).
 
+**Follow-up, 2026-11-24:**
+[`METAL_PREFILL_GEMM_M6_2026-11-24.md`](METAL_PREFILL_GEMM_M6_2026-11-24.md)
+measures the two prefill places named below one kernel at a time. The gap
+is the quantized GEMM on both models; the DeltaNet share given here for
+mlx-lm (4.2 ms, a split of command buffers by dispatch counts) is too low,
+its recurrence kernel alone takes 7.1 ms.
+
 Every geist number in the profile is of the engine as it was before #590's
 changes (`GEIST_METAL_CONCURRENT=0 GEIST_METAL_PIPELINE_FIRST=0`, the same
 command stream as `main`).
