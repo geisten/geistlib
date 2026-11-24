@@ -194,9 +194,13 @@ void metal_destroy(struct geist_backend *be) {
     /* MTLGPUFamilyApple10 = 1010: M5/A19 and later carry matrix units the
      * tensor API reaches (#314). Earlier GPUs run it on the ALUs, no faster
      * than the simdgroup GEMMs (llama.cpp: M2 Ultra -5 %, M4 even). */
-    st->tensor_mm =
-            geist_env_flag("GEIST_METAL_TENSOR",
-                           metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010));
+    const bool matrix_units = metal_msg_send_bool_long(st, st->device, "supportsFamily:", 1010);
+    st->tensor_mm           = geist_env_flag("GEIST_METAL_TENSOR", matrix_units);
+    /* The GEMM of fragments is the faster one on the matrix units (#590);
+     * on the ALUs, where only GEIST_METAL_TENSOR=1 leads, the cooperative
+     * kernel is (M1 Max: by a tenth). */
+    st->tensor_coop       = geist_env_flag("GEIST_METAL_TC_COOP", !matrix_units);
+    st->tensor_frag_asked = !st->tensor_coop && getenv("GEIST_METAL_TC_COOP") != nullptr;
 
     const char *pqmode = getenv("GEIST_METAL_PQ2_MODE");
     if (st->tensor_mm && pqmode != nullptr &&

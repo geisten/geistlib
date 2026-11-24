@@ -432,6 +432,170 @@ static void run_f32_full_mantissa_case(
     geist_backend_destroy(mt);
 }
 
+#ifdef GEIST_BACKEND_METAL
+/* A metal backend created with GEIST_METAL_TENSOR=1 and
+ * GEIST_METAL_TC_COOP=`coop`; the environment is put back. */
+static struct geist_backend *tensor_backend(bool coop) {
+    static const char *const names[2] = {"GEIST_METAL_TENSOR", "GEIST_METAL_TC_COOP"};
+    char                     saved[2][8];
+    bool                     had[2];
+    for (size_t i = 0; i < 2; i++) {
+        const char *old = getenv(names[i]);
+        had[i]          = old != nullptr;
+        snprintf(saved[i], sizeof saved[i], "%s", old != nullptr ? old : "");
+    }
+    setenv(names[0], "1", 1);
+    setenv(names[1], coop ? "1" : "0", 1);
+    struct geist_backend *mt = nullptr;
+    if (geist_backend_create("metal", nullptr, nullptr, &mt) != GEIST_OK) {
+        mt = nullptr;
+    }
+    for (size_t i = 0; i < 2; i++) {
+        if (had[i]) {
+            setenv(names[i], saved[i], 1);
+        } else {
+            unsetenv(names[i]);
+        }
+    }
+    return mt;
+}
+
+/* #590: the tensor-API GEMM of 16 x 32 x 16 fragments (matmul_<T>_mm_tc)
+ * against #314's cooperative matmul2d (GEIST_METAL_TC_COOP=1), on the same
+ * blocks and activations: the outputs must be equal bit for bit, as they
+ * are on the M6's matrix units and on an M1 Max's ALUs. Scales and
+ * activations carry full mantissas, so a kernel that summed in another
+ * order, or dropped or doubled a tile edge, would show. Shapes: ragged rows
+ * (33, 65, 129, 200, 300), n_out off the 64-wide tile (97, 130, 383, 1000),
+ * a last K step of 32 (n_in 96 and 1056), whole tiles, and every grid: one
+ * and two row tiles (outputs along the grid's width), as many row tiles as
+ * output tiles, and three (rows along it). Both backends are created with
+ * GEIST_METAL_TENSOR=1, so the check runs on every Metal device; which
+ * loads the fragment kernel was compiled with there (vectors on the matrix
+ * units, element by element on the ALUs) is printed. */
+static void run_tc_kernels_case(void) {
+    static const struct {
+        const char *name;
+        int         dtype;
+        size_t      d_off[2]; /* fp16 scales of a block; SIZE_MAX = none */
+    } formats[] = {
+            {"Q4_0", GEIST_DTYPE_Q4_0, {0, SIZE_MAX}},
+            {"Q8_0", GEIST_DTYPE_Q8_0, {0, SIZE_MAX}},
+            {"Q4_K", GEIST_DTYPE_Q4_K, {0, 2}},
+            {"Q5_K", GEIST_DTYPE_Q5_K, {0, 2}},
+            {"Q6_K", GEIST_DTYPE_Q6_K, {208, SIZE_MAX}},
+            {"PQ2_0", GEIST_DTYPE_PQ2_0, {0, SIZE_MAX}},
+    };
+    static const struct {
+        size_t n_in, n_out, m; /* a format takes the n_in its block divides */
+    } shapes[] = {
+            {512, 383, 33},
+            {512, 384, 64},
+            {768, 130, 129},
+            {256, 97, 65},
+            {512, 64, 200},
+            {256, 97, 129},
+            {512, 130, 300},
+            {1056, 1000, 70},
+            {96, 70, 33},
+    };
+    struct geist_backend *be[2] = {tensor_backend(false), tensor_backend(true)};
+    if (be[0] == nullptr || be[1] == nullptr) {
+        check(false, "metal backends for the tensor GEMM kernels");
+        return;
+    }
+    const struct metal_state *st0 = be[0]->state, *st1 = be[1]->state;
+    for (size_t f = 0; f < sizeof formats / sizeof formats[0]; f++) {
+        size_t block = 0, bb = 0;
+        block_geom(formats[f].dtype, &block, &bb);
+        for (size_t s = 0; s < sizeof shapes / sizeof shapes[0]; s++) {
+            const size_t n_in = shapes[s].n_in, n_out = shapes[s].n_out, m = shapes[s].m;
+            if (n_in % block != 0) {
+                continue;
+            }
+            const size_t w_bytes = n_out * (n_in / block) * bb;
+            const size_t y_bytes = m * n_out * sizeof(float);
+            uint8_t     *blob    = malloc(w_bytes);
+            float       *x       = malloc(m * n_in * sizeof(float));
+            uint8_t     *y[2]    = {malloc(y_bytes), malloc(y_bytes)};
+            if (blob == nullptr || x == nullptr || y[0] == nullptr || y[1] == nullptr) {
+                check(false, "tensor GEMM kernels: host alloc");
+                return;
+            }
+            for (size_t b = 0; b < w_bytes; b += bb) {
+                for (size_t i = 0; i < bb; i++) {
+                    blob[b + i] = rng_u8();
+                }
+                for (size_t d = 0; d < 2; d++) { /* fp16 in [2^-6, 2^-5), any mantissa */
+                    if (formats[f].d_off[d] != SIZE_MAX) {
+                        uint8_t *hi = &blob[b + formats[f].d_off[d] + 1];
+                        *hi         = (uint8_t) (0x24 | (*hi & 0x03));
+                    }
+                }
+            }
+            for (size_t i = 0; i < m * n_in; i++) {
+                const uint32_t r = (uint32_t) rng_u8() << 16 | (uint32_t) rng_u8() << 8 | rng_u8();
+                x[i]             = (float) r / 8388608.0f - 1.0f;
+            }
+            bool ran = true;
+            for (size_t k = 0; k < 2 && ran; k++) {
+                const struct geist_backend_vtbl *v  = be[k]->desc->vtbl;
+                struct geist_buffer             *bw = nullptr, *bx = nullptr, *by = nullptr;
+                uint8_t                         *wd = dev_alloc(be[k], w_bytes, &bw);
+                float *xd = dev_alloc(be[k], m * n_in * sizeof(float), &bx);
+                float *yd = dev_alloc(be[k], y_bytes, &by);
+                if (wd == nullptr || xd == nullptr || yd == nullptr) {
+                    check(false, "tensor GEMM kernels: backend buffers");
+                    return;
+                }
+                memcpy(wd, blob, w_bytes);
+                memcpy(xd, x, m * n_in * sizeof(float));
+                struct geist_weight w = {.raw        = wd,
+                                         .raw_nbytes = w_bytes,
+                                         .n_in       = (int32_t) n_in,
+                                         .n_out      = (int32_t) n_out,
+                                         .dtype      = (uint16_t) formats[f].dtype};
+                ran = v->resolve_weight(be[k], &w) == GEIST_OK && w.linear_mN != nullptr;
+                if (ran) {
+                    w.linear_mN(m, xd, &w, be[k], yd);
+                    ran = v->buffer_download(y_bytes, y[k], by) == GEIST_OK;
+                }
+                v->buffer_destroy(be[k], bw);
+                v->buffer_destroy(be[k], bx);
+                v->buffer_destroy(be[k], by);
+            }
+            /* Without the tensor unit (an OS that cannot compile it) both
+             * backends ran the simdgroup GEMM: nothing was compared. */
+            const bool tensor = st0->tensor_mm && st1->tensor_mm;
+            char       label[128];
+            snprintf(label,
+                     sizeof label,
+                     "tensor GEMM kernels %s %zux%zu m=%zu: fragments == cooperative",
+                     formats[f].name,
+                     n_out,
+                     n_in,
+                     m);
+            check(ran && memcmp(y[0], y[1], y_bytes) == 0, label);
+            if (f == 0 && s == 0) {
+                printf("  tensor GEMM kernels: %s\n",
+                       !tensor              ? "no tensor unit, simdgroup against itself"
+                       : st0->tensor_coop   ? "cooperative against itself"
+                       : st0->tensor_scalar ? "fragments (element-wise loads) against cooperative"
+                                            : "fragments (vector loads) against cooperative");
+                check(!tensor || (!st0->tensor_coop && st1->tensor_coop),
+                      "tensor GEMM kernels: one backend per kernel");
+            }
+            free(blob);
+            free(x);
+            free(y[0]);
+            free(y[1]);
+        }
+    }
+    geist_backend_destroy(be[0]);
+    geist_backend_destroy(be[1]);
+}
+#endif
+
 static void run_silu_case(struct geist_backend *mt) {
     const size_t                     n  = 257;
     const struct geist_backend_vtbl *v  = mt->desc->vtbl;
@@ -1997,6 +2161,9 @@ int main(void) {
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 70);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 80);
     run_case(mt, ref, GEIST_DTYPE_Q6_K, "Q6_K", 512, 384, 3);
+#ifdef GEIST_BACKEND_METAL
+    run_tc_kernels_case();
+#endif
     run_silu_case(mt);
     /* Llama / Qwen3 attention prep (#17): Qwen3 0.6B decode (16/8 heads
      * of 128, q/k norms), Llama 3.2 3B (24/8 of 128, none), a prefill
