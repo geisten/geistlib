@@ -24,7 +24,9 @@
   kind: Gemma 4 E2B and E4B Q4_K_M on the M1 Max (`cpu_neon`, 18 prompt
   lengths from 15 to 2048; `cpu_scalar`), E2B on the Pi 5 (gcc 14,
   OpenBLAS); `cpu_x86` is held to it by `test_kv_shared_prefill_unit`,
-  which now also runs a Gemma 4 with Q4_K matrices built in memory. No
+  which now also runs a Gemma 4 with Q4_K matrices built in memory (a
+  model with dense F32 matrices moves by rounding there, 2e-7 of the
+  largest logit). No
   kernel changed. Prefill ms, `tools/bench_revision_ab.py` against main,
   M1 Max `cpu_neon` (8 threads; control within 2.1 %): E2B 64 tokens 188.1
   -> 90.1, 512 tokens 671.2 -> 554.9, 2048 tokens 2653.5 -> 2524.9 (inside

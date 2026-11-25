@@ -62,7 +62,10 @@ struct pair {
 constexpr double KVS_LOGIT_TOL = 5e-3;
 constexpr double KVS_BLAS_TOL  = 1e-5;
 /* Whether dense F32 goes through a BLAS (Accelerate, OpenBLAS) or through
- * geist's own GEMM, whose tiles give a row the same bits for any row count. */
+ * geist's own GEMM. cpu_neon's own tiles give a row the same bits for any
+ * row count; cpu_x86's do not (CI, AVX-512: 1.8e-7 of the largest logit on
+ * the F32 model), so a dense F32 model is held to KVS_BLAS_TOL there with
+ * either provider. */
 #ifdef GEIST_GEMM_NATIVE
 constexpr bool KVS_GEMM_BLAS = false;
 #else
@@ -562,7 +565,8 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
     *ran += 1;
     const char *name = geist_backend_name(be);
     const bool  cpu  = strncmp(name, "cpu_", 4) == 0;
-    const bool  blas = KVS_GEMM_BLAS && src->blas_rounds && strcmp(name, "cpu_scalar") != 0;
+    const bool  blas = src->blas_rounds && (KVS_GEMM_BLAS ? strcmp(name, "cpu_scalar") != 0
+                                                          : strcmp(name, "cpu_x86") == 0);
     struct pair p    = {.cpu = cpu, .tol = !cpu ? KVS_LOGIT_TOL : blas ? KVS_BLAS_TOL : 0.0};
     const struct geist_session_opts load = {.max_seq_len = CTX, .top_p = 1.0f};
     /* The flag is read when the model loads: the oracle first, with it. */

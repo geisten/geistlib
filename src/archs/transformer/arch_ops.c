@@ -483,7 +483,9 @@ static bool prefill_cache_rows_ok(const struct transformer_arch_session *sess) {
  * The rows therefore go on as a prefill pass, on the chunk's kernels, which
  * give a row the same bits whatever the rows around it (integer dot
  * products; the dense F32 GEMM at a Gemma 4's sizes), and the pending
- * logits are the full prefill's bit for bit. Two rows would do on the
+ * logits are the full prefill's bit for bit (cpu_x86's dense F32 GEMM
+ * rounds a row by the row count: a model with F32 matrices moves by 2e-7
+ * of the largest logit there, a quantized one not at all). Two rows would do on the
  * kernels measured; eight are a whole token tile of the prefill kernels
  * (as #554's last chunk) and clear what a backend or a BLAS does otherwise
  * for a few rows: cpu_neon's F16-cache attention takes its NEON rows from
