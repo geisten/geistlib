@@ -67,7 +67,22 @@ int main(void) {
     int                           fails      = 0;
     size_t                        ran        = 0;
     kvs_ids();
-    for (int q = 0; q < 2; q++) {
+    /* ponytail: under a sanitizer the F32 model alone. With the Q4_K one
+     * CI's ASan leg on Linux arm64 took 462 s for this test against 60 and
+     * ran into the job's limit; the release legs run both on every
+     * platform, and the rows-kept path is the same code for either. */
+#if defined(__SANITIZE_ADDRESS__)
+    constexpr int MODELS = 1;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+    constexpr int MODELS = 1;
+#else
+    constexpr int MODELS = 2;
+#endif
+#else
+    constexpr int MODELS = 2;
+#endif
+    for (int q = 0; q < MODELS; q++) {
         struct tf_buf           g   = mf_gemma4_gguf(q == 0 ? &GEOM : &QUANT);
         const struct kvs_source src = {
                 .data = g.b, .size = g.n, .blas_rounds = q == 0, .brief = q == 1};
