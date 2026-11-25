@@ -13,7 +13,17 @@
  * write a cache, n_cache_layers), per-layer embeddings, GEGLU, F32 weights.
  * No model file: this runs wherever the unit tests run, the x86 kernels
  * included, which the integration test reaches only where a Gemma 4 GGUF
- * is.
+ * is. Its matrices are small enough for a BLAS's small-matrix path, which
+ * rounds a row by the row count: where dense F32 goes through Accelerate or
+ * OpenBLAS the pending logits of cpu_neon and cpu_x86 are held to
+ * KVS_BLAS_TOL, with geist's own GEMM (CI's x86 legs) and on cpu_scalar to
+ * the bit.
+ *
+ * A second model has the kernels of a Gemma 4 Q4_K_M: 4 layers, the last 2
+ * KV-shared, d_model 256, the matrices Q4_K. Those kernels round the
+ * activations to 8 bits, so a row that rounded otherwise outside its chunk
+ * would not stay within rounding; a few prefills and each KV
+ * representation, to the bit on every backend.
  */
 #define _POSIX_C_SOURCE 200809L
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -23,28 +33,50 @@
 #include "model_fixtures.h"
 
 int main(void) {
-    static const struct mf_gemma4 GEOM       = {.layers  = 7,
-                                                .shared  = 3,
-                                                .period  = 3,
-                                                .d_model = 32,
+    static const struct mf_gemma4 GEOM = {.layers  = 7,
+                                          .shared  = 3,
+                                          .period  = 3,
+                                          .d_model = 32,
+                                          .heads   = 2,
+                                          .hd_full = 16,
+                                          .hd_swa  = 8,
+                                          .ffn     = 64,
+                                          .hpl     = 8,
+                                          .window  = 24,
+                                          .context = CTX,
+                                          .seed    = 11};
+    /* The kernels a Gemma 4 Q4_K_M runs: Q4_K matrices, whose kernels round
+     * the activations to 8 bits, so that a row which rounds otherwise in a
+     * pass of other rows leaves on another grid point (and with an INT8
+     * cache the attention rounds the queries too); the per-layer gate and
+     * projection F32, 256 x 64, above the BLAS's small-matrix path. */
+    static const struct mf_gemma4 QUANT      = {.layers  = 4,
+                                                .shared  = 2,
+                                                .period  = 2,
+                                                .d_model = 256,
                                                 .heads   = 2,
-                                                .hd_full = 16,
-                                                .hd_swa  = 8,
-                                                .ffn     = 64,
-                                                .hpl     = 8,
+                                                .hd_full = 128,
+                                                .hd_swa  = 128,
+                                                .ffn     = 512,
+                                                .hpl     = 64,
                                                 .window  = 24,
                                                 .context = CTX,
-                                                .seed    = 11};
+                                                .seed    = 13,
+                                                .q4k     = true};
     static const char            *BACKENDS[] = {"cpu_neon", "cpu_x86", "cpu_scalar"};
-    struct tf_buf                 g          = mf_gemma4_gguf(&GEOM);
-    const struct kvs_source       src        = {.data = g.b, .size = g.n};
     int                           fails      = 0;
     size_t                        ran        = 0;
     kvs_ids();
-    for (size_t b = 0; b < sizeof BACKENDS / sizeof BACKENDS[0]; b++) {
-        fails += kvs_run_backend(&src, BACKENDS[b], &ran);
+    for (int q = 0; q < 2; q++) {
+        struct tf_buf           g   = mf_gemma4_gguf(q == 0 ? &GEOM : &QUANT);
+        const struct kvs_source src = {
+                .data = g.b, .size = g.n, .blas_rounds = q == 0, .brief = q == 1};
+        printf("%s\n", q == 0 ? "F32 weights" : "Q4_K weights");
+        for (size_t b = 0; b < sizeof BACKENDS / sizeof BACKENDS[0]; b++) {
+            fails += kvs_run_backend(&src, BACKENDS[b], &ran);
+        }
+        free(g.b);
     }
-    free(g.b);
     if (ran == 0) {
         GEIST_SKIP("no CPU backend compiled in");
     }
@@ -52,6 +84,6 @@ int main(void) {
         fprintf(stderr, "%d check(s) failed\n", fails);
         return GEIST_TEST_FAIL;
     }
-    printf("PASS: cache rows leave every bit where it was (%zu backends)\n", ran);
+    printf("PASS: cache rows leave every bit where it was (%zu backend runs)\n", ran);
     return GEIST_TEST_PASS;
 }
