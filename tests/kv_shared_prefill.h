@@ -43,16 +43,34 @@ struct pair {
     struct transformer_arch_session *a[2];
     size_t                           counted; /* cache rows the cases expect of s[0] so far */
     const char                      *what;    /* the session variant, for messages */
-    /* The pending logits are a prefill's: its last row went through the
-     * KV-shared layers as a pass of one row where the oracle's was a row of
-     * the chunk (Metal only), so they agree to rounding (KVS_LOGIT_TOL of
-     * the largest), not to the bit; the pending token is the same. K/V rows
-     * and a decode step's logits are exact. */
+    bool                             cpu;     /* a CPU backend */
+    /* How far the logits a prefill leaves pending may be from the oracle's,
+     * over the largest logit, where the last rows went through the
+     * KV-shared layers without their chunk. 0 on a CPU backend: the
+     * oracle's bits. KVS_LOGIT_TOL on a GPU backend, whose kernels round a
+     * row differently by row count. KVS_BLAS_TOL on a CPU backend whose
+     * dense F32 matrices are small enough for the BLAS's small-matrix path
+     * (kvs_source.blas_rounds). */
+    double tol;
+    /* The pending logits are such a prefill's: within tol, and the pending
+     * token is the same. K/V rows and a decode step's logits are exact on
+     * every backend. */
     bool   rounded;
     double worst; /* the largest such difference seen, relative */
 };
 
 constexpr double KVS_LOGIT_TOL = 5e-3;
+constexpr double KVS_BLAS_TOL  = 1e-5;
+/* Whether dense F32 goes through a BLAS (Accelerate, OpenBLAS) or through
+ * geist's own GEMM. cpu_neon's own tiles give a row the same bits for any
+ * row count; cpu_x86's do not (CI, AVX-512: 1.8e-7 of the largest logit on
+ * the F32 model), so a dense F32 model is held to KVS_BLAS_TOL there with
+ * either provider. */
+#ifdef GEIST_GEMM_NATIVE
+constexpr bool KVS_GEMM_BLAS = false;
+#else
+constexpr bool KVS_GEMM_BLAS = true;
+#endif
 
 static int fail(const struct pair *p, const char *where, const char *msg) {
     fprintf(stderr, "FAIL [%s] %s: %s\n", p->what, where, msg);
@@ -119,7 +137,7 @@ static int same_state(struct pair *p, const char *where) {
             }
         }
         const double rel = diff / (top + 1e-30);
-        if (!p->rounded || !(rel <= KVS_LOGIT_TOL)) {
+        if (!p->rounded || !(rel <= p->tol)) {
             fprintf(stderr,
                     "  logit %zu: %.9g against the oracle's %.9g (%.2e of the largest)\n",
                     i,
@@ -176,10 +194,10 @@ static int same_state(struct pair *p, const char *where) {
 static size_t plan_cache_rows(const struct transformer_arch_session *a, size_t n) {
     size_t cache = 0, pos = a->kv_len;
     for (size_t off = 0, rows = 0; off < n; off += rows, pos += rows) {
-        bool keep = false;
-        rows      = transformer_prefill_chunk(a, pos, n - off);
+        size_t keep = 0;
+        rows        = transformer_prefill_chunk(a, pos, n - off);
         if (transformer_prefill_cache_rows(a, rows, off + rows == n, &keep)) {
-            cache += rows - (keep ? 1 : 0);
+            cache += rows - keep;
         }
     }
     return cache;
@@ -199,7 +217,7 @@ static int reset(struct pair *p) {
 
 static int prefill(struct pair *p, size_t n, const geist_token_t *ids, const char *where) {
     p->counted += plan_cache_rows(p->a[0], n);
-    p->rounded = true;
+    p->rounded = p->tol > 0.0;
     for (int i = 0; i < 2; i++) {
         if (geist_session_prefill_tokens(p->s[i], n, ids) != GEIST_OK) {
             fprintf(stderr, "  %s\n", geist_session_errmsg(p->s[i]));
@@ -339,7 +357,7 @@ static int case_snapshot(struct pair *p, size_t n) {
     for (int i = 0; i < 2 && !fails; i++) {
         fails = geist_session_restore(size[i], img[i], p->s[i]) != GEIST_OK;
     }
-    p->rounded = true; /* the prefill's logits are pending again */
+    p->rounded = p->tol > 0.0; /* the prefill's logits are pending again */
     fails      = fails || same_state(p, where) || decode(p, N_DECODE, second, where) ||
                  memcmp(first, second, sizeof first) != 0;
     free(img[0]);
@@ -354,7 +372,7 @@ static int case_pin_prefix(struct pair *p, size_t n_prefix, size_t n_turn) {
         return 1;
     }
     p->counted += plan_cache_rows(p->a[0], n_prefix); /* at length 0, as pin_prefix prefills */
-    p->rounded = true;
+    p->rounded = p->tol > 0.0;
     for (int i = 0; i < 2; i++) {
         if (geist_session_pin_prefix(p->s[i], n_prefix, g_ids) != GEIST_OK) {
             return fail(p, where, "pin_prefix failed");
@@ -406,13 +424,13 @@ static int case_soft_tokens(struct pair *p, size_t n) {
     int          fails = 0;
     const size_t m     = p->a[0]->m_max;
     for (size_t off = 0, rows = 0; off < n; off += rows) {
-        bool keep = false;
-        rows      = n - off > m ? m : n - off;
+        size_t keep = 0;
+        rows        = n - off > m ? m : n - off;
         if (transformer_prefill_cache_rows(p->a[0], rows, off + rows == n, &keep)) {
-            p->counted += rows - (keep ? 1 : 0);
+            p->counted += rows - keep;
         }
     }
-    p->rounded = true;
+    p->rounded = p->tol > 0.0;
     for (int i = 0; i < 2 && !fails; i++) {
         fails = transformer_prefill_audio_batch(p->a[i], n, soft) != GEIST_OK;
     }
@@ -451,10 +469,11 @@ static int case_decision(struct pair *p, size_t n) {
             return fail(p, where, "the readout failed");
         }
     }
-    p->rounded = true;
+    p->rounded = p->tol > 0.0;
     for (size_t c = 0; c < 6; c++) {
-        if (fabs((double) out[0][c] - (double) out[1][c]) >
-            KVS_LOGIT_TOL * (fabs((double) out[1][c]) + 1.0)) {
+        if (p->tol > 0.0 ? fabs((double) out[0][c] - (double) out[1][c]) >
+                                   p->tol * (fabs((double) out[1][c]) + 1.0)
+                         : memcmp(&out[0][c], &out[1][c], sizeof(float)) != 0) {
             fprintf(stderr,
                     "  candidate %zu: %.9g against %.9g\n",
                     c,
@@ -495,10 +514,21 @@ static void close_pair(struct pair *p) {
     geist_session_destroy(p->s[1]);
 }
 
-/* A short last chunk's rows, to size the prompts with. */
+/* The rows of a last chunk of sp rows that run every layer: the eight a
+ * CPU backend keeps of 16 or more, the one Metal keeps (not with an INT8 or
+ * INT4 cache), or, where the last chunk is not split, all sp. */
+static size_t kvs_kept_rows(const struct pair *p, size_t sp) {
+    if (p->cpu) {
+        return sp >= 16 ? 8 : sp;
+    }
+    const char *name = geist_backend_name(p->a[0]->model->backend);
+    return strcmp(name, "metal") == 0 && !p->a[0]->kv_int8_enabled ? 1 : sp;
+}
+
+/* A short last chunk's rows, to size the prompts with: on a CPU backend
+ * the shortest that leaves rows out. */
 static size_t kvs_split_rows(const struct geist_backend *be) {
-    (void) be;
-    return 10;
+    return strncmp(geist_backend_name(be), "cpu_", 4) == 0 ? 16 : 10;
 }
 
 /* The model, from a file or from memory. */
@@ -506,6 +536,13 @@ struct kvs_source {
     const char *path;
     const void *data;
     size_t      size;
+    /* Its dense F32 matrices are small enough for a BLAS's small-matrix
+     * path, where a row's rounding depends on the row count (Accelerate's
+     * sgemm below about 16000 weights; geist's own GEMM never). A Gemma 4
+     * GGUF's smallest are 256 x 1536. */
+    bool blas_rounds;
+    /* A few prefills and each KV representation, not every case. */
+    bool brief;
 };
 
 static enum geist_status kvs_load(const struct kvs_source         *src,
@@ -526,7 +563,11 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
         return 0;
     }
     *ran += 1;
-    struct pair                     p    = {0};
+    const char *name = geist_backend_name(be);
+    const bool  cpu  = strncmp(name, "cpu_", 4) == 0;
+    const bool  blas = src->blas_rounds && (KVS_GEMM_BLAS ? strcmp(name, "cpu_scalar") != 0
+                                                          : strcmp(name, "cpu_x86") == 0);
+    struct pair p    = {.cpu = cpu, .tol = !cpu ? KVS_LOGIT_TOL : blas ? KVS_BLAS_TOL : 0.0};
     const struct geist_session_opts load = {.max_seq_len = CTX, .top_p = 1.0f};
     /* The flag is read when the model loads: the oracle first, with it. */
     setenv("GEIST_KV_SHARED_FULL", "1", 1);
@@ -592,36 +633,34 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
                                2 * m + sp,
                                3 * m + 37};
         for (size_t i = 0; i < sizeof lens / sizeof lens[0] && fails == 0; i++) {
-            if (lens[i] >= 1 && lens[i] <= N_MAX) {
+            const bool few = lens[i] == sp || lens[i] == m || lens[i] == m + 1;
+            if (lens[i] >= 1 && lens[i] <= N_MAX && (few || !src->brief)) {
                 fails += case_prefill_decode(&p, lens[i]);
             }
         }
-        /* The plan left rows out at all, and how many for one known case:
-         * of a chunk and sp rows the first chunk on a CPU backend, and all
-         * but the second chunk's tail where that splits. */
+        /* The plan left rows out at all, and how many for one known case,
+         * a chunk and sp rows: all but the last eight on a CPU backend, all
+         * but the last on Metal, the first chunk elsewhere. */
         fails += geist_expect(p.counted > 0, "cache rows were planned");
         if (fails == 0 && reset(&p) == 0 && sp <= m) {
             const size_t before = p.a[0]->n_cache_rows;
             fails += prefill(&p, m + sp, g_ids, "count");
-            const bool alone = strcmp(geist_backend_name(be), "metal") == 0 &&
-                               !p.a[0]->kv_int8_enabled && !p.a[0]->kv_kivi_enabled;
-            fails += geist_expect(p.a[0]->n_cache_rows - before == (alone ? m + sp - 1 : m),
+            fails += geist_expect(p.a[0]->n_cache_rows - before == m + sp - kvs_kept_rows(&p, sp),
                                   "a chunk and a last chunk: the rows left out");
         }
-        fails = fails || case_repeat(&p, 1) || case_repeat(&p, 5) || case_repeat(&p, m);
-        fails = fails || case_repeat(&p, m + sp) || case_step_again(&p, 9);
-        fails = fails || case_two_calls(&p, m + sp + 11, sp + 5);
-        fails = fails || case_truncate(&p, m + sp + 20, m + sp + 1, sp + 3);
-        fails = fails || case_snapshot(&p, m + sp + 13);
-        fails = fails || case_pin_prefix(&p, m + sp + 9, sp + 7);
-        fails = fails || case_verify(&p, sp + 14, 8);
-        fails = fails || case_soft_tokens(&p, m + sp + 5);
-        fails = fails || case_soft_tokens(&p, m + 1);
-        fails = fails || case_decision(&p, m + sp + 9);
+        if (fails == 0 && !src->brief) {
+            fails = case_repeat(&p, 1) || case_repeat(&p, 5) || case_repeat(&p, m) ||
+                    case_repeat(&p, m + sp) || case_step_again(&p, 9) ||
+                    case_two_calls(&p, m + sp + 11, sp + 5) ||
+                    case_truncate(&p, m + sp + 20, m + sp + 1, sp + 3) ||
+                    case_snapshot(&p, m + sp + 13) || case_pin_prefix(&p, m + sp + 9, sp + 7) ||
+                    case_verify(&p, sp + 14, 8) || case_soft_tokens(&p, m + sp + 5) ||
+                    case_soft_tokens(&p, m + 1) || case_decision(&p, m + sp + 9);
+        }
         close_pair(&p);
     }
     /* A session chunk of 16: many chunks, and the 8-row last chunk of #554. */
-    if (fails == 0 && open_pair(&p, be, GEIST_KV_AUTO, 16, "m_max 16")) {
+    if (fails == 0 && !src->brief && open_pair(&p, be, GEIST_KV_AUTO, 16, "m_max 16")) {
         const size_t lens[] = {17, 26, 32, 33, 100, 16 * 9 + 10};
         for (size_t i = 0; i < sizeof lens / sizeof lens[0] && fails == 0; i++) {
             fails += case_prefill_decode(&p, lens[i]);
@@ -645,11 +684,19 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
         }
         const size_t m  = p.a[0]->m_max;
         const size_t sp = kvs_split_rows(be);
-        /* A last chunk that a GPU backend splits (KIVI: would split), after
-         * one chunk; KIVI also across two of its 128-token drains. */
+        /* A last chunk whose rows are left out, after one chunk; KIVI also
+         * across two of its 128-token drains. */
         fails = case_prefill_decode(&p, m + sp + 13) ||
-                case_truncate(&p, m + sp + 30, m + sp + 25, 19);
-        if (modes[i].kv == GEIST_KV_KIVI) {
+                (!src->brief && case_truncate(&p, m + sp + 30, m + sp + 25, 19));
+        if (fails == 0 && reset(&p) == 0) {
+            const size_t before = p.a[0]->n_cache_rows;
+            fails += prefill(&p, m + sp, g_ids, "count");
+            fails += geist_expect(p.a[0]->n_cache_rows - before == m + sp - kvs_kept_rows(&p, sp),
+                                  "a chunk and a last chunk: the rows left out");
+        }
+        if (src->brief) {
+            /* the one prefill above */
+        } else if (modes[i].kv == GEIST_KV_KIVI) {
             fails = fails || case_prefill_decode(&p, 2 * m + sp + 149);
         } else { /* KIVI has no snapshot */
             fails = fails || case_snapshot(&p, m + sp + 7);

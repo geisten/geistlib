@@ -373,6 +373,12 @@ static inline struct tf_buf mf_llama_gguf(const struct mf_llama *c) {
 struct mf_gemma4 {
     uint32_t layers, shared, period, d_model, heads, hd_full, hd_swa, ffn, hpl, window, context;
     uint64_t seed;
+    /* The matrices a Gemma 4 Q4_K_M GGUF quantizes (the two embedding
+     * tables, attention and FFN projections) stored as Q4_K of random
+     * codes, the per-layer gate and projection staying F32 as there: the
+     * kernels that round the activations to 8 bits. d_model, ffn,
+     * heads * hd_full, heads * hd_swa and layers * hpl multiples of 256. */
+    bool q4k;
 };
 
 static inline struct tf_buf mf_gemma4_gguf(const struct mf_gemma4 *c) {
@@ -380,7 +386,9 @@ static inline struct tf_buf mf_gemma4_gguf(const struct mf_gemma4 *c) {
     const uint32_t     ple   = c->layers * c->hpl;
     struct mf_tensors  ts    = {0};
     mf_add(&ts, c->d_model, VOCAB, MF_RAND, "token_embd.weight");
+    ts.t[ts.n - 1].q4k = c->q4k;
     mf_add(&ts, ple, VOCAB, MF_RAND, "per_layer_token_embd.weight");
+    ts.t[ts.n - 1].q4k = c->q4k;
     mf_add(&ts, c->d_model, ple, MF_RAND, "per_layer_model_proj.weight");
     mf_add(&ts, c->hpl, 0, MF_ONE, "per_layer_proj_norm.weight");
     mf_add(&ts, c->d_model, 0, MF_ONE, "output_norm.weight");
@@ -388,16 +396,23 @@ static inline struct tf_buf mf_gemma4_gguf(const struct mf_gemma4 *c) {
         const uint32_t hd = (l + 1) % c->period == 0 ? c->hd_full : c->hd_swa;
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.attn_norm.weight", l);
         mf_add(&ts, c->d_model, c->heads * hd, MF_RAND, "blk.%u.attn_q.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, c->d_model, hd, MF_RAND, "blk.%u.attn_k.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, c->d_model, hd, MF_RAND, "blk.%u.attn_v.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, hd, 0, MF_ONE, "blk.%u.attn_q_norm.weight", l);
         mf_add(&ts, hd, 0, MF_ONE, "blk.%u.attn_k_norm.weight", l);
         mf_add(&ts, c->heads * hd, c->d_model, MF_RAND, "blk.%u.attn_output.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.post_attention_norm.weight", l);
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.ffn_norm.weight", l);
         mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_gate.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, c->d_model, c->ffn, MF_RAND, "blk.%u.ffn_up.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, c->ffn, c->d_model, MF_RAND, "blk.%u.ffn_down.weight", l);
+        ts.t[ts.n - 1].q4k = c->q4k;
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.post_ffw_norm.weight", l);
         mf_add(&ts, c->d_model, 0, MF_ONE, "blk.%u.post_norm.weight", l);
         mf_add(&ts, c->d_model, c->hpl, MF_RAND, "blk.%u.inp_gate.weight", l);

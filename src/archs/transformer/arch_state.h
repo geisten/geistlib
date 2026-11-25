@@ -461,7 +461,7 @@ struct transformer_arch_session {
      * n_cache_rows counts them over the session's life: what the tests read
      * to know the rows were left out, not merely that nothing changed. */
     bool   cache_rows;
-    bool   cache_keep_last; /* with cache_rows: the pass's last row runs every layer */
+    size_t cache_keep; /* with cache_rows: the pass's last rows that run every layer */
     size_t n_cache_rows;
     /* geist_session_checkpoint (#192): up to TRANSFORMER_CKPT_SLOTS lengths
      * to which truncate can return, DeltaNet state included (ckpt_conv_buf /
@@ -1054,15 +1054,17 @@ transformer_forward_one_layer(struct transformer_arch_session *sess,
 transformer_prefill_chunk(const struct transformer_arch_session *sess, size_t q_position, size_t n);
 
 /* Cache rows (#591, arch_ops.c): whether the rows of a prefill's chunk stop
- * after layer n_cache_layers - 1, and in *keep_last whether the chunk's
- * last row goes on through the KV-shared layers (the last chunk's does: it
- * is the row a prefill's reader reads). False for a model or session
- * without cache rows, for a last chunk of one row, and for a last chunk
- * off Metal, which runs every layer for every row. */
+ * after layer n_cache_layers - 1, and in *keep how many rows at the chunk's
+ * end go on through the KV-shared layers: none for a chunk before the last,
+ * and for the last, whose last row is the one a prefill's reader reads, that
+ * row, or the last eight (prefill_keep_rows). False for a model
+ * or session without cache rows and for a last chunk that runs every layer
+ * for every row: one shorter than twice the rows kept, and any on Vulkan or
+ * on Metal with an INT8 or INT4 cache. */
 [[nodiscard]] bool transformer_prefill_cache_rows(const struct transformer_arch_session *sess,
                                                   size_t                                 chunk,
                                                   bool                                   last,
-                                                  bool                                  *keep_last);
+                                                  size_t                                *keep);
 
 /* Offload (#78): write seq rows of K and V ([seq, kv_out] floats each,
  * after RoPE, as the layer's attention produces them) for layer layer_idx

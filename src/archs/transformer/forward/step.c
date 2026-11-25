@@ -414,31 +414,35 @@ size_t transformer_prefill_chunk(const struct transformer_arch_session *sess,
     return m;
 }
 
-/* Cache rows with cache_keep_last (#591): row seq - 1 of h_in to row 0 of
- * h_out, and that row's per-layer inputs (every layer's slice) to row 0 of
- * their buffer, so the layers after n_cache_layers - 1 run it as a pass of
- * one row. seq > 1: the rows moved do not overlap their destination. */
-static enum geist_status last_row_to_front(struct transformer_arch_session *sess,
-                                           size_t                           seq,
-                                           struct geist_buffer             *h_in,
-                                           struct geist_buffer             *h_out,
-                                           struct geist_buffer             *ple,
-                                           size_t                           ple_row_bytes) {
+/* Cache rows with cache_keep (#591): the last `keep` rows of h_in to the
+ * front of h_out, and those rows' per-layer inputs (every layer's slice) to
+ * the front of their buffer, so the layers after n_cache_layers - 1 run
+ * them as a pass of `keep` rows. 2 * keep <= seq
+ * (transformer_prefill_cache_rows): the rows moved do not overlap their
+ * destination. */
+static enum geist_status rows_to_front(struct transformer_arch_session *sess,
+                                       size_t                           seq,
+                                       size_t                           keep,
+                                       struct geist_buffer             *h_in,
+                                       struct geist_buffer             *h_out,
+                                       struct geist_buffer             *ple,
+                                       size_t                           ple_row_bytes) {
     const struct transformer_arch_state *st    = sess->model;
     const struct geist_backend_vtbl     *v     = st->backend->desc->vtbl;
     const size_t                         h_row = st->d_model * sizeof(float);
+    const size_t                         from  = seq - keep;
     if (st->model_fusions.backend_buffer_copy) {
-        const enum geist_status cs = v->buffer_copy(h_out, 0, h_in, (seq - 1) * h_row, h_row);
+        const enum geist_status cs = v->buffer_copy(h_out, 0, h_in, from * h_row, keep * h_row);
         return cs != GEIST_OK || ple == nullptr
                        ? cs
-                       : v->buffer_copy(ple, 0, ple, (seq - 1) * ple_row_bytes, ple_row_bytes);
+                       : v->buffer_copy(ple, 0, ple, from * ple_row_bytes, keep * ple_row_bytes);
     }
     const uint8_t *src = (const uint8_t *) v->buffer_map(h_in);
     uint8_t       *dst = (uint8_t *) v->buffer_map(h_out);
     if (src == nullptr || dst == nullptr) {
         return GEIST_E_BACKEND; /* the backend said why */
     }
-    memcpy(dst, src + (seq - 1) * h_row, h_row);
+    memcpy(dst, src + from * h_row, keep * h_row);
     v->buffer_unmap(h_in);
     v->buffer_unmap(h_out);
     if (ple != nullptr) {
@@ -446,7 +450,7 @@ static enum geist_status last_row_to_front(struct transformer_arch_session *sess
         if (rows == nullptr) {
             return GEIST_E_BACKEND;
         }
-        memcpy(rows, rows + (seq - 1) * ple_row_bytes, ple_row_bytes);
+        memcpy(rows, rows + from * ple_row_bytes, keep * ple_row_bytes);
         v->buffer_unmap(ple);
     }
     return GEIST_OK;
@@ -539,25 +543,30 @@ static enum geist_status last_row_to_front(struct transformer_arch_session *sess
 
     /* Cache rows (#591) end with the last layer that writes a cache: the
      * layers after it read those caches and keep nothing of their own. */
-    const size_t seq_in = seq; /* rows of the pass; seq is 1 from the last row's pass on */
+    const size_t seq_in = seq; /* rows of the pass; seq is cache_keep from the kept rows' pass on */
     for (size_t li = st->layer_lo; li < st->n_layers; li++) {
         if (sess->cache_rows && li == st->n_cache_layers) {
             sess->prenorm_layer = 0; /* the tail normalised seq_in rows (#17) */
-            if (!sess->cache_keep_last) {
+            if (sess->cache_keep == 0) {
                 break;
             }
-            /* The last row alone from here: to row 0 of the other buffer,
-             * its per-layer inputs to row 0 of theirs. */
-            const enum geist_status ls = last_row_to_front(
-                    sess, seq_in, h_in, h_out, per_layer_input_buf, row_bytes_per_tok_ple);
+            /* The kept rows alone from here: to the front of the other
+             * buffer, their per-layer inputs to the front of theirs. */
+            const enum geist_status ls = rows_to_front(sess,
+                                                       seq_in,
+                                                       sess->cache_keep,
+                                                       h_in,
+                                                       h_out,
+                                                       per_layer_input_buf,
+                                                       row_bytes_per_tok_ple);
             if (ls != GEIST_OK) {
                 return ls;
             }
             struct geist_buffer *tmp = h_in;
             h_in                     = h_out;
             h_out                    = tmp;
-            q_position += seq_in - 1;
-            seq = 1;
+            seq                      = sess->cache_keep;
+            q_position += seq_in - seq;
         }
         /* Gather this layer's per_layer_input slices into
          * scratch_ple_lookup when the family has PLE. Non-PLE families
@@ -628,13 +637,13 @@ static enum geist_status last_row_to_front(struct transformer_arch_session *sess
     size_t out_off = 0;
     if (sess->cache_rows) {
         /* The cache rows' state after layer n_cache_layers - 1 is no
-         * layer's output the caller could use: only the last row, where it
-         * went on, is written, at its place in out_h_buf. */
-        sess->n_cache_rows += seq_in - seq + (sess->cache_keep_last ? 0 : seq);
-        if (!sess->cache_keep_last) {
+         * layer's output the caller could use: only the kept rows, which
+         * went on, are written, at their place in out_h_buf. */
+        sess->n_cache_rows += seq_in - sess->cache_keep;
+        if (sess->cache_keep == 0) {
             return GEIST_OK;
         }
-        out_off = (seq_in - 1) * row_bytes_h;
+        out_off = (seq_in - seq) * row_bytes_h;
     }
     /* h_in is the last layer's output; copy seq rows to out_h_buf. */
     {
