@@ -59,11 +59,18 @@
  * docs/DECKNET.md ("The tail behind a camera") tells a slow pass of the library from one the board
  * made slow.
  *
+ * With --window each row is followed by a line with the monotonic clock at
+ * the first and behind the last of its timed frames and how many they were:
+ * what tools/stream_energy.py lays over the power it samples from outside
+ * meanwhile, so that no sampling is in this process (docs/DECKNET.md,
+ * "Energy").
+ *
  * Run it under the host lock like every timing (CONTRIBUTING.md):
  *   make DECKNET=1 bin/<target>/release/tools/bench_stream
  *   bench_stream [--frames N] [--threads 1|2] [--scene block|all|half|burst]
  *                [--only still|stream|gated] [--size 720|1080] [--camera FPS]
- *                [--trace] [--backend cpu|metal|vulkan]
+ *                [--trace] [--backend cpu|metal|vulkan] [--window]
+ *                [--format rgb8|nv12|yuyv]
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1 /* macOS hides the counters of struct rusage under strict POSIX */
@@ -608,6 +615,26 @@ static double cpu_seconds(void) {
            ((double) ru.ru_utime.tv_usec + (double) ru.ru_stime.tv_usec) * 1e-6;
 }
 
+/* --window: when a row's timed frames ran, on the clock a sampler outside
+ * this process reads as well (CLOCK_MONOTONIC, in seconds). */
+static void report_window(const char *way,
+                          size_t      w,
+                          size_t      h,
+                          const char *format,
+                          size_t      n,
+                          double      t0_ms,
+                          double      t1_ms) {
+    printf("%4zux%-4zu  %-4s  %-6s  window %.6f to %.6f s on the monotonic clock, %zu frames\n",
+           w,
+           h,
+           format,
+           way,
+           t0_ms * 1e-3,
+           t1_ms * 1e-3,
+           n);
+    fflush(stdout);
+}
+
 static void report(const char    *way,
                    size_t         w,
                    size_t         h,
@@ -789,6 +816,7 @@ static bool measure(size_t                    w,
                     enum scene                scene,
                     double                    camera_fps,
                     bool                      trace,
+                    bool                      window,
                     const char               *only,
                     struct geist_backend     *be,
                     double                    look_s) {
@@ -837,13 +865,14 @@ static bool measure(size_t                    w,
     const char   *name    = format_names[format];
 
     if (camera_fps <= 0.0 && (only == nullptr || strcmp(only, "still") == 0)) {
-        double cpu0 = 0.0;
+        double cpu0 = 0.0, first = 0.0;
         for (size_t i = 0; i < WARMUP + n_frames; i++) {
             cpu0                            = i == WARMUP ? cpu_seconds() : cpu0;
             const uint8_t              *cam = ring[frame_of(scene, i)];
             struct geist_decknet_result res;
             const double                t0 = now_ms();
-            const uint8_t              *in = cam;
+            first                          = i == WARMUP ? t0 : first;
+            const uint8_t *in              = cam;
             if (format != GEIST_DECKNET_FORMAT_RGB8) {
                 to_rgb8(format, w, h, stride, cam, cur8);
                 in = cur8;
@@ -862,7 +891,11 @@ static bool measure(size_t                    w,
                 t_still.hash   = hash_outputs(t_still.hash, &info, &res, d, nullptr);
             }
         }
+        const double last = now_ms();
         report("still", w, h, name, n_frames, cpu_seconds() - cpu0, ms, &t_still);
+        if (window) {
+            report_window("still", w, h, name, n_frames, first, last);
+        }
     }
     /* Twice: without gating, then gated at threshold 0. */
     struct timing t_way[2] = {};
@@ -904,7 +937,7 @@ static bool measure(size_t                    w,
             double       worst = 0.0, cpu0 = 0.0;
             struct pass *pass    = trace ? must_alloc(c.n * sizeof pass[0]) : nullptr;
             size_t       n_pass  = 0;
-            uint64_t     t_first = 0;
+            uint64_t     t_first = 0, t_from = 0, t_to = 0;
             for (;;) {
                 const bool                        done = atomic_load(&c.done);
                 const struct geist_decknet_frame *got  = nullptr;
@@ -926,6 +959,8 @@ static bool measure(size_t                    w,
                     /* The first timed frame's own pass is not in the
                      * processor time; the ones after it are. */
                     cpu0             = n_computed == 0 ? cpu_seconds() : cpu0;
+                    t_from           = n_computed == 0 ? got->timestamp : t_from;
+                    t_to             = t1;
                     ms[n_computed++] = latency;
                     n_late += latency > 1e3 / camera_fps;
                     worst = latency > worst ? latency : worst;
@@ -966,6 +1001,10 @@ static bool measure(size_t                    w,
                    n_computed - 1,
                    (double) n_looks * look_s);
             fflush(stdout);
+            if (window) {
+                report_window(
+                        way, w, h, name, n_computed, (double) t_from * 1e-6, (double) t_to * 1e-6);
+            }
             if (trace) {
                 report_slow(n_pass, pass, ms);
                 free(pass);
@@ -974,13 +1013,14 @@ static bool measure(size_t                    w,
             geist_decknet_stream_destroy(s);
             continue;
         }
-        double tiles = 0.0, changed = 0.0, samples = 0.0, cpu0 = 0.0, cpu_s = 0.0;
+        double tiles = 0.0, changed = 0.0, samples = 0.0, cpu0 = 0.0, cpu_s = 0.0, first = 0.0;
         for (size_t i = 0; i < WARMUP + n_frames; i++) {
             /* The hashing below is the bench's, and not in the time. */
             cpu0            = cpu_seconds();
             f.data          = ring[frame_of(scene, i)];
             f.timestamp     = i;
             const double t0 = now_ms();
+            first           = i == WARMUP ? t0 : first;
             if (geist_decknet_stream_push_frame(s, &f) != GEIST_OK) {
                 die("geist_decknet_stream_push_frame");
             }
@@ -998,7 +1038,12 @@ static bool measure(size_t                    w,
                 samples += (double) res.n_samples;
             }
         }
+        const double last = now_ms();
         report(way, w, h, name, n_frames, cpu_s, ms, &t_way[gated]);
+        if (window) {
+            /* The bench's hashing between the frames is in this window. */
+            report_window(way, w, h, name, n_frames, first, last);
+        }
         /* A tile is GEIST_DECKNET_TILE squared pixels (less at the frame's
          * edge, which is not counted here). Without gating the samples read
          * a part of each tile; gated, every tile is compared. */
@@ -1074,6 +1119,8 @@ int main(int argc, char **argv) {
     size_t      height   = 0;   /* both sizes */
     double      camera   = 0.0; /* frames per second; 0: as fast as the pass */
     bool        trace    = false;
+    bool        window   = false;
+    const char *format   = nullptr; /* all three */
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) {
             n_frames = (size_t) strtoul(argv[++i], nullptr, 10);
@@ -1098,12 +1145,19 @@ int main(int argc, char **argv) {
             trace = true;
         } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
             backend = argv[++i];
+        } else if (strcmp(argv[i], "--window") == 0) {
+            window = true;
+        } else if (strcmp(argv[i], "--format") == 0 && i + 1 < argc &&
+                   (strcmp(argv[i + 1], format_names[0]) == 0 ||
+                    strcmp(argv[i + 1], format_names[1]) == 0 ||
+                    strcmp(argv[i + 1], format_names[2]) == 0)) {
+            format = argv[++i];
         } else {
             fprintf(stderr,
                     "usage: bench_stream [--frames N] [--threads 1|2] [--scene "
                     "block|all|half|burst] "
                     "[--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace] "
-                    "[--backend cpu|metal|vulkan]\n");
+                    "[--backend cpu|metal|vulkan] [--window] [--format rgb8|nv12|yuyv]\n");
             return 2;
         }
     }
@@ -1145,6 +1199,9 @@ int main(int argc, char **argv) {
             continue;
         }
         for (uint32_t f = 0; f < 3; f++) {
+            if (format != nullptr && strcmp(format, format_names[f]) != 0) {
+                continue;
+            }
             same = measure(sizes[i][0],
                            sizes[i][1],
                            (enum geist_decknet_format) f,
@@ -1153,6 +1210,7 @@ int main(int argc, char **argv) {
                            scene,
                            camera,
                            trace,
+                           window,
                            only,
                            be,
                            look_s) &&
