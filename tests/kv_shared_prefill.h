@@ -103,14 +103,16 @@ static int buf_differs(const struct geist_backend_vtbl *v,
     if (x == nullptr || y == nullptr) {
         return x != y;
     }
-    const void *px = v->buffer_map(x), *py = v->buffer_map(y);
-    const int   d = px == nullptr || py == nullptr || memcmp(px, py, bytes) != 0;
-    if (px != nullptr) {
-        v->buffer_unmap(x);
+    if (bytes == 0) {
+        return 0;
     }
-    if (py != nullptr) {
-        v->buffer_unmap(y);
-    }
+    /* Downloaded, not mapped: a cache in device memory (Vulkan on a discrete
+     * GPU) has no host pointer to map. */
+    uint8_t  *px = malloc(bytes), *py = malloc(bytes);
+    const int d = px == nullptr || py == nullptr || v->buffer_download(bytes, px, x) != GEIST_OK ||
+                  v->buffer_download(bytes, py, y) != GEIST_OK || memcmp(px, py, bytes) != 0;
+    free(px);
+    free(py);
     return d;
 }
 
