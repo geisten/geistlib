@@ -1087,7 +1087,8 @@ What it settled:
   median with ranges that overlap; it needs a block, and the library is C
   without blocks. Polling the status was no faster and cost 0.2 s more
   processor time per 300 frames.
-- **What it cannot show** is a camera's own buffers; see "Not covered".
+- **What it cannot show** is a camera's own buffers; see "The copy a
+  surface would save".
 
 So on this machine the GPU path gains in latency and in processor time,
 which is the part of the energy that was measured, and it is in the tree.
@@ -1503,6 +1504,80 @@ baselines of 29, 32, 34 and 45 W before its four arms, on a machine whose
 other work the lock does not stop, against a stream that costs a few
 watts. Metal's energy stays the processor time above.
 
+### The copy a surface would save
+
+The last step of #533 measured what a surface path could gain at most
+before building it, and did not build it. On the M1 Max (macOS 27.2.1,
+Apple clang 21, on mains power, under the host lock, load average 3.4 to
+18.8 during the runs), `tools/bench_stream --backend metal --size 1080
+--only stream --frames 600`, two arms in turn, the order swapped with each
+round, seven rounds: the stream as it is, and the stream with the copy of
+the frame's rows left out after the eighth frame, so that the GPU does the
+same work on a frame that is stale. The second arm's results are wrong and
+its time is that of any way to hand over a frame without copying it, a
+surface included, if that way cost nothing itself. The copy was timed as
+well (two timers around it in `push_gpu`, not in the tree). Medians of
+seven runs: p50 of a frame in ms with the copy and without, p50 of the
+copy in ms, and the copy as a share of the frame.
+
+| | RGB8 | NV12 | YUYV |
+| :-- | --: | --: | --: |
+| behind a camera at 60, one thread: frame with / without | 3.45 / 3.30 | 3.39 / 3.31 | 3.41 / 3.30 |
+| the copy, and its share | 0.142, 4.1 % | 0.075, 2.2 % | 0.097, 2.8 % |
+| behind a camera at 60, two threads: frame with / without | 2.77 / 2.62 | 2.71 / 2.63 | 2.72 / 2.62 |
+| the copy, and its share | 0.145, 5.2 % | 0.077, 2.8 % | 0.097, 3.6 % |
+| back to back, one thread: frame with / without | 3.09 / 2.94 | 3.03 / 2.94 | 3.06 / 2.94 |
+| the copy, and its share | 0.141, 4.5 % | 0.077, 2.5 % | 0.097, 3.2 % |
+| back to back, two threads: frame with / without | 2.41 / 2.26 | 2.34 / 2.26 | 2.36 / 2.26 |
+| the copy, and its share | 0.142, 5.9 % | 0.078, 3.3 % | 0.098, 4.2 % |
+
+- **A surface could take 0.08 to 0.11 ms off a frame of the two formats a
+  camera delivers**, 2.2 to 4.2 % of a frame that takes 2.3 to 3.4 ms and
+  half a percent of a frame period at 60 per second. The difference of the
+  two arms, run by run, has medians of 0.08 to 0.09 ms for NV12 and 0.10 to
+  0.12 ms for YUYV, which is the timer's value: the copy costs what it
+  takes, and nothing behind it gets slower for it.
+- **The tail does not show it.** The medians of p99 are 2.6 to 5.6 ms with
+  the copy and 2.5 to 4.8 ms without, in no order between the arms; of
+  25200 results behind the camera per arm, 36 were later than a frame
+  period with the copy and 9 without, in four of the 42 runs each.
+- **Copying out of a surface costs what copying plain memory costs.** A
+  program outside the tree (C, CoreVideo) made eight pixel buffers on
+  IOSurfaces (`CVPixelBufferCreate` with
+  `kCVPixelBufferIOSurfacePropertiesKey`) and eight pieces of plain memory
+  of the same size, and copied each in turn, 600 times, twice: 0.081 and
+  0.083 ms from a locked surface for 0.075 and 0.080 ms from plain memory
+  for NV12 (`420v`, 3.1 MB), 0.096 and 0.094 for 0.092 and 0.092 ms for
+  YUYV (`yuvs`, 4.1 MB), 0.175 and 0.177 for 0.174 and 0.176 ms for BGRA
+  (8.3 MB). Locking and unlocking a surface to read it took 0.001 ms. So
+  the bench's frames, which are plain memory, say what the copy of a
+  locked surface costs.
+- **That is at the line drawn for it, and it was not built.** #533 lands a
+  step with its measured gain, and this one was to be built if the copy is
+  clearly more than about 3 % of a frame. For NV12 it is 2.2 to 3.3 %, for
+  YUYV 2.8 to 4.2 %: below with one thread for the CPU's part and above
+  with two, where the frame is shorter and the copy the same. Against
+  that, a surface path needs an entry point that takes a platform's
+  object, a cache of the GPU's views of the camera's surfaces so that a
+  frame allocates nothing, the surface locked while the GPU reads it, and
+  the kernel told where a surface's planes and rows lie. The bound above
+  is what all of it could return.
+- **Which of a camera's formats a stream takes** is the larger gap. `420v`
+  is NV12 and `yuvs` is YUYV; the buffers made here had the layout a
+  stream asks for (the chroma plane `stride * height` bytes behind the
+  luma plane, rows without padding at 1920 x 1080 and 1280 x 720). `2vuy`
+  (U Y V Y) and BGRA have no format in a stream, and `420f` and an HD
+  camera's BT.709 need a matrix a stream does not have ("Frames").
+- **Not measured:** a real camera (none was opened; what layout its pool's
+  buffers have, and whether its surfaces are slower to read just after
+  the capture wrote them, is not known); a surface path itself; a program
+  that sleeps between two frames instead of looking for the next one as
+  the bench does. In the program above, with 16 ms of sleep before each
+  copy, the same copies took 0.19 ms (NV12), 0.25 to 0.26 ms (YUYV) and
+  0.48 to 0.50 ms (BGRA) from either kind of memory, and the lock 0.03 ms.
+  What the rest of a frame takes after such a sleep, and so what share of
+  it the copy is then, was not measured.
+
 ### Not covered
 
 - **A capture loop.** The queue of one is two calls; the thread that
@@ -1532,10 +1607,13 @@ watts. Metal's energy stays the processor time above.
   nothing was measured: see there.
 - **A camera's own buffers.** On Apple a camera hands out pixel buffers
   that lie on IOSurfaces. A stream takes a pointer to bytes, so a caller
-  locks such a buffer and the stream copies its rows; binding the surface
-  to the GPU as a texture would save that copy and was not built. The
-  bench's frames are plain memory and its camera is a thread with a clock:
-  it says what a copy costs and nothing about a surface.
+  locks such a buffer and the stream copies its rows; handing the surface to
+  the GPU (as a texture, or its memory wrapped as a buffer) would save that
+  copy and nothing else, and was not built: see "The copy a surface would
+  save" below. On Linux the CPU path reads a V4L2 `mmap` buffer in place
+  like any memory; that was not run, because the Raspberry Pi 5 had no
+  camera attached (its video devices were the image processor's and the
+  decoder's nodes, and nothing was installed to change that).
 - **A gated frame on the GPU.** A gated stream computes on the CPU, also
   the frame it computes whole because nearly every tile changed.
 - **A model and a stream on one backend at once.** Not tried. The Metal
