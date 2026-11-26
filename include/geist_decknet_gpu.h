@@ -67,6 +67,12 @@ struct geist_decknet_gpu_kernel {
     const uint32_t *crop; /* crops: crop c starts at pixel c * crop_w * crop_h */
 };
 
+/* @stability EXPERIMENTAL — the pixels [first, first + n) of the pixel
+ * memory. */
+struct geist_decknet_gpu_span {
+    uint32_t first, n;
+};
+
 /* @stability EXPERIMENTAL — what a stream needs of the GPU; fixed for the
  * life of the state. Every count fits 32 bits. */
 struct geist_decknet_gpu_plan {
@@ -77,12 +83,18 @@ struct geist_decknet_gpu_plan {
     size_t                          n_first;   /* samples of stage 0 */
     const uint32_t                 *dst;       /* n_samples; read during create, not kept */
     struct geist_decknet_gpu_kernel kernel[2];
+    /* What the CPU reads of `pixels` after the wait for stage 0 and for
+     * stage 1, and nothing else of them (it reads every sum): a backend whose
+     * device does not work on host memory copies these spans back. Read
+     * during create, not kept. */
+    size_t                               n_read[2];
+    const struct geist_decknet_gpu_span *read[2];
 };
 
 /* @stability EXPERIMENTAL — host memory of the state, valid until destroy.
  * `samples` and `frame` (frame_bytes, rounded up to whole words) are the
  * caller's to write; `pixels` and `sums` are read after the wait for the
- * stage that writes them. */
+ * stage that writes them, `pixels` within the plan's spans of that stage. */
 struct geist_decknet_gpu_memory {
     struct geist_decknet_gpu_sample *samples;
     uint8_t                         *frame;

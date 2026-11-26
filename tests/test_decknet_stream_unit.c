@@ -73,8 +73,9 @@
  *                   homographies, a frame that is not checkable, gating,
  *                   the queue, no allocation), and a stream that changes
  *                   between the CPU and the GPU from frame to frame: the
- *                   same bits throughout. Elsewhere that part is skipped,
- *                   and says so.
+ *                   same bits throughout, on Vulkan with the buffers in
+ *                   host memory and once more with them device-local.
+ *                   Elsewhere that part is skipped, and says so.
  */
 #include "decknet_tiny.h"
 #include "heap.h"
@@ -2242,12 +2243,23 @@ int main(void) {
     test_backend(nullptr);
     /* The same on a GPU, where there is one: a build has the Metal backend
      * or the Vulkan one or neither, and a host without a device they take
-     * refuses the create. */
-    static const char *const gpus[] = {"metal", "vulkan"};
+     * refuses the create.
+     * The Vulkan one keeps a stream's buffers in host memory or in the
+     * device's, by the kind of device (GEIST_VK_DECKNET_MEMORY); each is
+     * code the other does not run, so both are run on whatever is here. */
+    static const struct {
+        const char *name, *memory;
+    } gpus[] = {{"metal", nullptr}, {"vulkan", "host"}, {"vulkan", "device"}};
     for (size_t i = 0; i < sizeof gpus / sizeof gpus[0]; i++) {
         struct geist_backend *gpu = nullptr;
-        if (geist_backend_create(gpus[i], nullptr, nullptr, &gpu) == GEIST_OK) {
-            printf("---- every stream on the %s backend ----\n", gpus[i]);
+        if (gpus[i].memory != nullptr) {
+            setenv("GEIST_VK_DECKNET_MEMORY", gpus[i].memory, 1);
+        }
+        if (geist_backend_create(gpus[i].name, nullptr, nullptr, &gpu) == GEIST_OK) {
+            printf("---- every stream on the %s backend ----\n", gpus[i].name);
+            if (gpus[i].memory != nullptr) {
+                printf("its buffers in %s memory\n", gpus[i].memory);
+            }
             g_be = gpu;
             frames_suite();
             g_be = nullptr;
@@ -2255,9 +2267,10 @@ int main(void) {
             geist_backend_destroy(gpu);
         } else {
             printf("SKIP the streams on a GPU: the %s backend is not built in or has no device\n",
-                   gpus[i]);
+                   gpus[i].name);
         }
     }
+    unsetenv("GEIST_VK_DECKNET_MEMORY");
     if (g_fail) {
         return GEIST_TEST_FAIL;
     }
