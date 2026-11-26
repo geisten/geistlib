@@ -8,8 +8,8 @@
  * one row's output, the last one's, so the rows of every chunk before the
  * last run layers [0, n_cache_layers) only. The last chunk's rows do too,
  * and its last rows go on through the KV-shared layers without the others:
- * the last eight on a CPU backend, the last one on Metal (not with an INT8 or
- * INT4 cache, and not on Vulkan: there the last chunk runs every layer for
+ * the last eight on a CPU backend, the last one on Metal and on Vulkan (not
+ * with a KIVI cache on Vulkan: there the last chunk runs every layer for
  * every row; transformer_prefill_cache_rows). The oracle is the same model
  * loaded with GEIST_KV_SHARED_FULL=1, which runs every layer for every row.
  *
@@ -47,6 +47,10 @@
  *
  * GEIST_BACKEND picks the backend (default "auto", and the CPU backend too
  * where "auto" is a GPU). Skips on a model without KV-shared layers.
+ *
+ * GEIST_BACKEND=vulkan runs the brief set: three lengths of the first list
+ * and one prefill with decode steps per KV representation. The whole list
+ * did not end within the 30 minutes of the vulkan-gpu job (RTX 2080 Ti).
  */
 #define _POSIX_C_SOURCE 200809L
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -56,10 +60,14 @@
 
 int main(void) {
     GEIST_REQUIRE_GGUF(model_path);
-    const struct kvs_source src = {.path = model_path};
-    size_t                  ran = 0;
-    kvs_ids();
     const char *env = getenv("GEIST_BACKEND");
+    /* ponytail: brief by the backend's name; a case list per time budget if
+     * another slow device comes */
+    const struct kvs_source src = {.path  = model_path,
+                                   .brief = env != nullptr && strcmp(env, "vulkan") == 0};
+    size_t                  ran = 0;
+    setvbuf(stdout, nullptr, _IOLBF, 0); /* progress through CI's pipe */
+    kvs_ids();
     if (env != nullptr && env[0] != '\0') {
         return kvs_run_backend(&src, env, &ran) ? GEIST_TEST_FAIL : GEIST_TEST_PASS;
     }
