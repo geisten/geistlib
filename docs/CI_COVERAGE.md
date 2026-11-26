@@ -210,8 +210,10 @@ f16 coopmat path where exposed. Minimum Vulkan: 1.2.
 The job then builds `test_decknet_stream_unit` with `DECKNET=1` and runs it
 twice on lavapipe, on a backend as it is and on one made with
 `GEIST_VK_DECKNET_ONLY=1` (#533): a decknet stream's frames on the Vulkan
-backend against the CPU path, bit for bit. The test skips that part where
-the backend has no device, so the job asks for the line that says it ran.
+backend against the CPU path, bit for bit, with the stream's buffers in host
+memory and once more with them device-local (`GEIST_VK_DECKNET_MEMORY`, which
+the test sets itself). The test skips that part where the backend has no
+device, so the job asks for the line that says it ran.
 
 Physical-GPU validation is the `vulkan-gpu` workflow in the private
 `.gitea/workflows/vulkan-gpu.yml` on git.geisten.net, nightly on `main` and on demand for

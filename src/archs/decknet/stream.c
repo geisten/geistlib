@@ -752,6 +752,41 @@ static int32_t *gpu_taps(const struct decknet_kernel *k) {
     return taps;
 }
 
+/* [*lo, *hi) widened to the crop pixels `p` reads. */
+static void pool_span(const struct decknet_pool *p, size_t *lo, size_t *hi) {
+    for (size_t r = 0; r < p->n_rows; r++) {
+        *lo = p->px[r] < *lo ? p->px[r] : *lo;
+        *hi = p->px[r] >= *hi ? (size_t) p->px[r] + 1 : *hi;
+    }
+}
+
+/* What the CPU reads of the GPU's pixels (push_gpu), for a backend that has
+ * to copy it back: after stage 0 the strip and, of each floor crop, the
+ * pixels of its three pools (read[0 .. n_slots]); after stage 1, of each tip
+ * crop, those of the white unit's pool (the n_slots spans behind). The
+ * other planes are read as their kernels' sums. */
+static void gpu_read_spans(const struct geist_decknet_stream *s,
+                           struct geist_decknet_gpu_span     *read) {
+    const struct geist_decknet *d = s->d;
+    size_t floor_lo = d->crop_px, floor_hi = 0, tip_lo = d->crop_px, tip_hi = 0;
+    pool_span(&d->occ_front, &floor_lo, &floor_hi);
+    pool_span(&d->occ_rear, &floor_lo, &floor_hi);
+    pool_span(&d->wall_pool, &floor_lo, &floor_hi);
+    pool_span(&d->on, &tip_lo, &tip_hi);
+    read[0] = (struct geist_decknet_gpu_span) {
+            .first = (uint32_t) (gpu_crop(d->n_slots, 0) * d->crop_px), .n = (uint32_t) d->bg_px};
+    for (size_t slot = 0; slot < d->n_slots; slot++) {
+        const size_t floor = gpu_crop(slot, DECKNET_PLANE_FLOOR) * d->crop_px;
+        const size_t tip   = gpu_crop(slot, DECKNET_PLANE_TIP) * d->crop_px;
+        read[1 + slot]     = (struct geist_decknet_gpu_span) {
+                .first = (uint32_t) (floor + (floor_lo < floor_hi ? floor_lo : 0)),
+                .n     = (uint32_t) (floor_lo < floor_hi ? floor_hi - floor_lo : 0)};
+        read[1 + d->n_slots + slot] = (struct geist_decknet_gpu_span) {
+                .first = (uint32_t) (tip + (tip_lo < tip_hi ? tip_lo : 0)),
+                .n     = (uint32_t) (tip_lo < tip_hi ? tip_hi - tip_lo : 0)};
+    }
+}
+
 enum geist_status decknet_stream_set_gpu(struct geist_decknet_stream        *s,
                                          const struct geist_decknet_gpu_ops *ops,
                                          struct geist_backend               *be) {
@@ -779,12 +814,16 @@ enum geist_status decknet_stream_set_gpu(struct geist_decknet_stream        *s,
     GEIST_CLEANUP(heap_freep) uint32_t *dst = heap_alloc_array_aligned(uint32_t, n_samples);
     GEIST_CLEANUP(heap_freep) uint32_t *crops =
             heap_alloc_array_aligned(uint32_t, d->n_slots *(n_kernel_planes + 1));
-    GEIST_CLEANUP(heap_freep) int32_t *blob = gpu_taps(&d->blob);
-    GEIST_CLEANUP(heap_freep) int32_t *tube = gpu_taps(&d->tube_kernel);
-    if (dst == nullptr || crops == nullptr || blob == nullptr || tube == nullptr) {
+    GEIST_CLEANUP(heap_freep) int32_t                       *blob = gpu_taps(&d->blob);
+    GEIST_CLEANUP(heap_freep) int32_t                       *tube = gpu_taps(&d->tube_kernel);
+    GEIST_CLEANUP(heap_freep) struct geist_decknet_gpu_span *read =
+            heap_alloc_array_aligned(struct geist_decknet_gpu_span, 1 + 2 * d->n_slots);
+    if (dst == nullptr || crops == nullptr || blob == nullptr || tube == nullptr ||
+        read == nullptr) {
         return GEIST_E_OOM;
     }
     gpu_dst(s, dst);
+    gpu_read_spans(s, read);
     /* The blob kernel on every plane but the floor, the tube kernel on the
      * hole plane; the sums come back in this order (push_gpu). */
     uint32_t *blob_crops = crops, *tube_crops = crops + d->n_slots * n_kernel_planes;
@@ -816,6 +855,8 @@ enum geist_status decknet_stream_set_gpu(struct geist_decknet_stream        *s,
                              .px      = d->tube_px,
                              .n_crops = d->n_slots,
                              .crop    = tube_crops}},
+            .n_read      = {1 + d->n_slots, d->n_slots},
+            .read        = {read, read + 1 + d->n_slots},
     };
     struct geist_decknet_gpu       *gpu = nullptr;
     struct geist_decknet_gpu_memory mem = {0};
