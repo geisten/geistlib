@@ -493,15 +493,19 @@ static bool prefill_cache_rows_ok(const struct transformer_arch_session *sess) {
  * below about 16000 weights. tests/kv_shared_prefill.h holds every CPU
  * backend to the bits, on a Gemma 4 GGUF and on models built in memory.
  *
- * Metal: 1, unless the cache is INT8 or INT4. Its kernels round a row by
- * the row count whichever way it is run, so the pending logits move by
- * rounding (Gemma 4 E2B Q4_K_M, M1 Max: FP32 and F16 within 1.7e-3 of the
- * largest logit, KIVI 1.0e-3, the same pending token). With an INT8 or
- * INT4 cache the attention rounds each query to 8 bits, and the same
- * rounding becomes up to 8.6e-3 of the largest logit, one row or two:
- * there the last chunk runs every layer for every row.
+ * Metal: 1. Its kernels round a row by the row count whichever way it is
+ * run, so the pending logits move by rounding (Gemma 4 E2B Q4_K_M, M1 Max:
+ * FP32 and F16 within 1.7e-3 of the largest logit, KIVI 1.0e-3, the same
+ * pending token). With an INT8 or INT4 cache the attention rounds each
+ * query to 8 bits and the same rounding becomes up to 8.6e-3 of the
+ * largest logit, the pending token and every decode step's bits still the
+ * same (owner's decision, 2026-11-26).
  *
- * Vulkan: 0, not measured. */
+ * Vulkan: 1, as Metal (RTX 2080 Ti, Gemma 4 E2B Q4_K_M, eight prompt
+ * lengths: FP32 and F16 within 2.1e-3 of the largest logit, INT8 and INT4
+ * 7.0e-3, the same pending token, every decode step's bits; one, two or
+ * eight rows kept give the same worst case, so one). Not with a KIVI cache
+ * there, which is not measured: 0. */
 constexpr size_t TRANSFORMER_PREFILL_KEEP_ROWS = 8;
 
 static size_t prefill_keep_rows(const struct transformer_arch_session *sess) {
@@ -512,7 +516,10 @@ static size_t prefill_keep_rows(const struct transformer_arch_session *sess) {
     if (!desc->caps.batched_submit) {
         return TRANSFORMER_PREFILL_KEEP_ROWS;
     }
-    return strcmp(desc->name, "metal") == 0 && !sess->kv_int8_enabled ? 1 : 0;
+    if (strcmp(desc->name, "metal") == 0) {
+        return 1;
+    }
+    return strcmp(desc->name, "vulkan") == 0 && !sess->kv_kivi_enabled ? 1 : 0;
 }
 
 bool transformer_prefill_cache_rows(const struct transformer_arch_session *sess,

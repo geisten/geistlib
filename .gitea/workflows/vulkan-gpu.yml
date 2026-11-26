@@ -109,7 +109,11 @@ jobs:
         run: |
           set -eo pipefail
           . scripts/gpu-lock.sh
-          for t in test_known_answer_e2e test_prefill_determinism_int test_qwen35_vulkan_e2e_int; do
+          # test_kv_shared_prefill_int: the Gemma 4 prefill that leaves the
+          # KV-shared layers out of all rows but the last (#591), against the
+          # full prefill, on this device.
+          for t in test_known_answer_e2e test_prefill_determinism_int test_qwen35_vulkan_e2e_int \
+                   test_kv_shared_prefill_int; do
             echo "=== $t ==="
             bin/linux/release/tests/"$t" 2>&1 | tee -a ci-diagnostics/vulkan-tests.txt
           done
