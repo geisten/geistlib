@@ -60,7 +60,10 @@ struct pair {
 };
 
 constexpr double KVS_LOGIT_TOL = 5e-3;
-constexpr double KVS_BLAS_TOL  = 1e-5;
+/* A GPU backend with an INT8 or INT4 cache: the attention rounds each query
+ * to 8 bits (Metal, Gemma 4 E2B Q4_K_M: 8.6e-3 measured). */
+constexpr double KVS_INT8_TOL = 1.5e-2;
+constexpr double KVS_BLAS_TOL = 1e-5;
 /* Whether dense F32 goes through a BLAS (Accelerate, OpenBLAS) or through
  * geist's own GEMM. cpu_neon's own tiles give a row the same bits for any
  * row count; cpu_x86's do not (CI, AVX-512: 1.8e-7 of the largest logit on
@@ -504,6 +507,9 @@ static bool open_pair(struct pair          *p,
         }
         p->a[i] = tf_sess(geist_session_internal_arch_session(p->s[i]));
     }
+    if (!p->cpu) {
+        p->tol = p->a[0]->kv_int8_enabled ? KVS_INT8_TOL : KVS_LOGIT_TOL;
+    }
     return true;
 }
 
@@ -515,14 +521,16 @@ static void close_pair(struct pair *p) {
 }
 
 /* The rows of a last chunk of sp rows that run every layer: the eight a
- * CPU backend keeps of 16 or more, the one Metal keeps (not with an INT8 or
- * INT4 cache), or, where the last chunk is not split, all sp. */
+ * CPU backend keeps of 16 or more, the one Metal and Vulkan keep (Vulkan
+ * not with a KIVI cache), or, where the last chunk is not split, all sp. */
 static size_t kvs_kept_rows(const struct pair *p, size_t sp) {
     if (p->cpu) {
         return sp >= 16 ? 8 : sp;
     }
     const char *name = geist_backend_name(p->a[0]->model->backend);
-    return strcmp(name, "metal") == 0 && !p->a[0]->kv_int8_enabled ? 1 : sp;
+    return strcmp(name, "metal") == 0 || (strcmp(name, "vulkan") == 0 && !p->a[0]->kv_kivi_enabled)
+                   ? 1
+                   : sp;
 }
 
 /* A short last chunk's rows, to size the prompts with: on a CPU backend
