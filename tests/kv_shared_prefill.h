@@ -103,14 +103,16 @@ static int buf_differs(const struct geist_backend_vtbl *v,
     if (x == nullptr || y == nullptr) {
         return x != y;
     }
-    const void *px = v->buffer_map(x), *py = v->buffer_map(y);
-    const int   d = px == nullptr || py == nullptr || memcmp(px, py, bytes) != 0;
-    if (px != nullptr) {
-        v->buffer_unmap(x);
+    if (bytes == 0) {
+        return 0;
     }
-    if (py != nullptr) {
-        v->buffer_unmap(y);
-    }
+    /* Downloaded, not mapped: a cache in device memory (Vulkan on a discrete
+     * GPU) has no host pointer to map. */
+    uint8_t  *px = malloc(bytes), *py = malloc(bytes);
+    const int d = px == nullptr || py == nullptr || v->buffer_download(bytes, px, x) != GEIST_OK ||
+                  v->buffer_download(bytes, py, y) != GEIST_OK || memcmp(px, py, bytes) != 0;
+    free(px);
+    free(py);
     return d;
 }
 
@@ -551,6 +553,7 @@ struct kvs_source {
     bool blas_rounds;
     /* A few prefills and each KV representation, not every case. */
     bool brief;
+    bool no_kivi; /* leave the KIVI representation out */
 };
 
 static enum geist_status kvs_load(const struct kvs_source         *src,
@@ -686,6 +689,10 @@ static int kvs_run_backend(const struct kvs_source *src, const char *backend, si
                  {GEIST_KV_INT4, "kv int4"},
                  {GEIST_KV_KIVI, "kv kivi"}};
     for (size_t i = 0; i < sizeof modes / sizeof modes[0] && fails == 0; i++) {
+        if (src->no_kivi && modes[i].kv == GEIST_KV_KIVI) {
+            printf("  [%s] left out\n", modes[i].name);
+            continue;
+        }
         if (!open_pair(&p, be, modes[i].kv, 0, modes[i].name)) {
             printf("  [%s] not on this backend\n", modes[i].name);
             continue;
