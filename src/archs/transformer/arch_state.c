@@ -137,10 +137,12 @@ static void release_layer_weight_aux(struct transformer_layer_weights *L) {
 
 /* ---- Runtime infrastructure: KV caches, RoPE tables, scratch ---------- */
 
-enum geist_status
-transformer_scratch_alloc(struct geist_backend *be, size_t bytes, struct geist_buffer **out) {
-    enum geist_status s =
-            be->desc->vtbl->buffer_create(be, bytes, GEIST_BUFFER_SCRATCH, GEIST_MEMORY_AUTO, out);
+/* A zeroed buffer of `role`. */
+[[nodiscard]] static enum geist_status alloc_zeroed(struct geist_backend  *be,
+                                                    size_t                 bytes,
+                                                    enum geist_buffer_role role,
+                                                    struct geist_buffer  **out) {
+    enum geist_status s = be->desc->vtbl->buffer_create(be, bytes, role, GEIST_MEMORY_AUTO, out);
     if (s != GEIST_OK) {
         return s;
     }
@@ -150,6 +152,11 @@ transformer_scratch_alloc(struct geist_backend *be, size_t bytes, struct geist_b
     }
     be->desc->vtbl->buffer_unmap(*out);
     return GEIST_OK;
+}
+
+enum geist_status
+transformer_scratch_alloc(struct geist_backend *be, size_t bytes, struct geist_buffer **out) {
+    return alloc_zeroed(be, bytes, GEIST_BUFFER_SCRATCH, out);
 }
 
 void transformer_buffer_release(struct geist_backend *be, struct geist_buffer **buf) {
@@ -610,6 +617,15 @@ static void kv_slot_arrays(struct transformer_arch_session *sess,
  * channel). Per-token V scales/zeros: one fp32 per (token, kv_head). The
  * residual is (R + m_max) fp32 K/V rows so a verify_forward burst of m_max
  * tokens never overflows. */
+/* The role of a cache buffer only host kernels read (attention.c through
+ * buffer_map): the KIVI cache on every backend, the INT8 one on a backend
+ * without the fused kernels. With it Vulkan on a discrete GPU puts the
+ * buffer in system memory and not in the BAR window, where a scratch buffer
+ * goes and every host read is an uncached read over PCIe (#605: Gemma 4 E2B
+ * on an RTX 2080 Ti, a 512-token prefill with the INT8 cache 10 s there and
+ * 1.4 to 2.1 s here). The other backends place the two roles alike. */
+static const enum geist_buffer_role KV_HOST_ROLE = GEIST_BUFFER_IO;
+
 [[nodiscard]] static enum geist_status alloc_layer_kv_kivi(struct transformer_arch_session *sess,
                                                            size_t                           li) {
     const struct transformer_arch_state *st             = sess->model;
@@ -634,7 +650,7 @@ static void kv_slot_arrays(struct transformer_arch_session *sess,
             {residual_bytes, &sess->v_residual[li]},
     };
     for (size_t i = 0; i < sizeof bufs / sizeof bufs[0]; i++) {
-        enum geist_status s = transformer_scratch_alloc(st->backend, bufs[i].bytes, bufs[i].out);
+        enum geist_status s = alloc_zeroed(st->backend, bufs[i].bytes, KV_HOST_ROLE, bufs[i].out);
         if (s != GEIST_OK) {
             return s;
         }
@@ -656,6 +672,12 @@ static void kv_slot_arrays(struct transformer_arch_session *sess,
     const size_t                         k_bytes  = n_elems * sizeof(int8_t);
     const size_t      v_bytes = sess->kv_int4_packed_enabled ? n_elems / 2 : k_bytes;
     enum geist_status s;
+    /* Without the backend's kernels the host attention reads the cache. */
+    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
+    const enum geist_buffer_role      role =
+            fused->attention_kv_int8 == nullptr && fused->attention_kv_int4 == nullptr
+                    ? KV_HOST_ROLE
+                    : GEIST_BUFFER_SCRATCH;
     if (be->desc->caps.kv_q8_block) {
         /* V half a row on (half a page at most, a multiple of 64): the
          * cpu_x86 kernels gained 3-39 % over V at K's offset, more than
@@ -671,16 +693,16 @@ static void kv_slot_arrays(struct transformer_arch_session *sess,
                                             &sess->k_cache_q8[li],
                                             &sess->v_cache_q8[li]);
     } else {
-        s = transformer_scratch_alloc(be, k_bytes, &sess->k_cache_q8[li]);
+        s = alloc_zeroed(be, k_bytes, role, &sess->k_cache_q8[li]);
         if (s == GEIST_OK) {
-            s = transformer_scratch_alloc(be, v_bytes, &sess->v_cache_q8[li]);
+            s = alloc_zeroed(be, v_bytes, role, &sess->v_cache_q8[li]);
         }
     }
     if (s == GEIST_OK) {
-        s = transformer_scratch_alloc(be, n_scales * sizeof(float), &sess->k_cache_scale[li]);
+        s = alloc_zeroed(be, n_scales * sizeof(float), role, &sess->k_cache_scale[li]);
     }
     if (s == GEIST_OK) {
-        s = transformer_scratch_alloc(be, n_scales * sizeof(float), &sess->v_cache_scale[li]);
+        s = alloc_zeroed(be, n_scales * sizeof(float), role, &sess->v_cache_scale[li]);
     }
     return s;
 }
