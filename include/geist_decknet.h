@@ -146,13 +146,15 @@ struct geist_decknet_stream;
  *         plane of U V pairs, one pair per 2 x 2 pixels, its rows `stride`
  *         bytes apart as well. Width and height are even.
  *   YUYV  4 bytes per 2 pixels: Y0 U Y1 V. Width is even.
- * NV12 and YUYV are read as BT.601 limited range ("video range") with the
+ *   UYVY  the same samples in the order U Y0 V Y1. Width is even.
+ * NV12, YUYV and UYVY are read as BT.601 limited range ("video range") with the
  * chroma of a pixel taken from its block without interpolation; the exact
  * integer formula is in docs/DECKNET.md. */
 enum geist_decknet_format : uint32_t {
     GEIST_DECKNET_FORMAT_RGB8 = 0,
     GEIST_DECKNET_FORMAT_NV12 = 1,
     GEIST_DECKNET_FORMAT_YUYV = 2,
+    GEIST_DECKNET_FORMAT_UYVY = 3,
 };
 static_assert(sizeof(enum geist_decknet_format) == sizeof(uint32_t));
 
@@ -213,13 +215,13 @@ void geist_decknet_stream_destroy(struct geist_decknet_stream *s);
  * bytes stand for it, and what the pass computed from them is reused. Any
  * other tile is taken and is the kept one from then on. The bytes of a tile
  * are those of its pixels in the frame's format: R G B for RGB8, Y0 U Y1 V
- * for YUYV, for NV12 its Y bytes and the U V pairs of its 2 x 2 blocks. So
+ * for YUYV (UYVY in its order), for NV12 its Y bytes and the U V pairs of its 2 x 2 blocks. So
  * the sum covers the colour as well, not the luma alone: threshold 0 means
  * "the same bytes".
  *
  * The result is exact with respect to the threshold: bit for bit that of
- * geist_decknet_run on the image whose tiles are the kept ones (for NV12 and
- * YUYV converted as geist_decknet_stream_push_frame says). With threshold 0
+ * geist_decknet_run on the image whose tiles are the kept ones (for the YUV
+ * formats converted as geist_decknet_stream_push_frame says). With threshold 0
  * that image is the frame, and the result is that of a stream without
  * gating. The first frame after this call, after
  * geist_decknet_stream_set_reference and after a frame of another format is
@@ -291,7 +293,7 @@ geist_decknet_stream_set_reference(struct geist_decknet_stream      *s,
  * One forward pass on `frame` against the reference; returns when it is
  * done. Only the tiles the network samples are read, in the frame's own
  * format. The result is that of geist_decknet_run on the same two images:
- * bit for bit for RGB8, and for NV12 and YUYV bit for bit that of the frame
+ * bit for bit for RGB8, and for the YUV formats bit for bit that of the frame
  * converted to RGB8 by the formula in docs/DECKNET.md.
  *
  * GEIST_E_INVALID_ARG, with nothing read and the last result kept, for a

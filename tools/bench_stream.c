@@ -16,7 +16,7 @@
  *
  * Three ways through the same frames, for each size and format:
  *
- *   still   geist_decknet_run per frame. It takes RGB8, so an NV12 or YUYV
+ *   still   geist_decknet_run per frame. It takes RGB8, so a YUV
  *           frame is first converted whole (the formula of docs/DECKNET.md);
  *           the empty deck is converted once, outside the timing.
  *   stream  geist_decknet_stream_push_frame on the frame as it is.
@@ -70,7 +70,7 @@
  *   bench_stream [--frames N] [--threads 1|2] [--scene block|all|half|burst]
  *                [--only still|stream|gated] [--size 720|1080] [--camera FPS]
  *                [--trace] [--backend cpu|metal|vulkan] [--window]
- *                [--format rgb8|nv12|yuyv]
+ *                [--format rgb8|nv12|yuyv|uyvy]
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1 /* macOS hides the counters of struct rusage under strict POSIX */
@@ -507,6 +507,13 @@ static void to_format(enum geist_decknet_format format,
                     out[y * stride + x * 2 + 3] = yuv[2];
                 }
                 break;
+            case GEIST_DECKNET_FORMAT_UYVY:
+                out[y * stride + x * 2 + 1] = yuv[0];
+                if (x % 2 == 0) {
+                    out[y * stride + x * 2]     = yuv[1];
+                    out[y * stride + x * 2 + 2] = yuv[2];
+                }
+                break;
             }
         }
     }
@@ -536,9 +543,10 @@ static void to_rgb8(enum geist_decknet_format format,
                 u    = uv[even];
                 v    = uv[even + 1];
             } else {
-                luma = row[x * 2];
-                u    = row[even * 2 + 1];
-                v    = row[even * 2 + 3];
+                const size_t c = format == GEIST_DECKNET_FORMAT_UYVY ? 0 : 1; /* the U */
+                luma           = row[x * 2 + 1 - c];
+                u              = row[even * 2 + c];
+                v              = row[even * 2 + c + 2];
             }
             const int32_t c = 298 * (luma - 16) + 128;
             o[0]            = clip8(c + 409 * (v - 128));
@@ -800,7 +808,7 @@ static void report_slow(size_t n, const struct pass *pass, double *scratch) {
     fflush(stdout);
 }
 
-static const char *const format_names[3] = {"rgb8", "nv12", "yuyv"};
+static const char *const format_names[4] = {"rgb8", "nv12", "yuyv", "uyvy"};
 
 /* Which frame of the two rings is pushed i-th. */
 static size_t frame_of(enum scene scene, size_t i) {
@@ -1150,14 +1158,15 @@ int main(int argc, char **argv) {
         } else if (strcmp(argv[i], "--format") == 0 && i + 1 < argc &&
                    (strcmp(argv[i + 1], format_names[0]) == 0 ||
                     strcmp(argv[i + 1], format_names[1]) == 0 ||
-                    strcmp(argv[i + 1], format_names[2]) == 0)) {
+                    strcmp(argv[i + 1], format_names[2]) == 0 ||
+                    strcmp(argv[i + 1], format_names[3]) == 0)) {
             format = argv[++i];
         } else {
             fprintf(stderr,
                     "usage: bench_stream [--frames N] [--threads 1|2] [--scene "
                     "block|all|half|burst] "
                     "[--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace] "
-                    "[--backend cpu|metal|vulkan] [--window] [--format rgb8|nv12|yuyv]\n");
+                    "[--backend cpu|metal|vulkan] [--window] [--format rgb8|nv12|yuyv|uyvy]\n");
             return 2;
         }
     }
@@ -1198,7 +1207,7 @@ int main(int argc, char **argv) {
         if (height != 0 && sizes[i][1] != height) {
             continue;
         }
-        for (uint32_t f = 0; f < 3; f++) {
+        for (uint32_t f = 0; f < 4; f++) {
             if (format != nullptr && strcmp(format, format_names[f]) != 0) {
                 continue;
             }

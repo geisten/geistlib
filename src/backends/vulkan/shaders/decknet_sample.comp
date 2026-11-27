@@ -1,7 +1,7 @@
 #version 450
 
 /* decknet (#533): one invocation per sample of a camera frame. The 2 x 2
- * camera pixels (of an NV12 or YUYV frame converted here, per pixel, by the
+ * camera pixels (of a YUV frame converted here, per pixel, by the
  * integer formula of docs/DECKNET.md), blended with the table's weights in
  * unsigned 32-bit arithmetic that wraps, into the pixel memory
  * (<geist_decknet_gpu.h>). The frame's bytes are read out of 32-bit words:
@@ -40,7 +40,7 @@ uvec3 yuv(int y, int u, int v) {
     return uvec3(clamp(rgb, 0, 255));
 }
 
-/* Formats: 0 RGB8, 1 NV12, 2 YUYV (enum geist_decknet_format). */
+/* Formats: 0 RGB8, 1 NV12, 2 YUYV, 3 UYVY (enum geist_decknet_format). */
 uvec3 pixel(uint x, uint y) {
     if (p.format == 0u) {
         uint o = y * p.stride + x * 3u;
@@ -51,7 +51,8 @@ uvec3 pixel(uint x, uint y) {
         return yuv(byte(y * p.stride + x), byte(o), byte(o + 1u));
     }
     uint o = y * p.stride + (x & ~1u) * 2u;
-    return yuv(byte(y * p.stride + x * 2u), byte(o + 1u), byte(o + 3u));
+    uint c = p.format == 3u ? 0u : 1u; /* where the U is; the Y beside it */
+    return yuv(byte(y * p.stride + x * 2u + 1u - c), byte(o + c), byte(o + c + 2u));
 }
 
 void main() {

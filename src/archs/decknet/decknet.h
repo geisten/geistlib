@@ -439,7 +439,7 @@ struct geist_decknet_stream {
     struct decknet_box *box;
     /* img_w x img_h x 3 and DECKNET_SAMPLE_BYTES behind them. For a gated
      * stream the kept tiles of any frame as RGB8, written at the used
-     * tiles of an image of the frame's size. For an NV12 or YUYV frame that
+     * tiles of an image of the frame's size. For a YUV frame that
      * is not gated, what the worktable strip and then each slot of the
      * first thread reads, as RGB8, packed (stream.c, pixels_box). */
     uint8_t *rgb;
@@ -452,7 +452,7 @@ struct geist_decknet_stream {
     uint32_t                  threshold;
     bool                      have_kept; /* the kept tiles are of a frame of kept_format */
     enum geist_decknet_format kept_format;
-    uint8_t                  *kept; /* the kept tiles of an NV12 or YUYV frame, rows unpadded */
+    uint8_t                  *kept; /* the kept tiles of a YUV frame, rows unpadded */
     bool      cached;    /* the caches below are of the kept tiles as they were before this frame */
     uint32_t *crop;      /* n_slots x DECKNET_PLANES crops */
     double   *sums;      /* n_slots x (DECKNET_PLANES - 1) x n_blob_px x 3 */

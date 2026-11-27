@@ -26,7 +26,7 @@
  *                   kernel window across a cell of the crop, a tile exactly
  *                   at the threshold, each tile changed on its own, a
  *                   sample at the seam of two stretches of the tables;
- *   conversion      NV12 and YUYV frames of arbitrary bytes, the whole range;
+ *   conversion      YUV frames of arbitrary bytes, the whole range;
  *   no allocation   after geist_decknet_stream_create and the first
  *                   geist_decknet_stream_set_gate: not for the reference,
  *                   not for the first frame, not for any later one, in any
@@ -172,6 +172,14 @@ static void rgb_to_yuv(const uint8_t *p, uint8_t yuv[static 3]) {
     yuv[2] = clip(((112 * r - 94 * g - 18 * b + 128 + (128 << 8)) >> 8));
 }
 
+/* Where the U of a 4:2:2 pair is in its four bytes: 1 in YUYV, 0 in UYVY.
+ * The Y of a pixel is the byte beside its U or V, on the other side. */
+static size_t u_at(enum geist_decknet_format format) {
+    return format == GEIST_DECKNET_FORMAT_UYVY ? 0 : 1;
+}
+
+static const char *const format_names[4] = {"RGB8", "NV12", "YUYV", "UYVY"};
+
 static size_t row_bytes(enum geist_decknet_format format, size_t w) {
     return format == GEIST_DECKNET_FORMAT_RGB8   ? w * 3
            : format == GEIST_DECKNET_FORMAT_NV12 ? w
@@ -207,10 +215,11 @@ make_frame(enum geist_decknet_format format, size_t w, size_t h, size_t pad, con
                     out[(h + y / 2) * stride + x + 1] = yuv[2];
                 }
             } else {
-                out[y * stride + x * 2] = yuv[0];
+                const size_t c                  = u_at(format);
+                out[y * stride + x * 2 + 1 - c] = yuv[0];
                 if (x % 2 == 0) {
-                    out[y * stride + x * 2 + 1] = yuv[1];
-                    out[y * stride + x * 2 + 3] = yuv[2];
+                    out[y * stride + x * 2 + c]     = yuv[1];
+                    out[y * stride + x * 2 + c + 2] = yuv[2];
                 }
             }
         }
@@ -234,7 +243,8 @@ static uint8_t *frame_to_rgb8(const struct geist_decknet_frame *f) {
                 const uint8_t *uv = f->data + (h + y / 2) * f->stride + even;
                 yuv_to_rgb(row[x], uv[0], uv[1], o);
             } else {
-                yuv_to_rgb(row[x * 2], row[even * 2 + 1], row[even * 2 + 3], o);
+                const size_t c = u_at(f->format);
+                yuv_to_rgb(row[x * 2 + 1 - c], row[even * 2 + c], row[even * 2 + c + 2], o);
             }
         }
     }
@@ -416,9 +426,9 @@ static size_t tile_bytes(const struct geist_decknet_frame *f,
                 for (size_t c = 0; c < 3; c++) {
                     out[n++] = y * f->stride + x * 3 + c;
                 }
-            } else if (f->format == GEIST_DECKNET_FORMAT_YUYV) {
-                out[n++] = y * f->stride + x * 2;     /* its Y */
-                out[n++] = y * f->stride + x * 2 + 1; /* the U or the V of its pair */
+            } else if (f->format != GEIST_DECKNET_FORMAT_NV12) {
+                out[n++] = y * f->stride + x * 2;     /* its Y and the U or the V */
+                out[n++] = y * f->stride + x * 2 + 1; /* of its pair, in either order */
             } else {
                 out[n++] = y * f->stride + x;
                 if (x % 2 == 0 && y % 2 == 0) { /* the U V pair of its 2 x 2 block */
@@ -1087,8 +1097,9 @@ static void test_conversion_range(enum geist_decknet_format format) {
     }
     printf("%-34s %zu frames of arbitrary bytes (%zu of them 0 or 255), %zu outputs bit-identical "
            "to the still path\n",
-           format == GEIST_DECKNET_FORMAT_NV12 ? "NV12, the whole byte range"
-                                               : "YUYV, the whole byte range",
+           format == GEIST_DECKNET_FORMAT_NV12   ? "NV12, the whole byte range"
+           : format == GEIST_DECKNET_FORMAT_YUYV ? "YUYV, the whole byte range"
+                                                 : "UYVY, the whole byte range",
            (size_t) n_frames,
            n_extreme,
            n_outputs);
@@ -1100,7 +1111,7 @@ static void test_conversion_range(enum geist_decknet_format format) {
     geist_decknet_destroy(still);
 }
 
-/* What a slot reads of an NV12 or YUYV frame is converted by the thread
+/* What a slot reads of a YUV frame is converted by the thread
  * that samples the slot, into a packed image of its own (stream.c,
  * pixels_box), 16 pixels at a time and the rest of a row in pairs. A
  * network whose image is 150 x 70, so that the last tile of a row is six
@@ -1220,7 +1231,7 @@ static void test_packed(enum geist_decknet_format format, size_t threads) {
     }
     printf("%s, packed, %zu thread%s          %zu frames of arbitrary bytes (%zu of them gated), "
            "%zu outputs bit-identical to the still path\n",
-           format == GEIST_DECKNET_FORMAT_NV12 ? "NV12" : "YUYV",
+           format_names[format],
            threads,
            threads == 1 ? " " : "s",
            (size_t) n_frames,
@@ -1773,8 +1784,8 @@ static void test_no_alloc(void) {
     for (size_t i = 0; i < w * h * 3; i++) {
         half[i] = cur[i] >> 1;
     }
-    struct geist_decknet_frame frames[3], halves[3], refs[3];
-    for (uint32_t f = 0; f < 3; f++) {
+    struct geist_decknet_frame frames[4], halves[4], refs[4];
+    for (uint32_t f = 0; f < 4; f++) {
         frames[f] = make_frame((enum geist_decknet_format) f, w, h, 5, cur);
         halves[f] = make_frame((enum geist_decknet_format) f, w, h, 5, half);
         refs[f]   = make_frame((enum geist_decknet_format) f, w, h, 5, ref);
@@ -1796,7 +1807,7 @@ static void test_no_alloc(void) {
 
     size_t n_calls = 0;
     for (int round = 0; round < 4; round++) {
-        for (uint32_t f = 0; f < 3; f++) {
+        for (uint32_t f = 0; f < 4; f++) {
             struct geist_decknet_stream_result res;
             struct geist_decknet_slot          slot;
             /* rounds 0 and 3 without gating, 1 and 2 with; 2 and 3 on two threads */
@@ -1836,7 +1847,7 @@ static void test_no_alloc(void) {
            "geist_decknet_stream_set_gate, the first frame included\n",
            n_calls);
     geist_decknet_stream_destroy(s);
-    for (uint32_t f = 0; f < 3; f++) {
+    for (uint32_t f = 0; f < 4; f++) {
         free((void *) (uintptr_t) frames[f].data);
         free((void *) (uintptr_t) halves[f].data);
         free((void *) (uintptr_t) refs[f].data);
@@ -1891,7 +1902,7 @@ static void test_geometry(void) {
     CHECK(geist_decknet_stream_push_frame(s, &ok) == GEIST_OK);
 
     size_t n_refused = 0, n_accepted = 0;
-    for (uint32_t fmt = 0; fmt < 3; fmt++) {
+    for (uint32_t fmt = 0; fmt < 4; fmt++) {
         const enum geist_decknet_format format = (enum geist_decknet_format) fmt;
         for (size_t pad = 0; pad < 40; pad += 13) {
             struct geist_decknet_frame f = make_frame(format, w, h, pad, rgb);
@@ -1923,14 +1934,14 @@ static void test_geometry(void) {
             REFUSED(bad.height = h - 2);
             REFUSED(bad.height = h + 2);
             REFUSED(bad.height = SIZE_MAX);
-            REFUSED(bad.format = (enum geist_decknet_format) 3);
+            REFUSED(bad.format = (enum geist_decknet_format) 4);
             REFUSED(bad.format = (enum geist_decknet_format) UINT32_MAX);
             REFUSED(bad.data = nullptr);
             if (format == GEIST_DECKNET_FORMAT_NV12) {
                 REFUSED(bad.n_bytes = f.stride * h); /* the Y plane alone */
             }
             /* A frame of another format in a buffer sized for this one. */
-            for (uint32_t other = 0; other < 3; other++) {
+            for (uint32_t other = 0; other < 4; other++) {
                 bad             = f;
                 bad.format      = (enum geist_decknet_format) other;
                 const bool fits = bad.stride >= row_bytes(bad.format, w) &&
@@ -1966,7 +1977,7 @@ static void test_geometry(void) {
     CHECK(geist_decknet_stream_push_frame(s, &odd) == GEIST_OK);
     free((void *) (uintptr_t) odd.data);
     uint8_t big[TINY_IMG_W * TINY_IMG_H * 4] = {0};
-    for (uint32_t fmt = 1; fmt < 3; fmt++) {
+    for (uint32_t fmt = 1; fmt < 4; fmt++) {
         struct geist_decknet_frame f = {.format  = (enum geist_decknet_format) fmt,
                                         .width   = ow,
                                         .height  = oh,
@@ -2202,6 +2213,8 @@ static void frames_suite(void) {
     test_parity(GEIST_DECKNET_FORMAT_NV12, 37, true, 1, "NV12, padded, replaced homographies");
     test_parity(GEIST_DECKNET_FORMAT_YUYV, 0, false, 1, "YUYV");
     test_parity(GEIST_DECKNET_FORMAT_YUYV, 37, true, 1, "YUYV, padded, replaced homographies");
+    test_parity(GEIST_DECKNET_FORMAT_UYVY, 0, false, 1, "UYVY");
+    test_parity(GEIST_DECKNET_FORMAT_UYVY, 37, true, 2, "UYVY, padded, replaced, two threads");
     test_parity(GEIST_DECKNET_FORMAT_RGB8, 37, true, 2, "RGB8, two threads");
     test_parity(GEIST_DECKNET_FORMAT_NV12, 0, false, 2, "NV12, two threads");
     test_gate(GEIST_DECKNET_FORMAT_RGB8, 0, 0, 1, "gated, threshold 0, RGB8");
@@ -2211,13 +2224,18 @@ static void frames_suite(void) {
     test_gate(GEIST_DECKNET_FORMAT_NV12, 0, 40, 1, "gated, threshold 40, NV12");
     test_gate(GEIST_DECKNET_FORMAT_YUYV, 37, 40, 1, "gated, threshold 40, YUYV, padded");
     test_gate(GEIST_DECKNET_FORMAT_YUYV, 0, 0, 2, "gated, 0, YUYV, two threads");
+    test_gate(GEIST_DECKNET_FORMAT_UYVY, 37, 0, 1, "gated, threshold 0, UYVY, padded");
+    test_gate(GEIST_DECKNET_FORMAT_UYVY, 0, 40, 2, "gated, 40, UYVY, two threads");
     test_gate(GEIST_DECKNET_FORMAT_RGB8, 0, 40, 2, "gated, 40, RGB8, two threads");
     test_conversion_range(GEIST_DECKNET_FORMAT_NV12);
     test_conversion_range(GEIST_DECKNET_FORMAT_YUYV);
+    test_conversion_range(GEIST_DECKNET_FORMAT_UYVY);
     test_packed(GEIST_DECKNET_FORMAT_NV12, 1);
     test_packed(GEIST_DECKNET_FORMAT_NV12, 2);
     test_packed(GEIST_DECKNET_FORMAT_YUYV, 1);
     test_packed(GEIST_DECKNET_FORMAT_YUYV, 2);
+    test_packed(GEIST_DECKNET_FORMAT_UYVY, 1);
+    test_packed(GEIST_DECKNET_FORMAT_UYVY, 2);
     test_kernel_sum();
     test_spans(1, false);
     test_spans(2, false);
