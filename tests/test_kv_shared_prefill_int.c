@@ -49,10 +49,10 @@
  * where "auto" is a GPU). Skips on a model without KV-shared layers.
  *
  * GEIST_BACKEND=vulkan runs the brief set: three lengths of the first list
- * and one prefill with decode steps per KV representation but KIVI. The
- * whole list did not end within the 30 minutes of the vulkan-gpu job (RTX
- * 2080 Ti): the brief set's KIVI case alone took 27 of them and the rest 40
- * seconds, and Vulkan leaves no last-chunk rows out with a KIVI cache.
+ * and one prefill with decode steps per KV representation. The whole list
+ * did not end within the 30 minutes of the vulkan-gpu job (RTX 2080 Ti)
+ * while the host attention of a KIVI cache read its rows from the card's
+ * BAR window (#605); how long it takes since was not measured.
  */
 #define _POSIX_C_SOURCE 200809L
 #define GEIST_INTERNAL_ARCH_LAYER
@@ -65,8 +65,8 @@ int main(void) {
     const char *env = getenv("GEIST_BACKEND");
     /* ponytail: brief by the backend's name; a case list per time budget if
      * another slow device comes */
-    const bool              vk  = env != nullptr && strcmp(env, "vulkan") == 0;
-    const struct kvs_source src = {.path = model_path, .brief = vk, .no_kivi = vk};
+    const struct kvs_source src = {.path  = model_path,
+                                   .brief = env != nullptr && strcmp(env, "vulkan") == 0};
     size_t                  ran = 0;
     setvbuf(stdout, nullptr, _IOLBF, 0); /* progress through CI's pipe */
     kvs_ids();

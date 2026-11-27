@@ -92,7 +92,14 @@ void kivi_drain_one_layer(size_t   drained_count,
  * The drained path's K dequant fills a per-head buffer once per s and
  * dot-products against Q. V is dequant-and-weighted-sum inline.
  * Q is FP32 throughout (no INT8 sym-quant) to keep numerical fidelity
- * on the high-precision side. */
+ * on the high-precision side.
+ *
+ * A head's query row is copied out of q once and its output summed on the
+ * stack: q and out are scratch slots, on Vulkan with a discrete GPU in the
+ * BAR window, where each read is an uncached read over PCIe, and the row
+ * was read once per cache position (#605: with the cache in system memory
+ * as well, a 512-token prefill of Gemma 4 E2B on an RTX 2080 Ti 8 s, more
+ * than five minutes before). The same sums in the same order. */
 void attention_kivi_via_buffers(size_t         n_q,
                                 size_t         n_q_heads,
                                 size_t         head_dim,
@@ -117,6 +124,7 @@ void attention_kivi_via_buffers(size_t         n_q,
     const size_t kv_group_size  = n_q_heads / n_kv_heads;
     const size_t packed_per_row = head_dim / 4;
     float        k_dequant[TRANSFORMER_HEAD_DIM_MAX];
+    float        qv[TRANSFORMER_HEAD_DIM_MAX], outv[TRANSFORMER_HEAD_DIM_MAX];
     for (size_t t = 0; t < n_q; t++) {
         const size_t q_pos = q_offset + t;
         const size_t s_lo =
@@ -125,7 +133,7 @@ void attention_kivi_via_buffers(size_t         n_q,
 
         for (size_t h = 0; h < n_q_heads; h++) {
             const size_t kv_h = h / kv_group_size;
-            const float *qv   = q + (t * n_q_heads + h) * head_dim;
+            memcpy(qv, q + (t * n_q_heads + h) * head_dim, head_dim * sizeof(float));
 
             float max_score = -INFINITY;
             for (size_t s = s_lo; s <= s_hi; s++) {
@@ -171,7 +179,6 @@ void attention_kivi_via_buffers(size_t         n_q,
             }
             const float inv_sum = (float) (1.0 / sum_exp);
 
-            float *outv = out + (t * n_q_heads + h) * head_dim;
             for (size_t i = 0; i < head_dim; i++)
                 outv[i] = 0.0f;
             for (size_t s = s_lo; s <= s_hi; s++) {
@@ -197,6 +204,7 @@ void attention_kivi_via_buffers(size_t         n_q,
                     }
                 }
             }
+            memcpy(out + (t * n_q_heads + h) * head_dim, outv, head_dim * sizeof(float));
         }
     }
 }
