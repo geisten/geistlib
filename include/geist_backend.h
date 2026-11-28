@@ -448,7 +448,9 @@ struct geist_deltanet_mix_args {
  * rows. The decomposed twin is therefore not prims->attention on
  * dequantized rows but the architecture's host loop over the same bytes
  * (attention_int8_via_buffers); a kernel agrees with it to fp32 rounding
- * and gives the same bits for any thread count. */
+ * and gives the same bits for any thread count. On a GPU, whose division
+ * need not be correctly rounded, an element of the query on a rounding
+ * boundary can land one step away. */
 struct geist_attention_kv_args {
     const struct geist_tensor *q;
     const struct geist_tensor *k;
