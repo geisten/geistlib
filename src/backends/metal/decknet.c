@@ -37,13 +37,18 @@ static const char metal_decknet_source[] =
         "#include <metal_stdlib>\n"
         "using namespace metal;\n"
         "struct Sample { uint w0, w1, w2, xy; };\n"
-        "struct SampleParams { uint stride, format, height, first, n; };\n"
-        /* BT.601 limited range, the formula of docs/DECKNET.md. */
-        "static inline uint3 yuv(int y, int u, int v) {\n"
-        "    int c = 298 * (y - 16) + 128;\n"
-        "    int3 rgb = int3(c + 409 * (v - 128),\n"
-        "                    c - 100 * (u - 128) - 208 * (v - 128),\n"
-        "                    c + 516 * (u - 128)) >> 8;\n"
+        "struct SampleParams { uint stride, format, height, first, n, colour; };\n"
+        /* The formula of docs/DECKNET.md: Ky, Yo, Krv, Kgu, Kgv, Kbu of a
+         * colour (enum geist_decknet_colour). */
+        "constant int yuv_k[4][6] = {{298, 16, 409, 100, 208, 516},\n"
+        "                            {256, 0, 359, 88, 183, 454},\n"
+        "                            {298, 16, 459, 55, 136, 541},\n"
+        "                            {256, 0, 403, 48, 120, 475}};\n"
+        "static inline uint3 yuv(SampleParams p, int y, int u, int v) {\n"
+        "    int c = yuv_k[p.colour][0] * (y - yuv_k[p.colour][1]) + 128;\n"
+        "    int3 rgb = int3(c + yuv_k[p.colour][2] * (v - 128),\n"
+        "                    c - yuv_k[p.colour][3] * (u - 128) - yuv_k[p.colour][4] * (v - 128),\n"
+        "                    c + yuv_k[p.colour][5] * (u - 128)) >> 8;\n"
         "    return uint3(clamp(rgb, 0, 255));\n"
         "}\n"
         /* Formats: 0 RGB8, 1 NV12, 2 YUYV, 3 UYVY (enum geist_decknet_format). */
@@ -54,12 +59,12 @@ static const char metal_decknet_source[] =
         "    }\n"
         "    if (p.format == 1u) {\n"
         "        uint o = (p.height + y / 2u) * p.stride + (x & ~1u);\n"
-        "        return yuv(f[y * p.stride + x], f[o], f[o + 1u]);\n"
+        "        return yuv(p, f[y * p.stride + x], f[o], f[o + 1u]);\n"
         "    }\n"
         "    uint o = y * p.stride + (x & ~1u) * 2u;\n"
         /* where the U is; the Y beside it */
         "    uint c = p.format == 3u ? 0u : 1u;\n"
-        "    return yuv(f[y * p.stride + x * 2u + 1u - c], f[o + c], f[o + c + 2u]);\n"
+        "    return yuv(p, f[y * p.stride + x * 2u + 1u - c], f[o + c], f[o + c + 2u]);\n"
         "}\n"
         "kernel void decknet_sample(device const uchar *frame [[buffer(0)]],\n"
         "                           device const Sample *tab [[buffer(1)]],\n"
@@ -104,7 +109,7 @@ static const char metal_decknet_source[] =
         "}\n";
 
 struct decknet_sample_params {
-    uint32_t stride, format, height, first, n;
+    uint32_t stride, format, height, first, n, colour;
 };
 struct decknet_sum_params {
     uint32_t n_px, n_crops, crop_w, crop_h, n_parts, out_base;
@@ -387,6 +392,7 @@ static void encode_samples(struct geist_decknet_gpu           *gpu,
 
 [[nodiscard]] static enum geist_status decknet_gpu_submit(struct geist_decknet_gpu *gpu,
                                                           enum geist_decknet_format format,
+                                                          enum geist_decknet_colour colour,
                                                           size_t                    stride,
                                                           size_t                    height) {
     struct geist_backend *be = gpu->be;
@@ -394,8 +400,10 @@ static void encode_samples(struct geist_decknet_gpu           *gpu,
     if (gpu->submitted || stride > UINT32_MAX || height > UINT32_MAX) {
         return GEIST_E_INVALID_STATE;
     }
-    const struct decknet_sample_params frame = {
-            .stride = (uint32_t) stride, .format = (uint32_t) format, .height = (uint32_t) height};
+    const struct decknet_sample_params frame        = {.stride = (uint32_t) stride,
+                                                       .format = (uint32_t) format,
+                                                       .height = (uint32_t) height,
+                                                       .colour = (uint32_t) colour};
     gpu->pool                                       = metal_pool_push(st);
     struct metal_encoder_h *enc[DECKNET_GPU_STAGES] = {nullptr, nullptr};
     for (size_t stage = 0; stage < DECKNET_GPU_STAGES; stage++) {

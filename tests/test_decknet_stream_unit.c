@@ -157,12 +157,26 @@ static struct geist_decknet *load_synth(void) {
 static uint8_t clip(int v) {
     return v < 0 ? 0 : (v > 255 ? 255 : (uint8_t) v);
 }
-static void yuv_to_rgb(int y, int u, int v, uint8_t rgb[static 3]) {
+/* The colour make_frame says its frames are of; the tests of a colour set
+ * it around their calls. */
+static enum geist_decknet_colour g_colour;
+static const char *const         colour_names[4] = {
+        "BT.601", "BT.601 full range", "BT.709", "BT.709 full range"};
+
+/* Ky, Yo, Krv, Kgu, Kgv, Kbu of docs/DECKNET.md, by enum geist_decknet_colour. */
+static const int colour_k[4][6] = {{298, 16, 409, 100, 208, 516},
+                                   {256, 0, 359, 88, 183, 454},
+                                   {298, 16, 459, 55, 136, 541},
+                                   {256, 0, 403, 48, 120, 475}};
+
+static void
+yuv_to_rgb(enum geist_decknet_colour colour, int y, int u, int v, uint8_t rgb[static 3]) {
+    const int *k = colour_k[colour];
     /* floor((x + 128) / 256) for a negative x as well */
-    const int c = 298 * (y - 16) + 128 + (1 << 20);
-    rgb[0]      = clip((c + 409 * (v - 128)) / 256 - (1 << 12));
-    rgb[1]      = clip((c - 100 * (u - 128) - 208 * (v - 128)) / 256 - (1 << 12));
-    rgb[2]      = clip((c + 516 * (u - 128)) / 256 - (1 << 12));
+    const int c = k[0] * (y - k[1]) + 128 + (1 << 20);
+    rgb[0]      = clip((c + k[2] * (v - 128)) / 256 - (1 << 12));
+    rgb[1]      = clip((c - k[3] * (u - 128) - k[4] * (v - 128)) / 256 - (1 << 12));
+    rgb[2]      = clip((c + k[5] * (u - 128)) / 256 - (1 << 12));
 }
 
 static void rgb_to_yuv(const uint8_t *p, uint8_t yuv[static 3]) {
@@ -224,8 +238,13 @@ make_frame(enum geist_decknet_format format, size_t w, size_t h, size_t pad, con
             }
         }
     }
-    return (struct geist_decknet_frame) {
-            .format = format, .width = w, .height = h, .stride = stride, .n_bytes = n, .data = out};
+    return (struct geist_decknet_frame) {.format  = format,
+                                         .colour  = g_colour,
+                                         .width   = w,
+                                         .height  = h,
+                                         .stride  = stride,
+                                         .n_bytes = n,
+                                         .data    = out};
 }
 
 /* What the still path is given for a frame: packed RGB8. */
@@ -241,10 +260,11 @@ static uint8_t *frame_to_rgb8(const struct geist_decknet_frame *f) {
                 memcpy(o, row + x * 3, 3);
             } else if (f->format == GEIST_DECKNET_FORMAT_NV12) {
                 const uint8_t *uv = f->data + (h + y / 2) * f->stride + even;
-                yuv_to_rgb(row[x], uv[0], uv[1], o);
+                yuv_to_rgb(f->colour, row[x], uv[0], uv[1], o);
             } else {
                 const size_t c = u_at(f->format);
-                yuv_to_rgb(row[x * 2 + 1 - c], row[even * 2 + c], row[even * 2 + c + 2], o);
+                yuv_to_rgb(
+                        f->colour, row[x * 2 + 1 - c], row[even * 2 + c], row[even * 2 + c + 2], o);
             }
         }
     }
@@ -1249,27 +1269,41 @@ static void test_packed(enum geist_decknet_format format, size_t threads) {
  * names for its limited-range code points, and clamps outside them. */
 static void test_conversion_reference(void) {
     const struct {
-        int     y, u, v;
-        uint8_t rgb[3];
+        enum geist_decknet_colour colour;
+        int                       y, u, v;
+        uint8_t                   rgb[3];
     } known[] = {
-            {16, 128, 128, {0, 0, 0}},
-            {235, 128, 128, {255, 255, 255}},
-            {81, 90, 240, {255, 0, 0}},
-            {145, 54, 34, {0, 255, 0}},
-            {41, 240, 110, {0, 0, 255}},
-            {126, 128, 128, {128, 128, 128}},
-            {0, 128, 128, {0, 0, 0}},
-            {255, 128, 128, {255, 255, 255}},
-            {180, 128, 128, {191, 191, 191}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 16, 128, 128, {0, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 235, 128, 128, {255, 255, 255}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 81, 90, 240, {255, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 145, 54, 34, {0, 255, 0}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 41, 240, 110, {0, 0, 255}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 126, 128, 128, {128, 128, 128}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 0, 128, 128, {0, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 255, 128, 128, {255, 255, 255}},
+            {GEIST_DECKNET_COLOUR_BT601_LIMITED, 180, 128, 128, {191, 191, 191}},
+            {GEIST_DECKNET_COLOUR_BT601_FULL, 0, 128, 128, {0, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT601_FULL, 255, 128, 128, {255, 255, 255}},
+            {GEIST_DECKNET_COLOUR_BT601_FULL, 76, 85, 255, {255, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT601_FULL, 150, 44, 21, {0, 255, 0}},
+            {GEIST_DECKNET_COLOUR_BT709_LIMITED, 16, 128, 128, {0, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT709_LIMITED, 235, 128, 128, {255, 255, 255}},
+            {GEIST_DECKNET_COLOUR_BT709_LIMITED, 63, 102, 240, {255, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT709_LIMITED, 32, 240, 118, {0, 0, 255}},
+            {GEIST_DECKNET_COLOUR_BT709_FULL, 0, 128, 128, {0, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT709_FULL, 255, 128, 128, {255, 255, 255}},
+            {GEIST_DECKNET_COLOUR_BT709_FULL, 54, 99, 255, {255, 0, 0}},
+            {GEIST_DECKNET_COLOUR_BT709_FULL, 18, 255, 116, {0, 0, 255}},
     };
     for (size_t i = 0; i < sizeof known / sizeof known[0]; i++) {
         uint8_t rgb[3];
-        yuv_to_rgb(known[i].y, known[i].u, known[i].v, rgb);
+        yuv_to_rgb(known[i].colour, known[i].y, known[i].u, known[i].v, rgb);
         /* The standard's colours are rounded to code points: within one. */
         if (abs(rgb[0] - known[i].rgb[0]) > 1 || abs(rgb[1] - known[i].rgb[1]) > 1 ||
             abs(rgb[2] - known[i].rgb[2]) > 1) {
             fprintf(stderr,
-                    "FAIL: YUV (%d, %d, %d) gives RGB (%u, %u, %u)\n",
+                    "FAIL: %s, YUV (%d, %d, %d) gives RGB (%u, %u, %u)\n",
+                    colour_names[known[i].colour],
                     known[i].y,
                     known[i].u,
                     known[i].v,
@@ -1936,6 +1970,8 @@ static void test_geometry(void) {
             REFUSED(bad.height = SIZE_MAX);
             REFUSED(bad.format = (enum geist_decknet_format) 4);
             REFUSED(bad.format = (enum geist_decknet_format) UINT32_MAX);
+            REFUSED(bad.colour = (enum geist_decknet_colour) 4);
+            REFUSED(bad.colour = (enum geist_decknet_colour) UINT32_MAX);
             REFUSED(bad.data = nullptr);
             if (format == GEIST_DECKNET_FORMAT_NV12) {
                 REFUSED(bad.n_bytes = f.stride * h); /* the Y plane alone */
@@ -2203,6 +2239,69 @@ static void test_backend(struct geist_backend *metal) {
     geist_decknet_destroy(still);
 }
 
+/* A gated stream keeps the tiles of a YUV frame converted. The same bytes
+ * said to be of another colour are another image: every tile is taken
+ * again, and the frame after it comes from the caches as before. */
+static void test_gate_colour(void) {
+    struct geist_decknet     *still = load_synth();
+    struct geist_decknet     *d     = load_synth();
+    struct geist_decknet_info info;
+    CHECK(geist_decknet_info(d, &info) == GEIST_OK);
+    const size_t w = info.image_width, h = info.image_height;
+    uint8_t     *cur = read_ppm("tests/data/decknet_synth/cur.ppm", w, h);
+    uint8_t     *ref = read_ppm("tests/data/decknet_synth/ref.ppm", w, h);
+
+    struct geist_decknet_stream *s = nullptr;
+    CHECK(stream_create(d, &s) == GEIST_OK && s != nullptr);
+    CHECK(geist_decknet_stream_set_gate(s, true, 0) == GEIST_OK);
+    struct geist_decknet_frame fref = make_frame(GEIST_DECKNET_FORMAT_YUYV, w, h, 0, ref);
+    struct geist_decknet_frame f    = make_frame(GEIST_DECKNET_FORMAT_YUYV, w, h, 0, cur);
+    uint8_t                   *ref8 = frame_to_rgb8(&fref);
+    CHECK(geist_decknet_stream_set_reference(s, &fref) == GEIST_OK);
+
+    static const enum geist_decknet_colour seq[]     = {GEIST_DECKNET_COLOUR_BT601_LIMITED,
+                                                        GEIST_DECKNET_COLOUR_BT601_LIMITED,
+                                                        GEIST_DECKNET_COLOUR_BT601_LIMITED,
+                                                        GEIST_DECKNET_COLOUR_BT709_LIMITED,
+                                                        GEIST_DECKNET_COLOUR_BT709_LIMITED,
+                                                        GEIST_DECKNET_COLOUR_BT709_LIMITED,
+                                                        GEIST_DECKNET_COLOUR_BT709_FULL,
+                                                        GEIST_DECKNET_COLOUR_BT601_FULL,
+                                                        GEIST_DECKNET_COLOUR_BT601_FULL,
+                                                        GEIST_DECKNET_COLOUR_BT601_LIMITED};
+    size_t                                 n_outputs = 0, n_whole = 0;
+    for (size_t k = 0; k < sizeof seq / sizeof seq[0]; k++) {
+        f.colour                         = seq[k];
+        uint8_t                    *img8 = frame_to_rgb8(&f);
+        struct geist_decknet_result want;
+        CHECK(geist_decknet_run(still, w * h * 3, img8, ref8, &want) == GEIST_OK);
+        CHECK(geist_decknet_stream_push_frame(s, &f) == GEIST_OK);
+        struct geist_decknet_stream_result got;
+        CHECK(geist_decknet_stream_result(s, &got) == GEIST_OK);
+        const bool whole = got.n_tiles_changed == got.n_tiles;
+        n_whole += whole;
+        if (whole != (k == 0 || seq[k] != seq[k - 1]) ||
+            !same_outputs(still, &want, s, &info, &n_outputs)) {
+            fprintf(stderr, "FAIL gated, the colour changes: frame %zu\n", k);
+            g_fail = 1;
+        }
+        free(img8);
+    }
+    printf("gated, the colour of the same bytes changes: %zu frames, %zu taken whole, %zu outputs "
+           "bit-identical to the still path\n",
+           sizeof seq / sizeof seq[0],
+           n_whole,
+           n_outputs);
+    geist_decknet_stream_destroy(s);
+    free(ref8);
+    free((void *) (uintptr_t) fref.data);
+    free((void *) (uintptr_t) f.data);
+    free(cur);
+    free(ref);
+    geist_decknet_destroy(d);
+    geist_decknet_destroy(still);
+}
+
 /* Every test that pushes a frame: on the CPU, and once more with each
  * stream on g_be. */
 static void frames_suite(void) {
@@ -2236,6 +2335,20 @@ static void frames_suite(void) {
     test_packed(GEIST_DECKNET_FORMAT_YUYV, 2);
     test_packed(GEIST_DECKNET_FORMAT_UYVY, 1);
     test_packed(GEIST_DECKNET_FORMAT_UYVY, 2);
+    /* The other three colours: each format, gated and not, packed tiles,
+     * the whole byte range. */
+    for (uint32_t c = 1; c < 4; c++) {
+        g_colour = (enum geist_decknet_colour) c;
+        test_parity(GEIST_DECKNET_FORMAT_NV12, 37, true, 1, colour_names[c]);
+        test_parity(GEIST_DECKNET_FORMAT_UYVY, 0, false, 2, colour_names[c]);
+        test_gate(GEIST_DECKNET_FORMAT_YUYV, 0, 40, 1, colour_names[c]);
+        test_conversion_range(GEIST_DECKNET_FORMAT_NV12);
+        test_conversion_range(GEIST_DECKNET_FORMAT_YUYV);
+        test_conversion_range(GEIST_DECKNET_FORMAT_UYVY);
+        test_packed(GEIST_DECKNET_FORMAT_NV12, 2);
+    }
+    g_colour = GEIST_DECKNET_COLOUR_BT601_LIMITED;
+    test_gate_colour();
     test_kernel_sum();
     test_spans(1, false);
     test_spans(2, false);

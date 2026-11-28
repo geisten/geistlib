@@ -147,7 +147,7 @@ struct geist_decknet_stream;
  *         bytes apart as well. Width and height are even.
  *   YUYV  4 bytes per 2 pixels: Y0 U Y1 V. Width is even.
  *   UYVY  the same samples in the order U Y0 V Y1. Width is even.
- * NV12, YUYV and UYVY are read as BT.601 limited range ("video range") with the
+ * NV12, YUYV and UYVY are converted as the frame's `colour` says, with the
  * chroma of a pixel taken from its block without interpolation; the exact
  * integer formula is in docs/DECKNET.md. */
 enum geist_decknet_format : uint32_t {
@@ -158,12 +158,26 @@ enum geist_decknet_format : uint32_t {
 };
 static_assert(sizeof(enum geist_decknet_format) == sizeof(uint32_t));
 
+/* @stability EXPERIMENTAL — which matrix and which range the Y, U and V of
+ * a frame are in: BT.601 or BT.709, "video range" (Y 16 to 235) or full
+ * range (0 to 255). What a camera says of its buffers; an RGB8 frame has
+ * none and any of the four is accepted for it. Zero is BT.601 limited
+ * range, what a frame was read as before the field existed. */
+enum geist_decknet_colour : uint32_t {
+    GEIST_DECKNET_COLOUR_BT601_LIMITED = 0,
+    GEIST_DECKNET_COLOUR_BT601_FULL    = 1,
+    GEIST_DECKNET_COLOUR_BT709_LIMITED = 2,
+    GEIST_DECKNET_COLOUR_BT709_FULL    = 3,
+};
+static_assert(sizeof(enum geist_decknet_colour) == sizeof(uint32_t));
+
 /* @stability EXPERIMENTAL — one frame in the caller's memory. It is read in
  * place during the call and never kept. `n_bytes` is the extent of `data`:
  * nothing at or behind data + n_bytes is read. */
 struct geist_decknet_frame {
     enum geist_decknet_format format;
-    size_t                    width; /* pixels; the model's image_width, image_height */
+    enum geist_decknet_colour colour; /* of an NV12, YUYV or UYVY frame */
+    size_t                    width;  /* pixels; the model's image_width, image_height */
     size_t                    height;
     size_t                    stride; /* bytes from one row to the next */
     size_t                    n_bytes;

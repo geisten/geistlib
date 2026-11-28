@@ -121,6 +121,7 @@ struct geist_decknet_gpu_ops {
      * before anything else on this state. */
     enum geist_status (*submit)(struct geist_decknet_gpu *gpu,
                                 enum geist_decknet_format format,
+                                enum geist_decknet_colour colour,
                                 size_t                    stride,
                                 size_t                    height);
     /* Returns when the stage is done and what it wrote is readable.
