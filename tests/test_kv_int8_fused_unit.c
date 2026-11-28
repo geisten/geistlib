@@ -253,7 +253,9 @@ wiring_case(const char *backend, struct geist_backend *be, const struct wcase *c
     }
     const float POISON = -7.5e30f;
     for (size_t i = 0; i < q_elems; i++) {
-        q[i]      = (float) ((int) (next_u32() % 2001u) - 1000) * 1e-3f;
+        /* a fine grid: on one of 1e-3 a head whose largest element is 1
+         * puts every 0.5 on a rounding tie of the query's quantization */
+        q[i]      = (float) ((int) (next_u32() % 2000001u) - 1000000) * 1e-6f;
         poison[i] = POISON;
     }
     for (size_t i = 0; i < kv_elems; i++) {
@@ -299,10 +301,29 @@ wiring_case(const char *backend, struct geist_backend *be, const struct wcase *c
         max_d          = d > max_d ? d : max_d;
         scale          = a > scale ? a : scale;
     }
+    /* A GPU's division need not be correctly rounded (Vulkan allows 2.5
+     * ULP), so its scale of a query head can be one ULP off the host's and
+     * an element next to a rounding boundary lands one step away: that head
+     * is then off by about 1e-3, as a quantization step is. On vulkan a
+     * head in fifty may be, within 2e-2; a view or an offset that is wrong
+     * moves every head. */
+    const bool   device   = strcmp(backend, "vulkan") == 0;
+    const size_t n_rows   = c->seq * c->n_q_heads;
+    size_t       rows_off = 0;
+    for (size_t r = 0; r < n_rows; r++) {
+        double row_d = 0.0;
+        for (size_t i = r * c->hd; i < (r + 1) * c->hd; i++) {
+            const double d = fabs((double) out_f[i] - (double) out_h[i]);
+            row_d          = d > row_d ? d : row_d;
+        }
+        rows_off += row_d > 1e-5 * scale;
+    }
+    const bool close =
+            device ? rows_off <= 1 + n_rows / 50 && max_d <= 2e-2 * scale : max_d <= 1e-5 * scale;
     snprintf(msg,
              sizeof msg,
              "%s%s seq=%zu at %zu, heads %zu/%zu, hd=%zu, window %zu%s: status %d/%d, %zu "
-             "unwritten, max|d| %.2e of scale %.2e",
+             "unwritten, max|d| %.2e of scale %.2e, %zu of %zu heads off",
              backend,
              c->int4 ? " INT4" : "",
              c->seq,
@@ -316,10 +337,14 @@ wiring_case(const char *backend, struct geist_backend *be, const struct wcase *c
              (int) sh,
              unwritten,
              max_d,
-             scale);
-    fails += geist_expect(sf == GEIST_OK && sh == GEIST_OK && unwritten == 0 && scale > 0.0 &&
-                                  max_d <= 1e-5 * scale,
-                          msg);
+             scale,
+             rows_off,
+             n_rows);
+    fails += geist_expect(
+            sf == GEIST_OK && sh == GEIST_OK && unwritten == 0 && scale > 0.0 && close, msg);
+    if (device && rows_off != 0) {
+        printf("  %s\n", msg);
+    }
     if (scale > 0.0 && max_d / scale > *worst) {
         *worst = max_d / scale;
     }
