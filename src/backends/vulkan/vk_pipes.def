@@ -62,6 +62,9 @@ X(VK_PIPE_ATTENTION_SINKS,        attention_sinks_f32_spv,     "attention_sinks"
 X(VK_PIPE_ATTENTION_SINKS_F16,    attention_sinks_f16_spv,     "attention_sinks_f16",    5, PLAIN)
 X(VK_PIPE_QKV_PREP_F16,           qkv_prep_f16_spv,            "qkv_prep_f16",           6, PLAIN)
 X(VK_PIPE_KV_APPEND_F16,          kv_append_f16_spv,           "kv_append_f16",          4, PLAIN)
+/* the INT8 and INT4 KV caches on the device (#609) */
+X(VK_PIPE_KV_APPEND_Q8,           kv_append_q8_spv,            "kv_append_q8",           6, PLAIN)
+X(VK_PIPE_ATTENTION_Q8,           attention_q8_spv,            "attention_q8",           6, PLAIN)
 X(VK_PIPE_ATTN_PART_F16,          attn_part_f16_spv,           "attn_part_f16",          4, PLAIN)
 X(VK_PIPE_ATTN_PART_G2_F16,       attn_part_g2_f16_spv,        "attn_part_g2_f16",       4, PLAIN)
 /* the same for heads past 512 (absorbed MLA's 576, #504), F16 and FP32 cache */

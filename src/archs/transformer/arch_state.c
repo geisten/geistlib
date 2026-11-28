@@ -672,12 +672,13 @@ static const enum geist_buffer_role KV_HOST_ROLE = GEIST_BUFFER_IO;
     const size_t                         k_bytes  = n_elems * sizeof(int8_t);
     const size_t      v_bytes = sess->kv_int4_packed_enabled ? n_elems / 2 : k_bytes;
     enum geist_status s;
-    /* Without the backend's kernels the host attention reads the cache. */
-    const struct geist_backend_fused *fused = geist_backend_fused_tbl(be);
-    const enum geist_buffer_role      role =
-            fused->attention_kv_int8 == nullptr && fused->attention_kv_int4 == nullptr
-                    ? KV_HOST_ROLE
-                    : GEIST_BUFFER_SCRATCH;
+    /* Where the layer's plan does not bind the backend's kernel the host
+     * attention reads the cache. */
+    const struct transformer_layer_exec_plan *P = &st->layer_plans[li];
+    const enum geist_buffer_role              role =
+            (sess->kv_int4_packed_enabled ? P->fuse_attn_kv_int4 : P->fuse_attn_kv_int8)
+                    ? GEIST_BUFFER_SCRATCH
+                    : KV_HOST_ROLE;
     if (be->desc->caps.kv_q8_block) {
         /* V half a row on (half a page at most, a multiple of 64): the
          * cpu_x86 kernels gained 3-39 % over V at K's offset, more than

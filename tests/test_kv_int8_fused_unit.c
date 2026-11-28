@@ -4,9 +4,9 @@
  * and attention_kv_int4 for the INT4 cache, INT8 K and packed V, that
  * rides the INT8 storage) when the layer plan binds them, and gets the host loops' answer.
  *
- * On every CPU backend whose probe binds a kernel (cpu_x86 must bind the
- * INT8 one; cpu_neon, where built with FEAT_DotProd, both), for each kernel
- * it binds:
+ * On every backend whose probe binds a kernel (cpu_x86 must bind the INT8
+ * one; cpu_neon, where built with FEAT_DotProd, and vulkan both), for each
+ * kernel it binds:
  *
  * 1. The call site, directly. transformer_kv_store_attention runs twice on
  *    the same query and cache, once with the plan's fuse_attn_kv_int8 set
@@ -21,6 +21,13 @@
  *    their scale: the kernels differ only in how -ffast-math groups the
  *    softmax sums (~1e-6 measured). A view one row short, the query
  *    position off by one, or a rotation left out is off by 1e-3 or more.
+ *
+ * 1b. The append, where the backend has fused->kv_append_q8 (vulkan):
+ *    transformer_kv_store_append through it and through the host loop,
+ *    plain, rotated, a head_dim the rotation does not cover, the packed V,
+ *    a zero row. The same rows written and no others, every element within
+ *    one quantization step, the scales within 1e-6, the source rows left
+ *    alone.
  *
  * 2. A model. The llama of model_fixtures.h with 8 query heads on 2 KV
  *    heads of 64 is loaded twice, once as is and once with
@@ -57,7 +64,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar"};
+static const char *const BACKENDS[] = {"cpu_x86", "cpu_neon", "cpu_scalar", "vulkan"};
 
 /* Whether backend `name` has to bind attention_kv_int8 (attention_kv_int4
  * when int4) in this build. */
@@ -67,7 +74,7 @@ static bool must_bind(const char *name, bool int4) {
         return true;
     }
 #endif
-    return !int4 && strcmp(name, "cpu_x86") == 0;
+    return strcmp(name, "vulkan") == 0 || (!int4 && strcmp(name, "cpu_x86") == 0);
 }
 
 /* Whether `be` binds attention_kv_int8 (attention_kv_int4 when int4) at
@@ -362,6 +369,189 @@ static int check_call_site(const char *backend, struct geist_backend *be) {
     return fails;
 }
 
+/* ---- 1b. The append ---------------------------------------------------- */
+
+struct acase {
+    size_t seq, q_position, n_kv_heads, hd;
+    bool   rot, int4;
+};
+
+static const struct acase ACASES[] = {
+        {1, 0, 2, 64, false, false},
+        {1, 37, 2, 64, true, false},
+        {33, 5, 4, 128, true, false},
+        {9, 3, 4, 80, true, false},
+        {1, 37, 2, 64, true, true},
+        {33, 5, 1, 256, false, true},
+        {3, 11, 1, 512, true, false},
+};
+
+/* transformer_kv_store_append of case `c` into bufs[2..5], through the
+ * backend's kv_append_q8 (fuse) or the host loop. */
+static enum geist_status append_site(struct geist_backend *be,
+                                     const struct acase   *c,
+                                     bool                  fuse,
+                                     struct geist_buffer **bufs) {
+    g_st                                         = (struct transformer_arch_state) {0};
+    g_st.n_kv_heads                              = c->n_kv_heads;
+    g_sess                                       = (struct transformer_arch_session) {0};
+    g_sess.kv_int8_enabled                       = true;
+    g_sess.kv_int4_packed_enabled                = c->int4;
+    g_sess.kv_rot_enabled                        = c->rot;
+    g_sess.scratch_k                             = bufs[0];
+    g_sess.scratch_v                             = bufs[1];
+    const struct transformer_layer_exec_plan P   = {.fuse_attn_kv_int8 = fuse,
+                                                    .fuse_attn_kv_int4 = fuse};
+    struct transformer_layer_forward_ctx     ctx = {.st              = &g_st,
+                                                    .sess            = &g_sess,
+                                                    .be              = be,
+                                                    .v               = be->desc->vtbl,
+                                                    .fused           = geist_backend_fused_tbl(be),
+                                                    .P               = &P,
+                                                    .q_position      = c->q_position,
+                                                    .seq             = c->seq,
+                                                    .kv_int8_enabled = true,
+                                                    .hd              = c->hd,
+                                                    .kv_out          = c->n_kv_heads * c->hd,
+                                                    .k_cache_q8_buf  = bufs[2],
+                                                    .v_cache_q8_buf  = bufs[3],
+                                                    .k_cache_scale_buf = bufs[4],
+                                                    .v_cache_scale_buf = bufs[5]};
+    return transformer_kv_store_append(&ctx);
+}
+
+/* Element i of a cache row buffer: an int8, or a signed nibble. */
+static int q_elem(const uint8_t *p, size_t i, bool nib) {
+    if (!nib) {
+        return (int8_t) p[i];
+    }
+    const int x = (p[i / 2] >> (4 * (i & 1))) & 15;
+    return x >= 8 ? x - 16 : x;
+}
+
+/* The backend's quantizing append against the host loop's: the same rows and
+ * no others written, every element within one step (a device may round a
+ * quotient the other way; on lavapipe none differs), the scales to 1e-6,
+ * and the source rows left alone. */
+static int append_case(const char *backend, struct geist_backend *be, const struct acase *c) {
+    const struct geist_backend_vtbl *vt  = be->desc->vtbl;
+    const size_t                     cap = c->q_position + c->seq + 3;
+    const size_t         src_n = c->seq * c->n_kv_heads * c->hd, kv_n = cap * c->n_kv_heads * c->hd;
+    const size_t         v_bytes = c->int4 ? kv_n / 2 : kv_n, n_sc = cap * c->n_kv_heads;
+    const size_t         sizes[6]  = {src_n * 4, src_n * 4, kv_n, v_bytes, n_sc * 4, n_sc * 4};
+    float               *src[2]    = {heap_alloc_array_aligned(float, src_n),
+                                      heap_alloc_array_aligned(float, src_n)};
+    uint8_t             *got[2][6] = {{nullptr}};
+    struct geist_buffer *bufs[6]   = {nullptr};
+    int                  fails     = 0;
+    enum geist_status    st[2]     = {GEIST_OK, GEIST_OK};
+    for (size_t i = 0; i < src_n && src[0] != nullptr && src[1] != nullptr; i++) {
+        /* a zero row among them: its scale is 1 */
+        const bool zero = i / c->hd == 1;
+        src[0][i]       = zero ? 0.0f : (float) ((int) (next_u32() % 20001u) - 10000) * 3e-4f;
+        src[1][i]       = (float) ((int) (next_u32() % 20001u) - 10000) * 7e-3f;
+    }
+    for (size_t pass = 0; pass < 2 && fails == 0; pass++) {
+        for (size_t i = 0; i < 6; i++) {
+            got[pass][i] = heap_alloc_aligned(sizes[i], 64);
+            bufs[i]      = buffer(be, sizes[i], nullptr);
+            if (got[pass][i] == nullptr || bufs[i] == nullptr || src[0] == nullptr ||
+                src[1] == nullptr) {
+                fails += geist_expect(false, "append: buffers");
+                break;
+            }
+            uint8_t *m = vt->buffer_map(bufs[i]);
+            if (i < 2) {
+                memcpy(m, src[i], sizes[i]);
+            } else {
+                memset(m, 0x55, sizes[i]);
+            }
+            vt->buffer_unmap(bufs[i]);
+        }
+        if (fails == 0) {
+            st[pass] = append_site(be, c, pass == 0, bufs);
+        }
+        for (size_t i = 0; i < 6; i++) {
+            if (bufs[i] != nullptr) {
+                if (fails == 0) {
+                    memcpy(got[pass][i], vt->buffer_map(bufs[i]), sizes[i]);
+                    vt->buffer_unmap(bufs[i]);
+                }
+                vt->buffer_destroy(be, bufs[i]);
+                bufs[i] = nullptr;
+            }
+        }
+    }
+    if (fails == 0) {
+        size_t off_by_one = 0, far = 0, stray = 0;
+        double sc_d = 0.0;
+        for (size_t b = 2; b < 4; b++) {
+            const bool nib = b == 3 && c->int4;
+            for (size_t i = 0; i < kv_n; i++) {
+                const int d = abs(q_elem(got[0][b], i, nib) - q_elem(got[1][b], i, nib));
+                off_by_one += d == 1;
+                far += d > 1;
+            }
+        }
+        for (size_t b = 4; b < 6; b++) {
+            for (size_t i = 0; i < n_sc; i++) {
+                float f, h;
+                memcpy(&f, got[0][b] + 4 * i, 4);
+                memcpy(&h, got[1][b] + 4 * i, 4);
+                const double d = fabs((double) f - (double) h) / fabs((double) h);
+                sc_d           = d > sc_d ? d : sc_d;
+            }
+        }
+        /* outside the appended rows the host loop wrote nothing */
+        const size_t lo = c->q_position * c->n_kv_heads, hi = lo + c->seq * c->n_kv_heads;
+        for (size_t i = 0; i < n_sc; i++) {
+            stray += (i < lo || i >= hi) && got[1][4][4 * i] != 0x55;
+        }
+        char msg[200];
+        snprintf(msg,
+                 sizeof msg,
+                 "%s append%s seq=%zu at %zu, %zu heads of %zu%s: status %d/%d, %zu off by one, "
+                 "%zu further, scales %.1e",
+                 backend,
+                 c->int4 ? " INT4" : "",
+                 c->seq,
+                 c->q_position,
+                 c->n_kv_heads,
+                 c->hd,
+                 c->rot ? ", rotated" : "",
+                 (int) st[0],
+                 (int) st[1],
+                 off_by_one,
+                 far,
+                 sc_d);
+        fails += geist_expect(st[0] == GEIST_OK && st[1] == GEIST_OK && far == 0 && stray == 0 &&
+                                      off_by_one <= kv_n / 100 && sc_d <= 1e-6,
+                              msg);
+        fails += geist_expect(memcmp(got[0][0], src[0], sizes[0]) == 0 &&
+                                      memcmp(got[0][1], src[1], sizes[1]) == 0,
+                              "append: the source rows are left alone");
+    }
+    for (size_t pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < 6; i++) {
+            safe_free((void **) &got[pass][i]);
+        }
+    }
+    safe_free((void **) &src[0]);
+    safe_free((void **) &src[1]);
+    return fails;
+}
+
+static int check_append(const char *backend, struct geist_backend *be) {
+    int fails = 0;
+    if (geist_backend_fused_tbl(be)->kv_append_q8 == nullptr) {
+        return geist_expect(strcmp(backend, "vulkan") != 0, "vulkan has kv_append_q8");
+    }
+    for (size_t i = 0; i < sizeof ACASES / sizeof ACASES[0]; i++) {
+        fails += append_case(backend, be, &ACASES[i]);
+    }
+    return fails;
+}
+
 /* ---- 2. A model ------------------------------------------------------- */
 
 constexpr size_t VOCAB   = 512;
@@ -521,6 +711,7 @@ int main(void) {
         } else {
             ran++;
             fails += check_call_site(BACKENDS[b], be);
+            fails += check_append(BACKENDS[b], be);
             fails += check_model(BACKENDS[b], be, &g);
         }
         geist_backend_destroy(be);
