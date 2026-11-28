@@ -185,15 +185,15 @@ enum geist_status transformer_kv_store_append(struct transformer_layer_forward_c
     const bool int4 = sess->kv_int4_packed_enabled;
     if (ctx->kv_int8_enabled && fused->kv_append_q8 != nullptr &&
         (int4 ? ctx->P->fuse_attn_kv_int4 : ctx->P->fuse_attn_kv_int8)) {
-        const int64_t       n_kv    = (int64_t) (q_position + seq);
-        const int64_t       n_kh    = st->n_kv_heads;
+        const int64_t       n_kv    = (int64_t) q_position + (int64_t) seq;
+        const int64_t       n_kh    = (int64_t) st->n_kv_heads;
         const int           qbits   = sess->kv_sim_qbits;
         const float         denom   = qbits != 0 ? (float) ((1 << (qbits - 1)) - 1) : 127.0f;
         struct geist_tensor t_k_src = view_3d(sess->scratch_k, (int64_t) seq, n_kh, (int64_t) hd);
         struct geist_tensor t_v_src = view_3d(sess->scratch_v, (int64_t) seq, n_kh, (int64_t) hd);
         struct geist_tensor t_k     = view_3d_i8(ctx->k_cache_q8_buf, n_kv, n_kh, (int64_t) hd);
         struct geist_tensor t_v =
-                int4 ? view_3d_u8(ctx->v_cache_q8_buf, n_kv, n_kh, (int64_t) (hd / 2))
+                int4 ? view_3d_u8(ctx->v_cache_q8_buf, n_kv, n_kh, (int64_t) hd / 2)
                      : view_3d_i8(ctx->v_cache_q8_buf, n_kv, n_kh, (int64_t) hd);
         struct geist_tensor                  t_ks = view_2d(ctx->k_cache_scale_buf, n_kv, n_kh);
         struct geist_tensor                  t_vs = view_2d(ctx->v_cache_scale_buf, n_kv, n_kh);

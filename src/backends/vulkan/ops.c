@@ -4280,10 +4280,10 @@ static bool vk_rope_append_cache(const struct geist_tensor *t,
 /* ---- The INT8 and INT4 KV caches on the device (#609) -------------------
  * kv_append_q8.comp writes them, attention_q8.comp reads them; both bind K
  * and V as words, so a head is a multiple of 8 wide (the packed V row a
- * whole number of words) and sits in shared memory. */
+ * whole number of words) and at most 512. */
 static bool vk_kv_q8_geometry_ok(size_t hd, size_t qh, size_t kvh) {
-    return hd != 0 && hd % 8u == 0 && hd <= VK_ATTN_MAX_HEAD_DIM && kvh != 0 && qh != 0 &&
-           qh % kvh == 0;
+    /* 512: the widest head the architecture's host loops, the twins, run */
+    return hd != 0 && hd % 8u == 0 && hd <= 512u && kvh != 0 && qh != 0 && qh % kvh == 0;
 }
 
 /* Element count of a DENSE tensor of `dtype`, 0 on any mismatch. */
@@ -4307,7 +4307,8 @@ struct vk_kv_append_q8_push {
             v_sc_off;
     float k_den, v_den, rot_scale;
 };
-static_assert(sizeof(struct vk_kv_append_q8_push) == 12 * 4, "kv_append_q8.comp push block");
+static_assert(sizeof(struct vk_kv_append_q8_push) == sizeof(uint32_t[12]),
+              "kv_append_q8.comp push block");
 
 [[nodiscard]] static enum geist_status vk_kv_append_q8(struct geist_backend                 *be,
                                                        const struct geist_kv_append_q8_args *a) {
@@ -4375,7 +4376,8 @@ struct vk_attention_q8_push {
     uint32_t n_q, n_kv, n_q_heads, n_kv_heads, head_dim, q_offset_abs, sliding_window, flags,
             q_offset, k_offset, kc_offset, v_offset, vc_offset, out_offset;
 };
-static_assert(sizeof(struct vk_attention_q8_push) == 14 * 4, "attention_q8.comp push block");
+static_assert(sizeof(struct vk_attention_q8_push) == sizeof(uint32_t[14]),
+              "attention_q8.comp push block");
 
 /* fused->attention_kv_int8 and attention_kv_int4: the V view says which. */
 [[nodiscard]] static enum geist_status vk_attention_kv_q8(struct geist_backend                 *be,
