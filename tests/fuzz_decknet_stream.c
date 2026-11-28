@@ -7,7 +7,7 @@
  * without a further check, so a description it wrongly accepts is a read
  * behind the buffer. The input is such a description plus pixel bytes:
  *
- *   [0]     format: 0..2 as they are, anything else a value the enum does
+ *   [0]     format: 0..3 as they are, anything else a value the enum does
  *           not name
  *   [1] [2] width and height, mostly the model's
  *   [3..4]  stride, [5..6] extent in bytes (little endian)
@@ -62,7 +62,7 @@ static volatile float sink;
 /* The harness's own answer to "does this frame lie inside its buffer", for
  * the tiny model. All quantities are below 2^16, so nothing overflows. */
 static bool fits(uint32_t format, uint64_t w, uint64_t h, uint64_t stride, uint64_t n_bytes) {
-    if (format > 2 || w != TINY_IMG_W || h != TINY_IMG_H) {
+    if (format > 3 || w != TINY_IMG_W || h != TINY_IMG_H) {
         return false;
     }
     const uint64_t row  = format == 0 ? w * 3 : format == 1 ? w : w * 2;
@@ -131,7 +131,7 @@ static size_t outputs(const struct geist_decknet_stream *s, uint32_t out[static 
 static void gate_sequence(const uint8_t *data, size_t size) {
     const uint8_t *pixels    = data + HEADER;
     const size_t   n_pixels  = size - HEADER;
-    const uint32_t format    = data[0] % 3;
+    const uint32_t format    = data[0] % 4;
     const uint32_t wish      = data[7] >> 3U;
     const uint32_t threshold = wish % 4 == 0 ? 0 : wish * 8; /* 0 for a quarter of the inputs */
 

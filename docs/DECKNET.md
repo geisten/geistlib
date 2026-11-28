@@ -99,7 +99,7 @@ struct geist_decknet_stream *s = nullptr;
 if (geist_decknet_stream_create(d, &s) != GEIST_OK) { /* GEIST_E_OOM */ }
 
 struct geist_decknet_frame f = {
-        .format = GEIST_DECKNET_FORMAT_NV12, /* or _RGB8, _YUYV */
+        .format = GEIST_DECKNET_FORMAT_NV12, /* or _RGB8, _YUYV, _UYVY */
         .width = info.image_width, .height = info.image_height,
         .stride = stride, .n_bytes = n_bytes, .data = empty_deck};
 (void) geist_decknet_stream_set_reference(s, &f); /* once, and after new homographies */
@@ -155,6 +155,7 @@ as it is. Rows run top to bottom, `stride` bytes apart.
 | `GEIST_DECKNET_FORMAT_RGB8` | 3 bytes per pixel, R G B | any |
 | `GEIST_DECKNET_FORMAT_NV12` | a plane of Y, then at byte `stride * height` a plane of U V pairs, one pair per 2 x 2 pixels, its rows `stride` apart as well | width and height even |
 | `GEIST_DECKNET_FORMAT_YUYV` | 4 bytes per 2 pixels: Y0 U Y1 V | width even |
+| `GEIST_DECKNET_FORMAT_UYVY` | the same samples in the order U Y0 V Y1 (`2vuy` on macOS) | width even |
 
 Width and height are the model's. `n_bytes` is the extent of `data`, and
 nothing at or behind `data + n_bytes` is read: a frame is refused with
@@ -189,7 +190,7 @@ is converted once for each; the worktable strip's tiles are converted before
 the slots. A gated stream converts the tiles it takes into an image of the
 whole frame, which is what it keeps.
 
-NV12 and YUYV are read as BT.601 limited range, the chroma of a pixel taken
+NV12, YUYV and UYVY are read as BT.601 limited range, the chroma of a pixel taken
 from its block without interpolation. In integers, for the bytes `Y`, `U`,
 `V` of a pixel:
 
@@ -623,6 +624,20 @@ make DECKNET=1 bin/<target>/release/tools/bench_stream
 Each row also gives the processor time the process used for its timed
 frames, all threads together (`getrusage`); behind a camera that includes
 the bench's own looking for a frame, which the row names.
+
+UYVY (#607) is YUYV with the bytes of a pair in another order, and costs
+what YUYV costs. M1 Max, one thread, 300 frames per row after 20 warm-up,
+the two formats in turn for three rounds under the host lock; the median of
+the three p50, ms per frame (still / stream / gated):
+
+| size | YUYV | UYVY |
+| :-- | --: | --: |
+| 1280 x 720 | 21.0 / 4.87 / 1.67 | 21.0 / 4.86 / 1.66 |
+| 1920 x 1080 | 23.4 / 5.26 / 1.87 | 23.3 / 5.16 / 1.81 |
+
+The p50 of the single runs overlap in every cell (1920 x 1080 stream: 5.11
+to 5.38 for YUYV, 5.14 to 5.24 for UYVY). On Metal and Vulkan the shader
+reads the same three bytes of a pixel at other offsets; that was not timed.
 
 ### Where the conversion's 2 ms went
 

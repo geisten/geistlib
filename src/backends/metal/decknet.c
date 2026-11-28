@@ -9,7 +9,7 @@
  * makes their results the bits of src/archs/decknet/ on the CPU:
  *
  *   decknet_sample   one thread per sample: the 2 x 2 camera pixels (of an
- *                    NV12 or YUYV frame converted here, per pixel), blended
+ *                    YUV frame converted here, per pixel), blended
  *                    with the table's weights, into the pixel memory;
  *   decknet_sums     one thread per pixel a kernel is evaluated at: per part
  *                    of the kernel the sum of the crop pixels of its taps.
@@ -46,7 +46,7 @@ static const char metal_decknet_source[] =
         "                    c + 516 * (u - 128)) >> 8;\n"
         "    return uint3(clamp(rgb, 0, 255));\n"
         "}\n"
-        /* Formats: 0 RGB8, 1 NV12, 2 YUYV (enum geist_decknet_format). */
+        /* Formats: 0 RGB8, 1 NV12, 2 YUYV, 3 UYVY (enum geist_decknet_format). */
         "static inline uint3 pixel(device const uchar *f, SampleParams p, uint x, uint y) {\n"
         "    if (p.format == 0u) {\n"
         "        uint o = y * p.stride + x * 3u;\n"
@@ -57,7 +57,9 @@ static const char metal_decknet_source[] =
         "        return yuv(f[y * p.stride + x], f[o], f[o + 1u]);\n"
         "    }\n"
         "    uint o = y * p.stride + (x & ~1u) * 2u;\n"
-        "    return yuv(f[y * p.stride + x * 2u], f[o + 1u], f[o + 3u]);\n"
+        /* where the U is; the Y beside it */
+        "    uint c = p.format == 3u ? 0u : 1u;\n"
+        "    return yuv(f[y * p.stride + x * 2u + 1u - c], f[o + c], f[o + c + 2u]);\n"
         "}\n"
         "kernel void decknet_sample(device const uchar *frame [[buffer(0)]],\n"
         "                           device const Sample *tab [[buffer(1)]],\n"

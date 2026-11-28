@@ -186,7 +186,7 @@ convolutional net that takes two RGB8 camera images and returns one state
 vector per deck position, with its own load / run / read / destroy entry
 points and no tokenizer, session or backend handle; `geist_decknet_stream_*`
 (#533) runs the same net frame after frame on a camera stream, reading RGB8,
-NV12 or YUYV frames in the caller's memory, with
+NV12, YUYV or UYVY frames in the caller's memory, with
 `geist_decknet_stream_set_backend` optionally on a GPU backend for the
 integer part of a frame (`include/geist_decknet_gpu.h` is what such a
 backend implements; EXPERIMENTAL as well). Unlike the decision API

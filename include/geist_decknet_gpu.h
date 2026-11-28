@@ -33,7 +33,7 @@
  *             crop. Kernel 0's, then kernel 1's.
  *
  * The frame is the caller's bytes without row padding (stride = the bytes
- * of a row), converted per pixel where the format is NV12 or YUYV, by the
+ * of a row), converted per pixel where the format is a YUV one, by the
  * integer formula of docs/DECKNET.md.
  */
 #pragma once

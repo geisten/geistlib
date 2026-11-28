@@ -14,7 +14,7 @@
  *                   (decknet_plane_pixels);
  *   tiles           the frame is squares of DECKNET_TILE pixels, and only
  *                   the tiles a sample reads are touched. RGB8 is sampled in
- *                   place; of an NV12 or YUYV frame those tiles are
+ *                   place; of a YUV frame those tiles are
  *                   converted, 16 pixels at a time, and sampled then: slot
  *                   by slot, by the thread that samples the slot, into a
  *                   packed image of what that slot reads (pixels_box);
@@ -74,7 +74,7 @@ static_assert(__FINITE_MATH_ONLY__ == 0,
 /* ---- frames ----------------------------------------------------------- */
 
 /* The bytes of one row of the frame's first plane and how many rows of
- * `stride` it has in all. False for a format that is not one of the three
+ * `stride` it has in all. False for a format that is not one of the four
  * or that cannot hold the frame's size. */
 static bool frame_rows(const struct geist_decknet_frame *f, size_t *row, size_t *rows) {
     switch (f->format) {
@@ -85,6 +85,7 @@ static bool frame_rows(const struct geist_decknet_frame *f, size_t *row, size_t 
         *row = f->width;
         return f->width % 2 == 0 && f->height % 2 == 0 && !ckd_add(rows, f->height, f->height / 2);
     case GEIST_DECKNET_FORMAT_YUYV:
+    case GEIST_DECKNET_FORMAT_UYVY:
         *rows = f->height;
         return f->width % 2 == 0 && !ckd_mul(row, f->width, 2);
     }
@@ -245,8 +246,8 @@ pixels_box(const struct geist_decknet_stream *s, struct decknet_box box, const u
 }
 
 /* The pixels [x0, x1) x [y0, y1) of a frame frame_ok accepted, as RGB8 into
- * the image `to`, whose bytes are `rgb`. x0 and x1 are even for NV12 and
- * YUYV: tiles start at multiples of DECKNET_TILE and those frames have an
+ * the image `to`, whose bytes are `rgb`. x0 and x1 are even for the YUV
+ * formats: tiles start at multiples of DECKNET_TILE and those frames have an
  * even width. */
 static void convert(const struct geist_decknet_frame *f,
                     size_t                            x0,
@@ -276,20 +277,30 @@ static void convert(const struct geist_decknet_frame *f,
             }
             break;
         }
-        case GEIST_DECKNET_FORMAT_YUYV: {
-            const uint8_t *p = row + x0 * 2; /* Y0 U Y1 V */
-            size_t         x = x0;
+        case GEIST_DECKNET_FORMAT_YUYV:
+        case GEIST_DECKNET_FORMAT_UYVY: {
+            /* Y0 U Y1 V, or U Y0 V Y1. */
+            const bool     uy = f->format == GEIST_DECKNET_FORMAT_UYVY;
+            const uint8_t *p  = row + x0 * 2;
+            size_t         x  = x0;
             for (; x + 16 <= x1; x += 16, p += 32, out += 48) {
                 h8 lo, hi;
                 memcpy(&lo, p, sizeof lo);
                 memcpy(&hi, p + 16, sizeof hi);
-                /* The lanes with Y0 and U, and those with Y1 and V. */
+                /* The lanes with Y0 and U, and those with Y1 and V, the Y
+                 * in the low byte of a lane or in the high one. A shift by
+                 * a variable in place of the branch cost 0.05 ms of a
+                 * 1920 x 1080 frame (M1 Max). */
                 const h8 first  = __builtin_shufflevector(lo, hi, 0, 2, 4, 6, 8, 10, 12, 14);
                 const h8 second = __builtin_shufflevector(lo, hi, 1, 3, 5, 7, 9, 11, 13, 15);
-                yuv16(first & 0xFF, second & 0xFF, first >> 8, second >> 8, out);
+                if (uy) {
+                    yuv16(first >> 8, second >> 8, first & 0xFF, second & 0xFF, out);
+                } else {
+                    yuv16(first & 0xFF, second & 0xFF, first >> 8, second >> 8, out);
+                }
             }
             for (; x < x1; x += 2, p += 4, out += 6) {
-                yuv_pair(p[0], p[2], p[1], p[3], out);
+                yuv_pair(p[uy], p[2 + uy], p[1 - uy], p[3 - uy], out);
             }
             break;
         }
@@ -319,6 +330,7 @@ static size_t blocks(const struct geist_decknet_frame *f,
         out[1] = (struct block) {f->height + y0 / 2, f->height + (y1 + 1) / 2, x0, x1};
         return 2;
     case GEIST_DECKNET_FORMAT_YUYV:
+    case GEIST_DECKNET_FORMAT_UYVY:
         out[0] = (struct block) {y0, y1, x0 * 2, x1 * 2};
         return 1;
     }
@@ -405,7 +417,7 @@ static inline bool tile_read(const struct geist_decknet_stream *s, size_t who, s
     return who < s->d->n_slots ? (s->slot_tiles[t] >> who & 1U) != 0 : s->used[t] != 0;
 }
 
-/* Without gating, an NV12 or YUYV frame: the tiles reader `who` reads as
+/* Without gating, a YUV frame: the tiles reader `who` reads as
  * RGB8 into `rgb`, packed (pixels_box), which is the image returned.
  * Neighbouring tiles of a row go in one piece. Every reader has a sample
  * (the strip a pixel, a slot a pooling row), so its rectangle has a tile. */
@@ -1126,7 +1138,7 @@ decknet_stream_set_gate(struct geist_decknet_stream *s, bool on, uint32_t thresh
     const struct geist_decknet *d = s->d;
     if (on && s->crop == nullptr) {
         /* What a gated stream keeps from frame to frame: the bytes of an
-         * NV12 or YUYV frame (two per pixel at most; RGB8 is kept in
+         * YUV frame (two per pixel at most; RGB8 is kept in
          * s->rgb), and per slot and plane the crop and what decknet_plane
          * computes from it alone. */
         size_t n_kept = 0, n_crop = 0, n_sums = 0, n_tube = 0, n_mix = 0, n_stale = 0;
@@ -1248,7 +1260,7 @@ enum geist_status decknet_stream_set_reference(struct geist_decknet_stream      
 struct slots_job {
     struct geist_decknet_stream *s;
     struct pixels                img; /* the frame, or s->rgb */
-    /* nullptr, or the NV12 or YUYV frame of which each slot converts what
+    /* nullptr, or the YUV frame of which each slot converts what
      * it reads, in place of `img`. */
     const struct geist_decknet_frame *convert;
     const float                      *ga;
@@ -1352,7 +1364,7 @@ enum geist_status decknet_stream_push_frame(struct geist_decknet_stream      *s,
     const struct decknet_run strip = {.px = 0, .n = (uint32_t) d->bg_px};
     struct pixels            img   = pixels_own(s);
     s->n_tiles_changed             = s->n_tiles;
-    /* An NV12 or YUYV frame that is not gated is not converted as a frame:
+    /* A YUV frame that is not gated is not converted as a frame:
      * the worktable strip's tiles here, and each slot's by the thread that
      * samples the slot (slots()), packed and always into the same memory:
      * 0.8 MB that the core has just written, where an image of the frame
