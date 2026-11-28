@@ -448,7 +448,9 @@ struct geist_deltanet_mix_args {
  * rows. The decomposed twin is therefore not prims->attention on
  * dequantized rows but the architecture's host loop over the same bytes
  * (attention_int8_via_buffers); a kernel agrees with it to fp32 rounding
- * and gives the same bits for any thread count. */
+ * and gives the same bits for any thread count. On a GPU, whose division
+ * need not be correctly rounded, an element of the query on a rounding
+ * boundary can land one step away. */
 struct geist_attention_kv_args {
     const struct geist_tensor *q;
     const struct geist_tensor *k;
@@ -458,6 +460,34 @@ struct geist_attention_kv_args {
     struct geist_tensor       *out;
     size_t                     q_offset;
     size_t                     sliding_window;
+};
+
+/* Arguments for fused->kv_append_q8: rows [q_position, q_position + seq) of
+ * the INT8 cache (GEIST_KV_INT8), or of the INT4 one, from the layer's K and
+ * V rows.
+ *   k_src, v_src F32 DENSE [seq,  n_kv_heads, head_dim]
+ *   k            I8  DENSE [n_kv, n_kv_heads, head_dim]
+ *   v            I8  DENSE [n_kv, n_kv_heads, head_dim], or
+ *                U8  DENSE [n_kv, n_kv_heads, head_dim / 2]: the INT4
+ *                packing of fused->attention_kv_int4
+ *   k_scale, v_scale F32 DENSE [n_kv, n_kv_heads]
+ * q_position + seq <= n_kv. A row (t, h) is quantized on its own, as the
+ * architecture's host loop does it: rotated first where `rotate` is set
+ * (the orthonormal Walsh-Hadamard transform over head_dim, a power of two),
+ * scale = max|x| / den (1 for a zero row), each element x / scale rounded to
+ * nearest even. den is 127 for INT8 and 7 for the packed V unless the
+ * session simulates fewer bits. k_src and v_src are left as they were. */
+struct geist_kv_append_q8_args {
+    const struct geist_tensor *k_src;
+    const struct geist_tensor *v_src;
+    struct geist_tensor       *k;
+    struct geist_tensor       *k_scale;
+    struct geist_tensor       *v;
+    struct geist_tensor       *v_scale;
+    size_t                     q_position;
+    float                      k_den;
+    float                      v_den;
+    bool                       rotate;
 };
 
 /* Arguments for fused->attention_sinks (#243): prims->attention's q, k, v,
@@ -1035,6 +1065,14 @@ struct geist_backend_fused {
      * GEIST_FUSED_ATTN_KV_INT4. */
     enum geist_status (*attention_kv_int4)(struct geist_backend                 *be,
                                            const struct geist_attention_kv_args *args);
+
+    /* The quantizing append of the INT8 and INT4 KV caches, for a backend
+     * whose attention_kv_int8 / attention_kv_int4 read the cache where the
+     * host cannot write it cheaply. See geist_kv_append_q8_args. The
+     * architecture calls it on the layers whose plan binds one of those two
+     * kernels, with their probe's geometry; nullptr leaves its host loop. */
+    enum geist_status (*kv_append_q8)(struct geist_backend                 *be,
+                                      const struct geist_kv_append_q8_args *args);
 
     /* A residual step and the pre-norm that reads its result, one pass:
      *   y = (res + rmsnorm(x) * w) * scale      (w nullptr: res + x)

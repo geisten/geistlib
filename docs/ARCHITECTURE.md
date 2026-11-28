@@ -332,7 +332,9 @@ optional backend hook and a portable architecture-layer implementation rather
 than placeholder SSM enum values. Attention over the INT8 KV cache is the same
 kind of hook (`fused->attention_kv_int8`: AVX2 or, where the ISA dispatch
 allows it, AVX-512 VNNI on `cpu_x86`, `vdotq_s32` on `cpu_neon`), and over the
-INT4 cache (`fused->attention_kv_int4`, `cpu_neon`): the decomposed
+INT4 cache (`fused->attention_kv_int4`, `cpu_neon`); Vulkan has both as one
+compute shader and, with `fused->kv_append_q8`, quantizes the rows into the
+cache on the device as well, so neither cache visits the host: the decomposed
 equivalent is the architecture's host loop over the same cache bytes, portable
 C, not `attention` on dequantized rows, because the scores are integer dots of
 an int8-quantized query. `GEIST_KV_INT8_FUSED=0` keeps the host loops.

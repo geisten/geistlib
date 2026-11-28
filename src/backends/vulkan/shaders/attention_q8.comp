@@ -1,0 +1,180 @@
+#version 450
+#include "vk_limits.h"
+
+/* Attention over the INT8 KV cache (fused->attention_kv_int8), and over the
+ * INT4 one (attention_kv_int4: K as INT8, V two signed 4-bit values a byte)
+ * with bit 0 of flags. attention_f16's layout, one workgroup per
+ * (q_pos, q_head) and an online softmax over 256-position chunks, with the
+ * host kernel's arithmetic (attn_int8_item):
+ *   - the query head is quantized to int8 at amax / 127, round to nearest
+ *     even,
+ *   - a score is the exact integer dot with the int8 K row, times the two
+ *     scales,
+ *   - V rows are weighted by weight * v_scale.
+ * K and V are bound as words (4 int8, or 8 nibbles); head_dim is a multiple
+ * of 4 (8 with the 4-bit V), <= VK_ATTN_MAX_HEAD_DIM, and the rows start on
+ * words. Dispatch: gx = n_q, gy = n_q_heads. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer Q { float q[]; };
+layout(set = 0, binding = 1) readonly buffer K { uint k[]; };
+layout(set = 0, binding = 2) readonly buffer KC { float kc[]; };
+layout(set = 0, binding = 3) readonly buffer V { uint v[]; };
+layout(set = 0, binding = 4) readonly buffer VC { float vc[]; };
+layout(set = 0, binding = 5) writeonly buffer Out { float out_v[]; };
+
+layout(push_constant) uniform Push {
+    uint n_q;
+    uint n_kv;
+    uint n_q_heads;
+    uint n_kv_heads;
+    uint head_dim;
+    uint q_offset_abs;
+    uint sliding_window;
+    uint flags; /* bit 0: V in 4 bits */
+    uint q_offset; /* floats */
+    uint k_offset; /* words */
+    uint kc_offset; /* floats */
+    uint v_offset; /* words */
+    uint vc_offset; /* floats */
+    uint out_offset; /* floats */
+} pc;
+
+shared ivec4 q_sh4[VK_ATTN_MAX_HEAD_DIM / 4u];
+shared float red[256];
+shared float w_sh[256];
+
+ivec4 bytes4(uint w) {
+    return (ivec4(int(w)) << ivec4(24, 16, 8, 0)) >> 24;
+}
+
+void main() {
+    uint q_pos = gl_WorkGroupID.x;
+    uint q_head = gl_WorkGroupID.y;
+    uint lid = gl_LocalInvocationID.x;
+    if (q_pos >= pc.n_q || q_head >= pc.n_q_heads ||
+        pc.n_kv == 0u || pc.head_dim == 0u || pc.head_dim > VK_ATTN_MAX_HEAD_DIM) {
+        return;
+    }
+
+    bool nib = (pc.flags & 1u) != 0u;
+    uint kv_group = pc.n_q_heads / pc.n_kv_heads;
+    uint kv_head = q_head / kv_group;
+    uint q_abs = pc.q_offset_abs + q_pos;
+    uint s_lo = 0u;
+    if (pc.sliding_window > 0u && q_abs + 1u > pc.sliding_window) {
+        s_lo = q_abs + 1u - pc.sliding_window;
+    }
+    uint s_hi = min(q_abs, pc.n_kv - 1u);
+
+    uint hd = pc.head_dim;
+    uint hd4 = hd >> 2u;
+    uint q_base = pc.q_offset + (q_pos * pc.n_q_heads + q_head) * hd;
+    uint out_base = pc.out_offset + (q_pos * pc.n_q_heads + q_head) * hd;
+
+    /* the query head's amax, then its int8 row into shared */
+    float m = 0.0;
+    for (uint d = lid; d < hd; d += 256u) {
+        m = max(m, abs(q[q_base + d]));
+    }
+    red[lid] = m;
+    barrier();
+    for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+        if (lid < stride) {
+            red[lid] = max(red[lid], red[lid + stride]);
+        }
+        barrier();
+    }
+    /* precise: the host's two divisions and its product, as written. A
+     * driver that folds them into 127 / amax rounds a tie the other way,
+     * and one step of a query element is 1e-3 of an output (#609, NVIDIA). */
+    precise float q_scale = red[0] / 127.0;
+    if (q_scale == 0.0) {
+        q_scale = 1.0;
+    }
+    precise float q_inv = 1.0 / q_scale;
+    for (uint d = lid; d < hd4; d += 256u) {
+        uint b = q_base + 4u * d;
+        precise vec4 qs = vec4(q[b], q[b + 1u], q[b + 2u], q[b + 3u]) * q_inv;
+        q_sh4[d] = ivec4(roundEven(qs));
+    }
+    barrier(); /* q_sh4 written, red[] free */
+
+    float m_run = (-1.0 / 0.0);
+    float l_run = 0.0;
+    vec4 acc = vec4(0.0); /* dim slice 4*lid .. 4*lid+3 (lid < hd4) */
+    uint k_row = pc.n_kv_heads * hd4; /* words a cache position */
+    uint v_row = nib ? pc.n_kv_heads * (hd >> 3u) : k_row;
+
+    for (uint base = s_lo; base <= s_hi; base += 256u) {
+        uint s = base + lid;
+
+        float score = (-1.0 / 0.0);
+        if (s <= s_hi) {
+            uint k_base = pc.k_offset + s * k_row + kv_head * hd4;
+            int sum = 0;
+            for (uint i = 0u; i < hd4; i++) {
+                ivec4 p = bytes4(k[k_base + i]) * q_sh4[i];
+                sum += p.x + p.y + p.z + p.w;
+            }
+            precise float sq = float(sum) * q_scale;
+            score = sq * kc[pc.kc_offset + s * pc.n_kv_heads + kv_head];
+        }
+
+        red[lid] = score;
+        barrier();
+        for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+            if (lid < stride && red[lid + stride] > red[lid]) {
+                red[lid] = red[lid + stride];
+            }
+            barrier();
+        }
+        float m_new = max(m_run, red[0]);
+        barrier(); /* red[] reused below */
+
+        float w = s <= s_hi ? exp(score - m_new) : 0.0;
+        w_sh[lid] = s <= s_hi ? w * vc[pc.vc_offset + s * pc.n_kv_heads + kv_head] : 0.0;
+        red[lid] = w;
+        barrier();
+        for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+            if (lid < stride) {
+                red[lid] += red[lid + stride];
+            }
+            barrier();
+        }
+        float r = m_run == (-1.0 / 0.0) ? 0.0 : exp(m_run - m_new);
+        l_run = l_run * r + red[0];
+        m_run = m_new;
+
+        /* V: the thread owns the 4-wide dim slice lid, one word of an INT8
+         * row or half a word of a packed one */
+        uint chunk_n = min(255u, s_hi - base) + 1u;
+        vec4 a = vec4(0.0);
+        if (lid < hd4) {
+            if (nib) {
+                uint v_base = pc.v_offset + base * v_row + kv_head * (hd >> 3u) + (lid >> 1u);
+                uint sh = 16u * (lid & 1u);
+                for (uint j = 0u; j < chunk_n; j++) {
+                    int h = int(v[v_base + j * v_row] >> sh);
+                    a += w_sh[j] * vec4((ivec4(h) << ivec4(28, 24, 20, 16)) >> 28);
+                }
+            } else {
+                uint v_base = pc.v_offset + base * v_row + kv_head * hd4 + lid;
+                for (uint j = 0u; j < chunk_n; j++) {
+                    a += w_sh[j] * vec4(bytes4(v[v_base + j * v_row]));
+                }
+            }
+        }
+        acc = acc * r + a;
+        barrier(); /* w_sh reused next chunk */
+    }
+
+    float inv_l = l_run > 0.0 ? 1.0 / l_run : 0.0;
+    if (lid < hd4) {
+        out_v[out_base + 4u * lid + 0u] = acc.x * inv_l;
+        out_v[out_base + 4u * lid + 1u] = acc.y * inv_l;
+        out_v[out_base + 4u * lid + 2u] = acc.z * inv_l;
+        out_v[out_base + 4u * lid + 3u] = acc.w * inv_l;
+    }
+}

@@ -12,6 +12,7 @@
 #include "hadamard.h" /* host fallback of hadamard_rotate */
 #include "linear_ref.h"
 #include "par.h"
+#include "tensor_view.h" /* geist_tensor_elems: checked element count */
 
 /* Everything the backend knows per weight dtype, in one place (#465): the
  * file block, how the VRAM copy lays it out, the (matvec, matmul) pipeline
@@ -4276,6 +4277,163 @@ static bool vk_rope_append_cache(const struct geist_tensor *t,
             be, VK_PIPE_KV_APPEND_F16, bi, acc, push, sizeof(push), vk_groups(push[0]), 1, 1);
 }
 
+/* ---- The INT8 and INT4 KV caches on the device (#609) -------------------
+ * kv_append_q8.comp writes them, attention_q8.comp reads them; both bind K
+ * and V as words, so a head is a multiple of 8 wide (the packed V row a
+ * whole number of words) and at most 512. */
+static bool vk_kv_q8_geometry_ok(size_t hd, size_t qh, size_t kvh) {
+    /* 512: the widest head the architecture's host loops, the twins, run */
+    return hd != 0 && hd % 8u == 0 && hd <= 512u && kvh != 0 && qh != 0 && qh % kvh == 0;
+}
+
+/* Element count of a DENSE tensor of `dtype`, 0 on any mismatch. */
+static size_t vk_q8_n(const struct geist_tensor *t, enum geist_dtype dtype) {
+    size_t n = 0;
+    return t != nullptr && t->dtype == dtype && t->layout == GEIST_LAYOUT_DENSE &&
+                           t->buffer != nullptr && !geist_tensor_elems(t, &n)
+                   ? n
+                   : 0;
+}
+
+/* The V view of either cache: I8 rows, or U8 rows of head_dim / 2 (*nib). */
+static bool vk_q8_v_ok(const struct geist_tensor *v, size_t n_elems, bool *nib) {
+    *nib = v != nullptr && v->dtype == GEIST_DTYPE_U8;
+    return vk_q8_n(v, *nib ? GEIST_DTYPE_U8 : GEIST_DTYPE_I8) == (*nib ? n_elems / 2 : n_elems);
+}
+
+/* kv_append_q8.comp's push block, field for field. */
+struct vk_kv_append_q8_push {
+    uint32_t n_rows, head_dim, flags, k_src_off, v_src_off, k_dst_off, v_dst_off, k_sc_off,
+            v_sc_off;
+    float k_den, v_den, rot_scale;
+};
+static_assert(sizeof(struct vk_kv_append_q8_push) == sizeof(uint32_t[12]),
+              "kv_append_q8.comp push block");
+
+[[nodiscard]] static enum geist_status vk_kv_append_q8(struct geist_backend                 *be,
+                                                       const struct geist_kv_append_q8_args *a) {
+    if (a == nullptr || a->k_src == nullptr || a->v_src == nullptr || a->k == nullptr ||
+        a->v == nullptr || a->k_scale == nullptr || a->v_scale == nullptr || a->k_src->ndim != 3 ||
+        a->k->ndim != 3) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan kv_append_q8: bad args");
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t seq = (size_t) a->k_src->shape[0], kvh = (size_t) a->k_src->shape[1];
+    const size_t hd = (size_t) a->k_src->shape[2], n_kv = (size_t) a->k->shape[0];
+    if (!vk_kv_q8_geometry_ok(hd, kvh, kvh) || (a->rotate && (hd & (hd - 1)) != 0)) {
+        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "vulkan kv_append_q8: head_dim %zu", hd);
+        return GEIST_E_UNSUPPORTED;
+    }
+    size_t rows, src_n, dst_n, end;
+    bool   nib = false;
+    if (ckd_mul(&rows, seq, kvh) || ckd_mul(&src_n, rows, hd) || ckd_mul(&dst_n, n_kv, kvh) ||
+        ckd_mul(&dst_n, dst_n, hd) || ckd_add(&end, a->q_position, seq) || end > n_kv || seq == 0 ||
+        vk_t_n(a->k_src) != src_n || vk_t_n(a->v_src) != src_n ||
+        vk_q8_n(a->k, GEIST_DTYPE_I8) != dst_n || !vk_q8_v_ok(a->v, dst_n, &nib) ||
+        vk_t_n(a->k_scale) != n_kv * kvh || vk_t_n(a->v_scale) != n_kv * kvh) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan kv_append_q8: bad views");
+        return GEIST_E_INVALID_ARG;
+    }
+    VkDescriptorBufferInfo bi[6];
+    uint32_t               off[6];
+    if (!vk_tensor_gpu(a->k_src, &bi[0], &off[0]) || !vk_tensor_gpu(a->v_src, &bi[1], &off[1]) ||
+        !vk_tensor_gpu(a->k, &bi[2], &off[2]) || !vk_tensor_gpu(a->v, &bi[3], &off[3]) ||
+        !vk_tensor_gpu(a->k_scale, &bi[4], &off[4]) ||
+        !vk_tensor_gpu(a->v_scale, &bi[5], &off[5])) {
+        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "vulkan kv_append_q8: host tensors");
+        return GEIST_E_UNSUPPORTED;
+    }
+    /* The first row written, in rows (the scales), in K words and V words. */
+    const size_t                row0    = a->q_position * kvh; /* < n_kv * kvh, checked above */
+    const size_t                v_words = nib ? hd / 8u : hd / 4u;
+    struct vk_kv_append_q8_push push    = {
+            .flags     = (a->rotate ? 1u : 0u) | (nib ? 2u : 0u),
+            .k_src_off = off[0],
+            .v_src_off = off[1],
+            .k_den     = a->k_den,
+            .v_den     = a->v_den,
+            .rot_scale = 1.0f / sqrtf((float) hd),
+    };
+    if (vk_ckd_u32(rows, &push.n_rows) || vk_ckd_u32(hd, &push.head_dim) ||
+        vk_ckd_u32(off[2] + row0 * (hd / 4u), &push.k_dst_off) ||
+        vk_ckd_u32(off[3] + row0 * v_words, &push.v_dst_off) ||
+        vk_ckd_u32(off[4] + row0, &push.k_sc_off) || vk_ckd_u32(off[5] + row0, &push.v_sc_off)) {
+        return vk_too_wide(be, "kv_append_q8");
+    }
+    const struct vk_access acc[6] = {
+            vk_acc_tensor(a->k_src, false),
+            vk_acc_tensor(a->v_src, false),
+            vk_acc((uint64_t) push.k_dst_off * 4u, rows * hd, true),
+            vk_acc((uint64_t) push.v_dst_off * 4u, rows * v_words * 4u, true),
+            vk_acc((uint64_t) push.k_sc_off * 4u, rows * 4u, true),
+            vk_acc((uint64_t) push.v_sc_off * 4u, rows * 4u, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_KV_APPEND_Q8, bi, acc, &push, sizeof(push), push.n_rows, 1, 1);
+}
+
+/* attention_q8.comp's push block, field for field. */
+struct vk_attention_q8_push {
+    uint32_t n_q, n_kv, n_q_heads, n_kv_heads, head_dim, q_offset_abs, sliding_window, flags,
+            q_offset, k_offset, kc_offset, v_offset, vc_offset, out_offset;
+};
+static_assert(sizeof(struct vk_attention_q8_push) == sizeof(uint32_t[14]),
+              "attention_q8.comp push block");
+
+/* fused->attention_kv_int8 and attention_kv_int4: the V view says which. */
+[[nodiscard]] static enum geist_status vk_attention_kv_q8(struct geist_backend                 *be,
+                                                          const struct geist_attention_kv_args *a) {
+    if (a == nullptr || a->q == nullptr || a->k == nullptr || a->v == nullptr ||
+        a->k_scale == nullptr || a->v_scale == nullptr || a->out == nullptr || a->q->ndim != 3 ||
+        a->k->ndim != 3) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan attention_kv_int8: bad args");
+        return GEIST_E_INVALID_ARG;
+    }
+    const size_t n_q = (size_t) a->q->shape[0], qh = (size_t) a->q->shape[1];
+    const size_t hd   = (size_t) a->q->shape[2];
+    const size_t n_kv = (size_t) a->k->shape[0], kvh = (size_t) a->k->shape[1];
+    if (!vk_kv_q8_geometry_ok(hd, qh, kvh)) {
+        geist_backend_set_error(
+                be, GEIST_E_UNSUPPORTED, "vulkan attention_kv_int8: head_dim %zu", hd);
+        return GEIST_E_UNSUPPORTED;
+    }
+    size_t q_n, kv_n, end;
+    bool   nib = false;
+    if (ckd_mul(&q_n, n_q, qh) || ckd_mul(&q_n, q_n, hd) || ckd_mul(&kv_n, n_kv, kvh) ||
+        ckd_mul(&kv_n, kv_n, hd) || ckd_add(&end, a->q_offset, n_q) || end > n_kv || n_q == 0 ||
+        vk_t_n(a->q) != q_n || vk_t_n(a->out) != q_n || vk_q8_n(a->k, GEIST_DTYPE_I8) != kv_n ||
+        !vk_q8_v_ok(a->v, kv_n, &nib) || vk_t_n(a->k_scale) != n_kv * kvh ||
+        vk_t_n(a->v_scale) != n_kv * kvh) {
+        geist_backend_set_error(be, GEIST_E_INVALID_ARG, "vulkan attention_kv_int8: bad views");
+        return GEIST_E_INVALID_ARG;
+    }
+    VkDescriptorBufferInfo      bi[6];
+    struct vk_attention_q8_push push = {.flags = nib ? 1u : 0u};
+    if (!vk_tensor_gpu(a->q, &bi[0], &push.q_offset) ||
+        !vk_tensor_gpu(a->k, &bi[1], &push.k_offset) ||
+        !vk_tensor_gpu(a->k_scale, &bi[2], &push.kc_offset) ||
+        !vk_tensor_gpu(a->v, &bi[3], &push.v_offset) ||
+        !vk_tensor_gpu(a->v_scale, &bi[4], &push.vc_offset) ||
+        !vk_tensor_gpu(a->out, &bi[5], &push.out_offset)) {
+        geist_backend_set_error(be, GEIST_E_UNSUPPORTED, "vulkan attention_kv_int8: host tensors");
+        return GEIST_E_UNSUPPORTED;
+    }
+    if (vk_ckd_u32(n_q, &push.n_q) || vk_ckd_u32(n_kv, &push.n_kv) ||
+        vk_ckd_u32(qh, &push.n_q_heads) || vk_ckd_u32(kvh, &push.n_kv_heads) ||
+        vk_ckd_u32(hd, &push.head_dim) || vk_ckd_u32(a->q_offset, &push.q_offset_abs) ||
+        vk_ckd_u32(a->sliding_window, &push.sliding_window)) {
+        return vk_too_wide(be, "attention_kv_int8");
+    }
+    const struct vk_access acc[6] = {
+            vk_acc_tensor(a->q, false),
+            vk_acc((uint64_t) push.k_offset * 4u, kv_n, false),
+            vk_acc_tensor(a->k_scale, false),
+            vk_acc((uint64_t) push.v_offset * 4u, nib ? kv_n / 2 : kv_n, false),
+            vk_acc_tensor(a->v_scale, false),
+            vk_acc_tensor(a->out, true)};
+    return vk_seq_dispatch_acc(
+            be, VK_PIPE_ATTENTION_Q8, bi, acc, &push, sizeof(push), push.n_q, push.n_q_heads, 1);
+}
+
 /* Gated-DeltaNet mixer on the device: causal conv + silu, then the delta-rule
  * recurrence with the gated per-head RMSNorm (layer_deltanet.c is the host
  * oracle). Two dispatches per call (conv, deltanet_delta_f32), or four where
@@ -4740,9 +4898,10 @@ static bool vk_fused_supported(struct geist_backend *be, const struct geist_fusi
         /* vk_attn_rope_append: a head in one workgroup, its pairs by lane */
         return q->head_dim > 0 && q->head_dim % 2u == 0 && q->head_dim <= VK_ATTN_MAX_HEAD_DIM &&
                q->n_q_heads > 0 && q->n_kv_heads > 0;
-    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
     case GEIST_FUSED_ATTN_KV_INT8:
     case GEIST_FUSED_ATTN_KV_INT4:
+        return vk_kv_q8_geometry_ok(q->head_dim, q->n_q_heads, q->n_kv_heads);
+    case GEIST_FUSED_GELU_TANH_MUL_SCALED:
     case GEIST_FUSED_RMSNORM_ADD_NORM:
     case GEIST_FUSED_FFN_GATE_UP_SILU:
         break;
@@ -4843,6 +5002,9 @@ static const struct geist_backend_fused vk_fused = {
         .attn_qkv_prep           = vk_attn_qkv_prep,
         .attn_rope_append        = vk_attn_rope_append,
         .kv_append_f16           = vk_fb_kv_append_f16,
+        .kv_append_q8            = vk_kv_append_q8,
+        .attention_kv_int8       = vk_attention_kv_q8,
+        .attention_kv_int4       = vk_attention_kv_q8,
         .deltanet_mix            = vk_deltanet_mix,
         .deltanet_mix_states     = vk_deltanet_mix_states,
         .stage_reserve           = vk_stage_reserve_slots,

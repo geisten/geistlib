@@ -1,0 +1,132 @@
+#version 450
+#include "vk_limits.h"
+
+/* Quantizing KV append (fused->kv_append_q8): the host's kv_quant_items on
+ * the device. One workgroup per (token, KV head) row, K first, then V:
+ *   - the row of head_dim floats is staged in shared memory,
+ *   - rotated there when asked (the Sylvester butterflies of fwht_orthonormal
+ *     in its order, 1/sqrt(head_dim) folded into the last stage),
+ *   - scale = max|x| / den (1 where that is 0), written per row,
+ *   - x / scale rounded to nearest even into int8, or for V with bit 1 of
+ *     flags into signed 4-bit values, two a byte, the even element low.
+ * The caches are bound as words: a thread owns whole words, so head_dim is a
+ * multiple of 4 (8 with the 4-bit V) and every row starts on a word.
+ * head_dim <= VK_ATTN_MAX_HEAD_DIM; rotation needs a power of two.
+ * Dispatch: gx = rows. */
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) readonly buffer KS { float ks[]; };
+layout(set = 0, binding = 1) readonly buffer VS { float vs[]; };
+layout(set = 0, binding = 2) writeonly buffer KD { uint kd[]; };
+layout(set = 0, binding = 3) writeonly buffer VD { uint vd[]; };
+layout(set = 0, binding = 4) writeonly buffer KC { float kc[]; };
+layout(set = 0, binding = 5) writeonly buffer VC { float vc[]; };
+
+layout(push_constant) uniform Push {
+    uint n_rows;
+    uint head_dim;
+    uint flags; /* bit 0: rotate, bit 1: V in 4 bits */
+    uint k_src_off; /* floats */
+    uint v_src_off;
+    uint k_dst_off; /* words, at the first row written */
+    uint v_dst_off;
+    uint k_sc_off; /* floats, at the first row written */
+    uint v_sc_off;
+    float k_den;
+    float v_den;
+    float rot_scale; /* 1 / sqrt(head_dim) */
+} pc;
+
+shared float sh[VK_ATTN_MAX_HEAD_DIM];
+shared float red[256];
+
+void main() {
+    uint lid = gl_LocalInvocationID.x;
+    uint row = gl_WorkGroupID.x;
+    uint hd = pc.head_dim;
+    if (row >= pc.n_rows || hd == 0u || hd > VK_ATTN_MAX_HEAD_DIM) {
+        return;
+    }
+    bool rotate = (pc.flags & 1u) != 0u;
+    uint half_n = hd >> 1u;
+
+    for (uint pass = 0u; pass < 2u; pass++) {
+        bool is_v = pass == 1u;
+        bool nib = is_v && (pc.flags & 2u) != 0u;
+        uint src = (is_v ? pc.v_src_off : pc.k_src_off) + row * hd;
+        for (uint i = lid; i < hd; i += 256u) {
+            sh[i] = is_v ? vs[src + i] : ks[src + i];
+        }
+        barrier();
+
+        if (rotate) {
+            for (uint len = 1u; len < hd; len <<= 1u) {
+                float s = len == half_n ? pc.rot_scale : 1.0;
+                for (uint p = lid; p < half_n; p += 256u) {
+                    uint j = (p / len) * (len << 1u) + (p % len);
+                    float a = sh[j];
+                    float b = sh[j + len];
+                    sh[j] = (a + b) * s;
+                    sh[j + len] = (a - b) * s;
+                }
+                barrier();
+            }
+        }
+
+        float m = 0.0;
+        for (uint i = lid; i < hd; i += 256u) {
+            m = max(m, abs(sh[i]));
+        }
+        red[lid] = m;
+        barrier();
+        for (uint stride = 128u; stride > 0u; stride >>= 1u) {
+            if (lid < stride) {
+                red[lid] = max(red[lid], red[lid + stride]);
+            }
+            barrier();
+        }
+        /* precise: the host's two divisions and its products, as written
+         * (a driver that folds them rounds ties the other way) */
+        precise float scale = red[0] / (is_v ? pc.v_den : pc.k_den);
+        if (scale == 0.0) {
+            scale = 1.0;
+        }
+        precise float inv = 1.0 / scale;
+        barrier(); /* red[] is the next pass's */
+
+        if (nib) {
+            uint dst = pc.v_dst_off + row * (hd >> 3u);
+            for (uint w = lid; w < (hd >> 3u); w += 256u) {
+                uint word = 0u;
+                for (uint b = 0u; b < 8u; b++) {
+                    precise float x = sh[8u * w + b] * inv;
+                    word |= (uint(int(roundEven(x))) & 15u) << (4u * b);
+                }
+                vd[dst + w] = word;
+            }
+        } else {
+            uint dst = (is_v ? pc.v_dst_off : pc.k_dst_off) + row * (hd >> 2u);
+            for (uint w = lid; w < (hd >> 2u); w += 256u) {
+                uint word = 0u;
+                for (uint b = 0u; b < 4u; b++) {
+                    precise float x = sh[4u * w + b] * inv;
+                    word |= (uint(int(roundEven(x))) & 255u) << (8u * b);
+                }
+                if (is_v) {
+                    vd[dst + w] = word;
+                } else {
+                    kd[dst + w] = word;
+                }
+            }
+        }
+        if (lid == 0u) {
+            if (is_v) {
+                vc[pc.v_sc_off + row] = scale;
+            } else {
+                kc[pc.k_sc_off + row] = scale;
+            }
+        }
+        barrier(); /* sh[] is the next pass's */
+    }
+}

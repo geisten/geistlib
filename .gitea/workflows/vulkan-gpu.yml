@@ -69,6 +69,7 @@ jobs:
                    test_backend_vulkan_linear_parity \
                    test_backend_vulkan_deltanet_unit \
                    test_fused_probe_agreement_unit \
+                   test_kv_int8_fused_unit \
                    test_backend_vulkan_dispatch_fail_unit \
                    test_backend_vulkan_scratch_placement_unit \
                    test_backend_vulkan_fallback_unit \
