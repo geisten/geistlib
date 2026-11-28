@@ -159,7 +159,8 @@ as it is. Rows run top to bottom, `stride` bytes apart.
 
 Width and height are the model's. `n_bytes` is the extent of `data`, and
 nothing at or behind `data + n_bytes` is read: a frame is refused with
-`GEIST_E_INVALID_ARG` when its format is not one of the three, its size is
+`GEIST_E_INVALID_ARG` when its format is not one of the four or its colour
+not one of the four below, its size is
 not the model's (or odd where the format needs it even), its stride is
 shorter than a row, or `n_bytes` is smaller than where its last row ends
 (the last row needs no padding). The check is done once per frame, with
@@ -190,29 +191,49 @@ is converted once for each; the worktable strip's tiles are converted before
 the slots. A gated stream converts the tiles it takes into an image of the
 whole frame, which is what it keeps.
 
-NV12, YUYV and UYVY are read as BT.601 limited range, the chroma of a pixel taken
-from its block without interpolation. In integers, for the bytes `Y`, `U`,
-`V` of a pixel:
+NV12, YUYV and UYVY are converted as the frame's `colour` says, the chroma
+of a pixel taken from its block without interpolation. In integers, for the
+bytes `Y`, `U`, `V` of a pixel:
 
 ```
-c = 298 * (Y - 16) + 128
-R = clamp((c + 409 * (V - 128)) >> 8)
-G = clamp((c - 100 * (U - 128) - 208 * (V - 128)) >> 8)
-B = clamp((c + 516 * (U - 128)) >> 8)          clamp to 0..255
+c = Ky * (Y - Yo) + 128
+R = clamp((c + Krv * (V - 128)) >> 8)
+G = clamp((c - Kgu * (U - 128) - Kgv * (V - 128)) >> 8)
+B = clamp((c + Kbu * (U - 128)) >> 8)          clamp to 0..255
 ```
+
+| `colour` | Ky | Yo | Krv | Kgu | Kgv | Kbu |
+| :-- | --: | --: | --: | --: | --: | --: |
+| `GEIST_DECKNET_COLOUR_BT601_LIMITED` (0) | 298 | 16 | 409 | 100 | 208 | 516 |
+| `GEIST_DECKNET_COLOUR_BT601_FULL` | 256 | 0 | 359 | 88 | 183 | 454 |
+| `GEIST_DECKNET_COLOUR_BT709_LIMITED` | 298 | 16 | 459 | 55 | 136 | 541 |
+| `GEIST_DECKNET_COLOUR_BT709_FULL` | 256 | 0 | 403 | 48 | 120 | 475 |
+
+The matrix (BT.601 or BT.709) and the range ("video range" with Y from 16
+to 235, or full range) are what a camera says of its buffers: on macOS
+`420v` is video range and `420f` full range, and the matrix is the buffer's
+`CVImageBufferYCbCrMatrix` attachment. A frame whose `colour` is left zero
+is read as BT.601 limited range, as every frame was before #607; an RGB8
+frame has none. The numbers are the standards' coefficients times 256,
+rounded. A gated stream that is given the bytes it keeps with another
+colour takes every tile again.
 
 `stream.c` evaluates this in 16 bits, 16 pixels at a time in the compiler's
 vector types (no intrinsics; the last pixels of a row whose length is not a
 multiple of 16 in pairs): the multiples of 256 are taken out of the shift
-(298 = 256 + 42, 409 = 256 + 153, 208 = 256 - 48, 516 = 512 + 4), which
-leaves sums between -20128 and 29597; the offsets of a term are gathered
+(for BT.601 limited range 298 = 256 + 42, 409 = 256 + 153, 208 = 256 - 48,
+516 = 512 + 4, which leaves sums between -20128 and 29597; the widest of
+the four is BT.709 limited range, -22889 to 32446); the offsets of a term are gathered
 into one constant; what depends on the chroma alone is computed once for
 the two pixels that share it; and a colour is clamped as bytes, by the sign
-of its high byte. All 2^24 values of (Y, U, V) give the bytes of the
+of its high byte. BT.601 limited range is compiled with its numbers as
+constants and the other three read theirs from a table (what that costs is
+under "Measured"). All 2^24 values of (Y, U, V) give the bytes of the
 formula above, in every lane and in the pairs (checked exhaustively outside
-the tree, with clang on arm64 and gcc 14 on arm64 and x86-64;
-`test_decknet_stream_unit` runs frames of arbitrary bytes against its own
-copy of the formula).
+the tree: BT.601 limited range with clang on arm64 and gcc 14 on arm64 and
+x86-64 when it was written, all four with clang on arm64 and gcc 14 on arm64 for #607;
+`test_decknet_stream_unit` runs frames of arbitrary bytes of each colour
+against its own copy of the formula).
 
 A camera that delivers full-range or BT.709 YUV needs another matrix; there
 is one because there is one user. Converting in the caller and pushing RGB8
@@ -638,6 +659,26 @@ the three p50, ms per frame (still / stream / gated):
 The p50 of the single runs overlap in every cell (1920 x 1080 stream: 5.11
 to 5.38 for YUYV, 5.14 to 5.24 for UYVY). On Metal and Vulkan the shader
 reads the same three bytes of a pixel at other offsets; that was not timed.
+
+The other three colours (#607) read their numbers from a table where
+BT.601 limited range has them as constants, and cost a tenth of a
+millisecond more. M1 Max, one thread, 1920 x 1080, a stream that is not
+gated, 300 frames per run after 20 warm-up, five rounds of every arm in
+turn under the host lock; the median of the five p50 in ms, and their
+range:
+
+| | NV12 | YUYV |
+| :-- | --: | --: |
+| before #607 | 5.03 (4.98 to 5.06) | 5.12 (5.11 to 5.13) |
+| BT.601 limited range | 5.02 (4.96 to 5.04) | 5.11 (5.10 to 5.12) |
+| BT.601 full range | 5.13 (5.13 to 5.14) | 5.19 (5.13 to 5.19) |
+| BT.709 limited range | 5.13 (5.08 to 5.13) | 5.19 (5.13 to 5.19) |
+| BT.709 full range | 5.13 (5.05 to 5.14) | 5.19 (5.09 to 5.19) |
+
+So a frame of the colour every frame had before costs what it cost, and
+the others 0.08 to 0.11 ms more (2 %). Not timed: two threads, a gated
+stream, the Pi 5, x86-64, and the GPU backends, whose shaders index a table
+for every colour.
 
 ### Where the conversion's 2 ms went
 

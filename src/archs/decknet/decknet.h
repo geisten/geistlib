@@ -452,7 +452,8 @@ struct geist_decknet_stream {
     uint32_t                  threshold;
     bool                      have_kept; /* the kept tiles are of a frame of kept_format */
     enum geist_decknet_format kept_format;
-    uint8_t                  *kept; /* the kept tiles of a YUV frame, rows unpadded */
+    enum geist_decknet_colour kept_colour; /* of a YUV frame's kept tiles */
+    uint8_t                  *kept;        /* the kept tiles of a YUV frame, rows unpadded */
     bool      cached;    /* the caches below are of the kept tiles as they were before this frame */
     uint32_t *crop;      /* n_slots x DECKNET_PLANES crops */
     double   *sums;      /* n_slots x (DECKNET_PLANES - 1) x n_blob_px x 3 */

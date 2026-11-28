@@ -71,6 +71,7 @@
  *                [--only still|stream|gated] [--size 720|1080] [--camera FPS]
  *                [--trace] [--backend cpu|metal|vulkan] [--window]
  *                [--format rgb8|nv12|yuyv|uyvy]
+ *                [--colour bt601|bt601-full|bt709|bt709-full]
  */
 #define _POSIX_C_SOURCE 200809L
 #define _DARWIN_C_SOURCE 1 /* macOS hides the counters of struct rusage under strict POSIX */
@@ -519,6 +520,15 @@ static void to_format(enum geist_decknet_format format,
     }
 }
 
+/* --colour: what the YUV frames are said to be, and are converted as for
+ * the still path. Ky, Yo, Krv, Kgu, Kgv, Kbu of docs/DECKNET.md. */
+static enum geist_decknet_colour g_colour;
+static const char *const         colour_names[4] = {"bt601", "bt601-full", "bt709", "bt709-full"};
+static const int32_t             colour_k[4][6]  = {{298, 16, 409, 100, 208, 516},
+                                                    {256, 0, 359, 88, 183, 454},
+                                                    {298, 16, 459, 55, 136, 541},
+                                                    {256, 0, 403, 48, 120, 475}};
+
 static uint8_t clip8(int32_t v) {
     return (uint8_t) (v < 0 ? 0 : (v > 255 * 256 ? 255 : v / 256));
 }
@@ -548,10 +558,11 @@ static void to_rgb8(enum geist_decknet_format format,
                 u              = row[even * 2 + c];
                 v              = row[even * 2 + c + 2];
             }
-            const int32_t c = 298 * (luma - 16) + 128;
-            o[0]            = clip8(c + 409 * (v - 128));
-            o[1]            = clip8(c - 100 * (u - 128) - 208 * (v - 128));
-            o[2]            = clip8(c + 516 * (u - 128));
+            const int32_t *k = colour_k[g_colour];
+            const int32_t  c = k[0] * (luma - k[1]) + 128;
+            o[0]             = clip8(c + k[2] * (v - 128));
+            o[1]             = clip8(c - k[3] * (u - 128) - k[4] * (v - 128));
+            o[2]             = clip8(c + k[5] * (u - 128));
         }
     }
 }
@@ -922,6 +933,7 @@ static bool measure(size_t                    w,
             die(geist_backend_errmsg(be));
         }
         struct geist_decknet_frame f = {.format  = format,
+                                        .colour  = g_colour,
                                         .width   = w,
                                         .height  = h,
                                         .stride  = stride,
@@ -1161,12 +1173,23 @@ int main(int argc, char **argv) {
                     strcmp(argv[i + 1], format_names[2]) == 0 ||
                     strcmp(argv[i + 1], format_names[3]) == 0)) {
             format = argv[++i];
+        } else if (strcmp(argv[i], "--colour") == 0 && i + 1 < argc) {
+            uint32_t c = 0;
+            while (c < 4 && strcmp(argv[i + 1], colour_names[c]) != 0) {
+                c++;
+            }
+            if (c == 4) {
+                die("--colour bt601|bt601-full|bt709|bt709-full");
+            }
+            g_colour = (enum geist_decknet_colour) c;
+            i++;
         } else {
             fprintf(stderr,
                     "usage: bench_stream [--frames N] [--threads 1|2] [--scene "
                     "block|all|half|burst] "
                     "[--only still|stream|gated] [--size 720|1080] [--camera FPS] [--trace] "
-                    "[--backend cpu|metal|vulkan] [--window] [--format rgb8|nv12|yuyv|uyvy]\n");
+                    "[--backend cpu|metal|vulkan] [--window] [--format rgb8|nv12|yuyv|uyvy] "
+                    "[--colour bt601|bt601-full|bt709|bt709-full]\n");
             return 2;
         }
     }

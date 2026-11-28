@@ -9,7 +9,9 @@
  *
  *   [0]     format: 0..3 as they are, anything else a value the enum does
  *           not name
- *   [1] [2] width and height, mostly the model's
+ *   [1] [2] width and height, mostly the model's; bits 3 to 5 of [1] the
+ *           colour, 0..3 as they are and 4..7 a value the enum does not
+ *           name; bits 3 and 4 of [2] the colour of the gating sequence
  *   [3..4]  stride, [5..6] extent in bytes (little endian)
  *   [7]     bit 0: replace the homographies by bytes of the input first, so
  *           that the tables point anywhere; bit 1: the frame is the
@@ -172,12 +174,14 @@ static void gate_sequence(const uint8_t *data, size_t size) {
     for (size_t i = 0; i < n; i++) {
         buf[i] = pixels[i % n_pixels];
     }
-    const struct geist_decknet_frame frame = {.format  = (enum geist_decknet_format) format,
-                                              .width   = GATE_W,
-                                              .height  = GATE_H,
-                                              .stride  = stride,
-                                              .n_bytes = n,
-                                              .data    = buf};
+    const struct geist_decknet_frame frame = {
+            .format  = (enum geist_decknet_format) format,
+            .colour  = (enum geist_decknet_colour)((data[2] >> 3U) % 4),
+            .width   = GATE_W,
+            .height  = GATE_H,
+            .stride  = stride,
+            .n_bytes = n,
+            .data    = buf};
 
     /* [0] without gating, [1] gated. The frame is its own empty deck, so the
      * pair is checkable until a change reaches the worktable strip. A file
@@ -245,7 +249,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             TINY_IMG_W, TINY_IMG_W, TINY_IMG_W, TINY_IMG_W, TINY_IMG_W, 14, 18, 0};
     static const size_t heights[8] = {
             TINY_IMG_H, TINY_IMG_H, TINY_IMG_H, TINY_IMG_H, TINY_IMG_H, 10, 14, 0};
-    const uint32_t format   = data[0] < 3 ? data[0] : 0x100u + data[0];
+    const uint32_t format   = data[0] < 4 ? data[0] : 0x100u + data[0];
+    const uint32_t colour   = (data[1] >> 3U) % 8;
     const size_t   stride   = (size_t) data[3] | (size_t) data[4] << 8;
     const size_t   n_bytes  = (size_t) data[5] | (size_t) data[6] << 8;
     const uint8_t  flags    = data[7];
@@ -289,6 +294,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
     const struct geist_decknet_frame frame = {
             .format    = (enum geist_decknet_format) format,
+            .colour    = (enum geist_decknet_colour) colour,
             .width     = widths[data[1] % 8],
             .height    = heights[data[2] % 8],
             .stride    = stride,
@@ -296,7 +302,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             .data      = buf,
             .timestamp = size,
     };
-    const bool fit = fits(format, frame.width, frame.height, stride, n_bytes);
+    const bool fit = colour < 4 && fits(format, frame.width, frame.height, stride, n_bytes);
 
     /* A reference that is always valid, unless the input asks for its own. */
     uint8_t                    grey[TINY_IMG_W * TINY_IMG_H * 3];

@@ -98,7 +98,8 @@ static bool frame_rows(const struct geist_decknet_frame *f, size_t *row, size_t 
 static bool frame_ok(const struct geist_decknet *d, const struct geist_decknet_frame *f) {
     size_t row = 0, rows = 0, last = 0, need = 0;
     if (f->data == nullptr || f->width != d->img_w || f->height != d->img_h ||
-        !frame_rows(f, &row, &rows) || f->stride < row) {
+        f->colour > GEIST_DECKNET_COLOUR_BT709_FULL || !frame_rows(f, &row, &rows) ||
+        f->stride < row) {
         return false;
     }
     /* The last row starts at (rows - 1) * stride and is `row` bytes long. */
@@ -123,37 +124,54 @@ static inline uint8_t clamp8(int v) {
     return (uint8_t) (v < 0 ? 0 : (v > 255 ? 255 : v));
 }
 
-/* Two pixels of a row, which share their chroma, as RGB8.
- *
- * BT.601 limited range, the formula of docs/DECKNET.md ("Stream"):
- *   c = 298 (Y - 16) + 128
- *   R = clamp((c + 409 (V - 128)) >> 8)
- *   G = clamp((c - 100 (U - 128) - 208 (V - 128)) >> 8)
- *   B = clamp((c + 516 (U - 128)) >> 8)
- * computed so that 16 bits hold it, and exactly: the multiples of 256 are
- * taken out of the shift (298 = 256 + 42, 409 = 256 + 153, 208 = 256 - 48,
- * 516 = 512 + 4), which leaves sums between -20128 and 29597, and
- * 32768 = 128 x 256 is added before the shift and 128 taken off behind it,
- * so that the shift is of an unsigned value. All 2^24 (Y, U, V) give the
- * bytes of the formula above. */
-static inline void
-yuv_pair(uint8_t luma0, uint8_t luma1, uint8_t cb, uint8_t cr, uint8_t rgb[static 6]) {
-    const int luma[2] = {luma0 - 16, luma1 - 16};
+/* A colour's conversion, the formula of docs/DECKNET.md ("Stream"):
+ *   c = Ky (Y - Yo) + 128
+ *   R = clamp((c + Krv (V - 128)) >> 8)
+ *   G = clamp((c - Kgu (U - 128) - Kgv (V - 128)) >> 8)
+ *   B = clamp((c + Kbu (U - 128)) >> 8)
+ * with the multiples of 256 taken out of the shift, so that 16 bits hold
+ * what is left: Ky = 256 + my, Krv = 256 qrv + arv, -Kgu = 256 qgu + agu,
+ * -Kgv = 256 qgv + agv, Kbu = 256 qbu + abu. The parts are chosen so that
+ * the sums under the shift, the 128 included, stay inside 16 signed bits:
+ * for BT.601 limited range between -20128 and 29597, and the widest, BT.709
+ * limited range's green, between -22889 and 32446. */
+struct yuv_k {
+    int yo, my, qrv, arv, qgu, agu, qgv, agv, qbu, abu;
+};
+static const struct yuv_k yuv_ks[4] = {
+        [GEIST_DECKNET_COLOUR_BT601_LIMITED] = {16, 42, 1, 153, 0, -100, -1, 48, 2, 4},
+        [GEIST_DECKNET_COLOUR_BT601_FULL]    = {0, 0, 1, 103, 0, -88, -1, 73, 2, -58},
+        [GEIST_DECKNET_COLOUR_BT709_LIMITED] = {16, 42, 2, -53, 0, -55, -1, 120, 2, 29},
+        [GEIST_DECKNET_COLOUR_BT709_FULL]    = {0, 0, 2, -109, 0, -48, 0, -120, 2, -37},
+};
+
+/* Two pixels of a row, which share their chroma, as RGB8: 32768 = 128 x 256
+ * is added before the shift and 128 taken off behind it, so that the shift
+ * is of an unsigned value. All 2^24 (Y, U, V) give the bytes of the formula
+ * above, for each of the four. */
+static inline void yuv_pair(uint8_t      luma0,
+                            uint8_t      luma1,
+                            uint8_t      cb,
+                            uint8_t      cr,
+                            struct yuv_k k,
+                            uint8_t      rgb[static 6]) {
+    const int luma[2] = {luma0 - k.yo, luma1 - k.yo};
     const int u = cb - 128, v = cr - 128;
     for (size_t i = 0; i < 2; i++) {
         const int      y = luma[i];
-        const unsigned r = (unsigned) (42 * y + 153 * v + 128 + 32768);
-        const unsigned g = (unsigned) (42 * y - 100 * u + 48 * v + 128 + 32768);
-        const unsigned b = (unsigned) (42 * y + 4 * u + 128 + 32768);
-        rgb[3 * i]       = clamp8(y + v + (int) (r >> 8U) - 128);
-        rgb[3 * i + 1]   = clamp8(y - v + (int) (g >> 8U) - 128);
-        rgb[3 * i + 2]   = clamp8(y + 2 * u + (int) (b >> 8U) - 128);
+        const unsigned r = (unsigned) (k.my * y + k.arv * v + 128 + 32768);
+        const unsigned g = (unsigned) (k.my * y + k.agu * u + k.agv * v + 128 + 32768);
+        const unsigned b = (unsigned) (k.my * y + k.abu * u + 128 + 32768);
+        rgb[3 * i]       = clamp8(y + k.qrv * v + (int) (r >> 8U) - 128);
+        rgb[3 * i + 1]   = clamp8(y + k.qgu * u + k.qgv * v + (int) (g >> 8U) - 128);
+        rgb[3 * i + 2]   = clamp8(y + k.qbu * u + (int) (b >> 8U) - 128);
     }
 }
 
 /* One colour of 16 pixels as bytes. `even` and `odd` have, in 16 bits that
  * wrap, the values of the even and of the odd pixels before the clamp,
- * which lie between -277 and 534: the low byte is the colour where the high
+ * which lie between -277 and 534 for BT.601 limited range and inside 16
+ * signed bits for the others: the low byte is the colour where the high
  * byte is 0, and the high byte's sign says which way it is out. */
 [[gnu::always_inline]] static inline b16 clamp16(h8 even, h8 odd) {
     const b16 e = (b16) even, o = (b16) odd;
@@ -168,18 +186,29 @@ yuv_pair(uint8_t luma0, uint8_t luma1, uint8_t cb, uint8_t cr, uint8_t rgb[stati
  * of each pair's first pixel in `even`, of its second in `odd`, and its
  * chroma in u and v, all as the bytes are (0 to 255).
  *
- * With the 16, the 128s and the 32768 of yuv_pair gathered into one
- * constant per term, in 16 bits that wrap:
+ * With the Yo, the 128s and the 32768 of yuv_pair gathered into one
+ * constant per term, in 16 bits that wrap; for BT.601 limited range:
  *   r = 42 Y + 153 V + 12640           R = Y + V - 272 + (r >> 8)
  *   g = 42 Y - 100 U + 48 V + 38880    G = Y - V - 16 + (g >> 8)
  *   b = 42 Y + 4 U + 31712             B = Y + 2 U - 400 + (b >> 8)
  * r, g and b are yuv_pair's, below 65536. What depends on the chroma alone
- * is computed once for the pair. */
+ * is computed once for the pair. With a `k` the compiler knows, the
+ * products by 0 and by 1 are gone. */
+/* A term's constant, in 16 bits that wrap. */
+static inline uint16_t k16(int x) {
+    return (uint16_t) x;
+}
+
 [[gnu::always_inline]] static inline void
-yuv16(h8 even, h8 odd, h8 u, h8 v, uint8_t rgb[static 48]) {
-    const h8  r_c = 153 * v + 12640, g_c = 48 * v - 100 * u + 38880, b_c = 4 * u + 31712;
-    const h8  r_d = v - 272, g_d = 65520 - v, b_d = 2 * u - 400;
-    const h8  m_e = 42 * even, m_o = 42 * odd;
+yuv16(h8 even, h8 odd, h8 u, h8 v, struct yuv_k k, uint8_t rgb[static 48]) {
+    const int c0 = 32896 - k.my * k.yo, d0 = -k.yo - 128;
+    const h8  r_c = k16(k.arv) * v + k16(c0 - 128 * k.arv);
+    const h8  g_c = k16(k.agv) * v + k16(k.agu) * u + k16(c0 - 128 * (k.agu + k.agv));
+    const h8  b_c = k16(k.abu) * u + k16(c0 - 128 * k.abu);
+    const h8  r_d = k16(k.qrv) * v + k16(d0 - 128 * k.qrv);
+    const h8  g_d = k16(k.qgv) * v + k16(k.qgu) * u + k16(d0 - 128 * (k.qgu + k.qgv));
+    const h8  b_d = k16(k.qbu) * u + k16(d0 - 128 * k.qbu);
+    const h8  m_e = k16(k.my) * even, m_o = k16(k.my) * odd;
     const b16 r = clamp16(even + r_d + ((m_e + r_c) >> 8), odd + r_d + ((m_o + r_c) >> 8));
     const b16 g = clamp16(even + g_d + ((m_e + g_c) >> 8), odd + g_d + ((m_o + g_c) >> 8));
     const b16 b = clamp16(even + b_d + ((m_e + b_c) >> 8), odd + b_d + ((m_o + b_c) >> 8));
@@ -200,6 +229,18 @@ yuv16(h8 even, h8 odd, h8 u, h8 v, uint8_t rgb[static 48]) {
     memcpy(rgb, &out0, sizeof out0);
     memcpy(rgb + 16, &out1, sizeof out1);
     memcpy(rgb + 32, &out2, sizeof out2);
+}
+
+/* yuv16 for the colour `k` points at, with BT.601 limited range, which is
+ * what most cameras deliver, as constants: through the table alone it took
+ * longer (docs/DECKNET.md, "Measured"). */
+[[gnu::always_inline]] static inline void
+yuv16_of(h8 even, h8 odd, h8 u, h8 v, const struct yuv_k *k, uint8_t rgb[static 48]) {
+    if (k == &yuv_ks[GEIST_DECKNET_COLOUR_BT601_LIMITED]) {
+        yuv16(even, odd, u, v, yuv_ks[GEIST_DECKNET_COLOUR_BT601_LIMITED], rgb);
+    } else {
+        yuv16(even, odd, u, v, *k, rgb);
+    }
 }
 
 /* ---- tiles ------------------------------------------------------------ */
@@ -256,6 +297,7 @@ static void convert(const struct geist_decknet_frame *f,
                     size_t                            y1,
                     const struct pixels              *to,
                     uint8_t                          *rgb) {
+    const struct yuv_k *k = &yuv_ks[f->colour];
     for (size_t y = y0; y < y1; y++) {
         const uint8_t *row = f->data + y * f->stride;
         uint8_t       *out = rgb + (y * to->stride + x0 * 3 - to->bias);
@@ -270,10 +312,10 @@ static void convert(const struct geist_decknet_frame *f,
                 h8 luma, chroma; /* a lane is two Y, and a U with its V */
                 memcpy(&luma, row + x, sizeof luma);
                 memcpy(&chroma, uv + x, sizeof chroma);
-                yuv16(luma & 0xFF, luma >> 8, chroma & 0xFF, chroma >> 8, out);
+                yuv16_of(luma & 0xFF, luma >> 8, chroma & 0xFF, chroma >> 8, k, out);
             }
             for (; x < x1; x += 2, out += 6) {
-                yuv_pair(row[x], row[x + 1], uv[x], uv[x + 1], out);
+                yuv_pair(row[x], row[x + 1], uv[x], uv[x + 1], *k, out);
             }
             break;
         }
@@ -294,13 +336,13 @@ static void convert(const struct geist_decknet_frame *f,
                 const h8 first  = __builtin_shufflevector(lo, hi, 0, 2, 4, 6, 8, 10, 12, 14);
                 const h8 second = __builtin_shufflevector(lo, hi, 1, 3, 5, 7, 9, 11, 13, 15);
                 if (uy) {
-                    yuv16(first >> 8, second >> 8, first & 0xFF, second & 0xFF, out);
+                    yuv16_of(first >> 8, second >> 8, first & 0xFF, second & 0xFF, k, out);
                 } else {
-                    yuv16(first & 0xFF, second & 0xFF, first >> 8, second >> 8, out);
+                    yuv16_of(first & 0xFF, second & 0xFF, first >> 8, second >> 8, k, out);
                 }
             }
             for (; x < x1; x += 2, p += 4, out += 6) {
-                yuv_pair(p[uy], p[2 + uy], p[1 - uy], p[3 - uy], out);
+                yuv_pair(p[uy], p[2 + uy], p[1 - uy], p[3 - uy], *k, out);
             }
             break;
         }
@@ -459,8 +501,9 @@ static void tiles_gate(struct geist_decknet_stream *s, const struct geist_deckne
     const size_t        n_blocks = blocks(f, 0, f->width, 0, 1, b);
     const size_t        row      = b[0].col1; /* the bytes of a kept row: no padding */
     const size_t        n        = s->tiles_w * s->tiles_h;
-    const bool          all      = !s->have_kept || s->kept_format != f->format;
-    s->n_tiles_changed           = 0;
+    const bool          all =
+            !s->have_kept || s->kept_format != f->format || (yuv && s->kept_colour != f->colour);
+    s->n_tiles_changed = 0;
     for (size_t ty = 0; ty < s->tiles_h; ty++) {
         const uint8_t *used    = s->used + ty * s->tiles_w;
         uint8_t       *changed = s->changed + ty * s->tiles_w;
@@ -512,6 +555,7 @@ static void tiles_gate(struct geist_decknet_stream *s, const struct geist_deckne
     }
     s->have_kept   = true;
     s->kept_format = f->format;
+    s->kept_colour = f->colour;
 }
 
 /* ---- sampling --------------------------------------------------------- */
@@ -982,7 +1026,8 @@ static void gpu_planes(void *ctx, size_t begin, size_t end) {
     size_t                row = 0, rows = 0;
     (void) frame_rows(frame, &row, &rows); /* frame_ok accepted it */
     gpu_upload(s, frame, row);
-    enum geist_status st = s->gpu_ops->submit(s->gpu, frame->format, row, frame->height);
+    enum geist_status st =
+            s->gpu_ops->submit(s->gpu, frame->format, frame->colour, row, frame->height);
     if (st != GEIST_OK) {
         return st; /* nothing was computed: the last result stays */
     }

@@ -43,7 +43,7 @@
 static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
 
 struct decknet_sample_params {
-    uint32_t stride, format, height, first, n;
+    uint32_t stride, format, height, first, n, colour;
 };
 struct decknet_sum_params {
     uint32_t n_px, n_crops, crop_w, crop_h, n_parts, out_base;
@@ -586,6 +586,7 @@ static void encode_samples(const struct geist_decknet_gpu     *gpu,
 
 [[nodiscard]] static enum geist_status decknet_gpu_submit(struct geist_decknet_gpu *gpu,
                                                           enum geist_decknet_format format,
+                                                          enum geist_decknet_colour colour,
                                                           size_t                    stride,
                                                           size_t                    height) {
     struct geist_backend *be = gpu->be;
@@ -593,8 +594,10 @@ static void encode_samples(const struct geist_decknet_gpu     *gpu,
     if (gpu->submitted || stride > UINT32_MAX || height > UINT32_MAX) {
         return GEIST_E_INVALID_STATE;
     }
-    const struct decknet_sample_params frame = {
-            .stride = (uint32_t) stride, .format = (uint32_t) format, .height = (uint32_t) height};
+    const struct decknet_sample_params frame = {.stride = (uint32_t) stride,
+                                                .format = (uint32_t) format,
+                                                .height = (uint32_t) height,
+                                                .colour = (uint32_t) colour};
     const VkCommandBufferBeginInfo binfo = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                             .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     bool                           ok =

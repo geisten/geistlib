@@ -25,18 +25,24 @@ layout(std430, binding = 3) writeonly buffer Pixels {
     uvec4 pixels[];
 };
 layout(push_constant) uniform Push {
-    uint stride, format, height, first, n;
+    uint stride, format, height, first, n, colour;
 } p;
 
 int byte(uint o) {
     return int((frame[o >> 2u] >> ((o & 3u) << 3u)) & 0xFFu);
 }
 
-/* BT.601 limited range. */
+/* Ky, Yo, Krv, Kgu, Kgv, Kbu of a colour (enum geist_decknet_colour). */
+const int yuv_k[4][6] = int[4][6](int[6](298, 16, 409, 100, 208, 516),
+                                  int[6](256, 0, 359, 88, 183, 454),
+                                  int[6](298, 16, 459, 55, 136, 541),
+                                  int[6](256, 0, 403, 48, 120, 475));
+
 uvec3 yuv(int y, int u, int v) {
-    int   c   = 298 * (y - 16) + 128;
-    ivec3 rgb = ivec3(c + 409 * (v - 128), c - 100 * (u - 128) - 208 * (v - 128),
-                      c + 516 * (u - 128)) >> 8;
+    int[6] k   = yuv_k[p.colour];
+    int    c   = k[0] * (y - k[1]) + 128;
+    ivec3  rgb = ivec3(c + k[2] * (v - 128), c - k[3] * (u - 128) - k[4] * (v - 128),
+                       c + k[5] * (u - 128)) >> 8;
     return uvec3(clamp(rgb, 0, 255));
 }
 
