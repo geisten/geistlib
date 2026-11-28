@@ -86,11 +86,13 @@ void main() {
             }
             barrier();
         }
-        float scale = red[0] / (is_v ? pc.v_den : pc.k_den);
+        /* precise: the host's two divisions and its products, as written
+         * (a driver that folds them rounds ties the other way) */
+        precise float scale = red[0] / (is_v ? pc.v_den : pc.k_den);
         if (scale == 0.0) {
             scale = 1.0;
         }
-        float inv = 1.0 / scale;
+        precise float inv = 1.0 / scale;
         barrier(); /* red[] is the next pass's */
 
         if (nib) {
@@ -98,7 +100,8 @@ void main() {
             for (uint w = lid; w < (hd >> 3u); w += 256u) {
                 uint word = 0u;
                 for (uint b = 0u; b < 8u; b++) {
-                    word |= (uint(int(roundEven(sh[8u * w + b] * inv))) & 15u) << (4u * b);
+                    precise float x = sh[8u * w + b] * inv;
+                    word |= (uint(int(roundEven(x))) & 15u) << (4u * b);
                 }
                 vd[dst + w] = word;
             }
@@ -107,7 +110,8 @@ void main() {
             for (uint w = lid; w < (hd >> 2u); w += 256u) {
                 uint word = 0u;
                 for (uint b = 0u; b < 4u; b++) {
-                    word |= (uint(int(roundEven(sh[4u * w + b] * inv))) & 255u) << (8u * b);
+                    precise float x = sh[4u * w + b] * inv;
+                    word |= (uint(int(roundEven(x))) & 255u) << (8u * b);
                 }
                 if (is_v) {
                     vd[dst + w] = word;

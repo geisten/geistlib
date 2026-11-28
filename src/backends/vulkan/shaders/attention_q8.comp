@@ -86,14 +86,18 @@ void main() {
         }
         barrier();
     }
-    float q_scale = red[0] / 127.0;
+    /* precise: the host's two divisions and its product, as written. A
+     * driver that folds them into 127 / amax rounds a tie the other way,
+     * and one step of a query element is 1e-3 of an output (#609, NVIDIA). */
+    precise float q_scale = red[0] / 127.0;
     if (q_scale == 0.0) {
         q_scale = 1.0;
     }
-    float q_inv = 1.0 / q_scale;
+    precise float q_inv = 1.0 / q_scale;
     for (uint d = lid; d < hd4; d += 256u) {
         uint b = q_base + 4u * d;
-        q_sh4[d] = ivec4(roundEven(vec4(q[b], q[b + 1u], q[b + 2u], q[b + 3u]) * q_inv));
+        precise vec4 qs = vec4(q[b], q[b + 1u], q[b + 2u], q[b + 3u]) * q_inv;
+        q_sh4[d] = ivec4(roundEven(qs));
     }
     barrier(); /* q_sh4 written, red[] free */
 
@@ -114,7 +118,8 @@ void main() {
                 ivec4 p = bytes4(k[k_base + i]) * q_sh4[i];
                 sum += p.x + p.y + p.z + p.w;
             }
-            score = float(sum) * q_scale * kc[pc.kc_offset + s * pc.n_kv_heads + kv_head];
+            precise float sq = float(sum) * q_scale;
+            score = sq * kc[pc.kc_offset + s * pc.n_kv_heads + kv_head];
         }
 
         red[lid] = score;
